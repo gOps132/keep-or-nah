@@ -35,6 +35,23 @@ class DecisionResult:
     remaining_count: int
 
 
+@dataclass(frozen=True)
+class UndoResult:
+    decision: Decision
+    action_mode: ActionMode
+    source: Path
+    destination: Path
+    remaining_count: int
+
+
+@dataclass(frozen=True)
+class ActionRecord:
+    decision: Decision
+    action_mode: ActionMode
+    source: Path
+    destination: Path
+
+
 class PhotoSession:
     def __init__(self) -> None:
         self.source_dir: Path | None = None
@@ -42,6 +59,7 @@ class PhotoSession:
         self.nah_dir: Path | None = None
         self.action_mode: ActionMode = "move"
         self.queue: list[Path] = []
+        self.history: list[ActionRecord] = []
         self.total_loaded = 0
         self.keep_count = 0
         self.nah_count = 0
@@ -68,6 +86,10 @@ class PhotoSession:
             return 0
         return self.processed_count + 1
 
+    @property
+    def can_undo(self) -> bool:
+        return bool(self.history)
+
     def set_source_dir(self, path: str | Path | None) -> None:
         self.source_dir = Path(path).expanduser() if path else None
 
@@ -84,6 +106,7 @@ class PhotoSession:
 
     def reset_queue(self) -> None:
         self.queue = []
+        self.history = []
         self.total_loaded = 0
         self.keep_count = 0
         self.nah_count = 0
@@ -101,6 +124,7 @@ class PhotoSession:
         ]
 
         self.queue = files
+        self.history = []
         self.total_loaded = len(files)
         self.keep_count = 0
         self.nah_count = 0
@@ -139,6 +163,14 @@ class PhotoSession:
             shutil.copy2(source, destination)
 
         self.queue.pop(0)
+        self.history.append(
+            ActionRecord(
+                decision=decision,
+                action_mode=self.action_mode,
+                source=source,
+                destination=destination,
+            )
+        )
         if decision == "keep":
             self.keep_count += 1
         else:
@@ -149,6 +181,37 @@ class PhotoSession:
             action_mode=self.action_mode,
             source=source,
             destination=destination,
+            remaining_count=self.remaining_count,
+        )
+
+    def undo(self) -> UndoResult:
+        if not self.history:
+            raise PhotoSessionError("There is nothing to undo.")
+
+        record = self.history.pop()
+        if record.action_mode == "move":
+            if not record.destination.exists():
+                raise PhotoSessionError("The moved file is missing, so the last action cannot be undone.")
+            if record.source.exists():
+                raise PhotoSessionError("The original file path is already occupied, so undo cannot restore it.")
+            record.source.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(record.destination), str(record.source))
+        else:
+            if not record.destination.exists():
+                raise PhotoSessionError("The copied file is missing, so the last action cannot be undone.")
+            record.destination.unlink()
+
+        self.queue.insert(0, record.source)
+        if record.decision == "keep":
+            self.keep_count -= 1
+        else:
+            self.nah_count -= 1
+
+        return UndoResult(
+            decision=record.decision,
+            action_mode=record.action_mode,
+            source=record.source,
+            destination=record.destination,
             remaining_count=self.remaining_count,
         )
 
