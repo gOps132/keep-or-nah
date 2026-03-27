@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from pathlib import Path
 import sys
 import tkinter as tk
@@ -41,48 +42,49 @@ class App(DnDCTk):
         self.preview_source_path = None
         self.preview_refresh_job = None
         self.thumbnail_refs: list[ImageTk.PhotoImage] = []
-        self.thumbnail_cache: dict[Path, ImageTk.PhotoImage | None] = {}
+        self.thumbnail_cache: OrderedDict[Path, ImageTk.PhotoImage | None] = OrderedDict()
+        self.thumbnail_cache_limit = 192
+        self.thumbnail_signature: tuple[Path, ...] = ()
+        self.thumbnail_canvas_width = 0
+        self.thumbnail_canvas_height = 108
+        self.rendered_thumbnail_range = (-1, -1)
+        self.rendered_active_index: int | None = None
+        self.thumbnail_left_padding = 12
+        self.thumbnail_top_padding = 10
+        self.thumbnail_item_width = 84
+        self.thumbnail_item_gap = 10
+        self.thumbnail_pitch = self.thumbnail_item_width + self.thumbnail_item_gap
+        self.thumbnail_size = 72
+        self.thumbnail_buffer = 4
         self.zoom_factor = 1.0
         self.min_zoom_factor = 0.25
         self.max_zoom_factor = 8.0
+        self.show_action_buttons = True
         self.action_mode_var = tk.StringVar(value="move")
         self.last_browsed_dir: Path | None = None
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
-
-        self.header_frame = ctk.CTkFrame(self)
-        self.header_frame.grid(row=0, column=0, padx=18, pady=(18, 10), sticky="ew")
-        self.header_frame.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
         self.main_frame = ctk.CTkFrame(self)
-        self.main_frame.grid(row=1, column=0, padx=18, pady=0, sticky="nsew")
+        self.main_frame.grid(row=0, column=0, padx=18, pady=(18, 0), sticky="nsew")
         self.main_frame.grid_columnconfigure(0, weight=1)
         self.main_frame.grid_rowconfigure(1, weight=1)
 
         self.footer_frame = ctk.CTkFrame(self)
-        self.footer_frame.grid(row=2, column=0, padx=18, pady=(10, 18), sticky="ew")
+        self.footer_frame.grid(row=1, column=0, padx=18, pady=(10, 18), sticky="ew")
         self.footer_frame.grid_columnconfigure((0, 1), weight=1)
 
-        self.setup_header()
         self.setup_body()
         self.setup_footer()
         self.initialize_drag_and_drop()
         self.bind_shortcuts()
         self.refresh_ui()
 
-    def setup_header(self):
-        ctk.CTkLabel(
-            self.header_frame,
-            text="Keep or Nah",
-            font=ctk.CTkFont(size=30, weight="bold"),
-            anchor="center",
-        ).grid(row=0, column=0, padx=18, pady=16)
-
     def setup_body(self):
         self.control_bar = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         self.control_bar.grid(row=0, column=0, padx=18, pady=(18, 10), sticky="ew")
-        self.control_bar.grid_columnconfigure((0, 1, 2, 3, 4, 5, 6, 7, 8), weight=1)
+        self.control_bar.grid_columnconfigure((0, 1, 2, 3, 4, 5, 6, 7, 8, 9), weight=1)
 
         self.source_button = ctk.CTkButton(self.control_bar, text="Source", command=self.choose_source_folder)
         self.source_button.grid(row=0, column=0, padx=(0, 8), sticky="ew")
@@ -107,14 +109,21 @@ class App(DnDCTk):
         self.load_button = ctk.CTkButton(self.control_bar, text="Load", command=self.load_queue)
         self.load_button.grid(row=0, column=5, padx=8, sticky="ew")
 
+        self.toggle_actions_button = ctk.CTkButton(
+            self.control_bar,
+            text="Hide Buttons",
+            command=self.toggle_action_buttons,
+        )
+        self.toggle_actions_button.grid(row=0, column=6, padx=8, sticky="ew")
+
         self.zoom_out_button = ctk.CTkButton(self.control_bar, text="-", width=44, command=self.zoom_out)
-        self.zoom_out_button.grid(row=0, column=6, padx=(8, 4), sticky="ew")
+        self.zoom_out_button.grid(row=0, column=7, padx=(8, 4), sticky="ew")
 
         self.zoom_fit_button = ctk.CTkButton(self.control_bar, text="Fit", width=60, command=self.reset_zoom)
-        self.zoom_fit_button.grid(row=0, column=7, padx=4, sticky="ew")
+        self.zoom_fit_button.grid(row=0, column=8, padx=4, sticky="ew")
 
         self.zoom_in_button = ctk.CTkButton(self.control_bar, text="+", width=44, command=self.zoom_in)
-        self.zoom_in_button.grid(row=0, column=8, padx=(4, 0), sticky="ew")
+        self.zoom_in_button.grid(row=0, column=9, padx=(4, 0), sticky="ew")
 
         preview_host = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         preview_host.grid(row=1, column=0, padx=18, pady=(0, 12), sticky="nsew")
@@ -163,7 +172,7 @@ class App(DnDCTk):
             xscrollincrement=1,
         )
         self.thumbnail_canvas.grid(row=0, column=0, sticky="ew")
-        self.thumbnail_canvas.bind("<Configure>", lambda _event: self.redraw_thumbnail_strip())
+        self.thumbnail_canvas.bind("<Configure>", lambda _event: self.refresh_thumbnail_strip(force_rebuild=True))
         self.thumbnail_canvas.bind("<MouseWheel>", self.handle_thumbnail_wheel)
         self.thumbnail_canvas.bind("<Button-4>", self.handle_thumbnail_linux_wheel)
         self.thumbnail_canvas.bind("<Button-5>", self.handle_thumbnail_linux_wheel)
@@ -188,6 +197,19 @@ class App(DnDCTk):
             command=lambda: self.sort_current_photo("keep"),
         )
         self.keep_button.grid(row=0, column=1, padx=(8, 18), pady=18, sticky="ew")
+
+    def toggle_action_buttons(self):
+        self.show_action_buttons = not self.show_action_buttons
+        self.update_action_button_visibility()
+        self.schedule_preview_refresh()
+
+    def update_action_button_visibility(self):
+        button_text = "Hide Buttons" if self.show_action_buttons else "Show Buttons"
+        self.toggle_actions_button.configure(text=button_text)
+        if self.show_action_buttons:
+            self.footer_frame.grid()
+        else:
+            self.footer_frame.grid_remove()
 
     def resolve_canvas_color(self) -> str:
         raw_color = self.main_frame.cget("fg_color")
@@ -257,8 +279,13 @@ class App(DnDCTk):
 
         self.session.set_source_dir(path)
         self.last_browsed_dir = Path(path)
-        self.thumbnail_cache = {}
+        self.thumbnail_cache = OrderedDict()
         self.thumbnail_refs = []
+        self.thumbnail_signature = ()
+        self.thumbnail_canvas_width = 0
+        self.thumbnail_canvas_height = 108
+        self.rendered_thumbnail_range = (-1, -1)
+        self.rendered_active_index = None
         self.session.reset_queue()
         self.reset_zoom_state()
         self.clear_preview()
@@ -395,6 +422,7 @@ class App(DnDCTk):
     def refresh_ui(self):
         current = self.session.active_photo
         self.update_selector_buttons()
+        self.update_action_button_visibility()
 
         self.load_button.configure(state="normal" if self.session.source_dir is not None else "disabled")
         self.undo_button.configure(state="normal" if self.session.can_undo else "disabled")
@@ -407,7 +435,7 @@ class App(DnDCTk):
         action_state = "normal" if current is not None else "disabled"
         self.keep_button.configure(state=action_state)
         self.nah_button.configure(state=action_state)
-        self.redraw_thumbnail_strip()
+        self.refresh_thumbnail_strip()
 
         if current is None:
             if self.session.total_loaded:
@@ -450,8 +478,9 @@ class App(DnDCTk):
         )
 
     def get_thumbnail_photo(self, path: Path) -> ImageTk.PhotoImage | None:
-        cached = self.thumbnail_cache.get(path)
         if path in self.thumbnail_cache:
+            cached = self.thumbnail_cache[path]
+            self.thumbnail_cache.move_to_end(path)
             return cached
 
         try:
@@ -463,84 +492,142 @@ class App(DnDCTk):
             thumbnail = None
 
         self.thumbnail_cache[path] = thumbnail
+        if len(self.thumbnail_cache) > self.thumbnail_cache_limit:
+            self.thumbnail_cache.popitem(last=False)
         return thumbnail
 
-    def redraw_thumbnail_strip(self):
-        self.thumbnail_canvas.delete("all")
-        self.thumbnail_refs = []
-
+    def refresh_thumbnail_strip(self, force_rebuild: bool = False):
         canvas_width = max(self.thumbnail_canvas.winfo_width(), 1)
         canvas_height = max(self.thumbnail_canvas.winfo_height(), 108)
-        paths = self.session.queue
+        paths = tuple(self.session.queue)
         if not paths:
+            self.thumbnail_canvas.delete("all")
+            self.thumbnail_refs = []
+            self.thumbnail_signature = ()
+            self.thumbnail_canvas_width = canvas_width
+            self.thumbnail_canvas_height = canvas_height
+            self.rendered_thumbnail_range = (-1, -1)
+            self.rendered_active_index = None
             self.thumbnail_canvas.configure(scrollregion=(0, 0, canvas_width, canvas_height))
             return
 
-        x = 12
-        y = 12
-        box_size = 84
-        gap = 10
-        selected_outline = self._apply_appearance_mode(("#111827", "#f8fafc"))
-        default_outline = self._apply_appearance_mode(("#cbd5e1", "#334155"))
+        signature_changed = paths != self.thumbnail_signature
+        width_changed = canvas_width != self.thumbnail_canvas_width or canvas_height != self.thumbnail_canvas_height
+        region_width = self.get_thumbnail_region_width(len(paths), canvas_width)
 
-        for index, path in enumerate(paths):
+        self.thumbnail_canvas.configure(scrollregion=(0, 0, region_width, canvas_height))
+        self.thumbnail_signature = paths
+        self.thumbnail_canvas_width = canvas_width
+        self.thumbnail_canvas_height = canvas_height
+
+        self.ensure_active_thumbnail_visible(len(paths), region_width)
+        visible_range = self.get_visible_thumbnail_range(len(paths))
+
+        if force_rebuild or signature_changed or width_changed or visible_range != self.rendered_thumbnail_range:
+            self.redraw_thumbnail_strip(paths, visible_range)
+        else:
+            self.update_thumbnail_selection()
+
+    def get_thumbnail_region_width(self, item_count: int, canvas_width: int | None = None) -> int:
+        if canvas_width is None:
+            canvas_width = max(self.thumbnail_canvas.winfo_width(), 1)
+        content_width = self.thumbnail_left_padding + (item_count * self.thumbnail_pitch) + 2
+        return max(canvas_width, content_width)
+
+    def get_visible_thumbnail_range(self, item_count: int) -> tuple[int, int]:
+        if item_count <= 0:
+            return (0, 0)
+
+        left_visible = self.thumbnail_canvas.canvasx(0)
+        right_visible = left_visible + max(self.thumbnail_canvas.winfo_width(), 1)
+        offset_left = max(left_visible - self.thumbnail_left_padding, 0)
+        offset_right = max(right_visible - self.thumbnail_left_padding, 0)
+        start = max(int(offset_left // self.thumbnail_pitch) - self.thumbnail_buffer, 0)
+        end = min(int(offset_right // self.thumbnail_pitch) + self.thumbnail_buffer + 2, item_count)
+        return (start, max(start, end))
+
+    def redraw_thumbnail_strip(self, paths: tuple[Path, ...], visible_range: tuple[int, int]):
+        self.thumbnail_canvas.delete("all")
+        self.thumbnail_refs = []
+        marker_color = self._apply_appearance_mode(("#111827", "#f8fafc"))
+        thumb_center_y = self.thumbnail_top_padding + (self.thumbnail_size / 2)
+        marker_y = self.thumbnail_top_padding + self.thumbnail_size + 10
+        start, end = visible_range
+
+        for index in range(start, end):
+            path = paths[index]
             tag = f"thumb-{index}"
-            outline = selected_outline if index == self.session.active_index else default_outline
-            width = 3 if index == self.session.active_index else 1
-
-            self.thumbnail_canvas.create_rectangle(
-                x,
-                y,
-                x + box_size,
-                y + box_size,
-                outline=outline,
-                width=width,
-                tags=(tag, "thumbnail"),
-            )
+            x = self.thumbnail_left_padding + (index * self.thumbnail_pitch)
+            center_x = x + (self.thumbnail_item_width / 2)
 
             thumbnail = self.get_thumbnail_photo(path)
             if thumbnail is not None:
                 self.thumbnail_refs.append(thumbnail)
                 self.thumbnail_canvas.create_image(
-                    x + (box_size / 2),
-                    y + (box_size / 2),
+                    center_x,
+                    thumb_center_y,
                     image=thumbnail,
                     tags=(tag, "thumbnail"),
                 )
             else:
                 self.thumbnail_canvas.create_text(
-                    x + (box_size / 2),
-                    y + (box_size / 2),
+                    center_x,
+                    thumb_center_y,
                     text="?",
-                    fill=default_outline,
+                    fill=marker_color,
                     font=("SF Pro Display", 18, "bold"),
                     tags=(tag, "thumbnail"),
                 )
 
+            self.thumbnail_canvas.create_line(
+                x + 18,
+                marker_y,
+                x + self.thumbnail_item_width - 18,
+                marker_y,
+                fill=marker_color,
+                width=4,
+                capstyle=tk.ROUND,
+                state="normal" if index == self.session.active_index else "hidden",
+                tags=(f"thumb-marker-{index}", tag, "thumbnail-marker"),
+            )
             self.thumbnail_canvas.tag_bind(tag, "<Button-1>", lambda _event, i=index: self.select_photo_at_index(i))
-            x += box_size + gap
+        self.rendered_thumbnail_range = visible_range
+        self.rendered_active_index = self.session.active_index
 
-        region_width = max(canvas_width, x + 2)
-        self.thumbnail_canvas.configure(scrollregion=(0, 0, region_width, canvas_height))
-        self.ensure_active_thumbnail_visible()
-
-    def ensure_active_thumbnail_visible(self):
-        bbox = self.thumbnail_canvas.bbox(f"thumb-{self.session.active_index}")
-        all_bbox = self.thumbnail_canvas.bbox("all")
-        if not bbox or not all_bbox:
+    def update_thumbnail_selection(self):
+        active_index = self.session.active_index if self.session.queue else None
+        if active_index == self.rendered_active_index:
             return
 
+        if self.rendered_active_index is not None:
+            self.thumbnail_canvas.itemconfigure(f"thumb-marker-{self.rendered_active_index}", state="hidden")
+        if active_index is not None:
+            self.thumbnail_canvas.itemconfigure(f"thumb-marker-{active_index}", state="normal")
+        self.rendered_active_index = active_index
+
+    def ensure_active_thumbnail_visible(self, item_count: int, region_width: int | None = None):
+        if item_count <= 0:
+            return
+
+        if region_width is None:
+            region_width = self.get_thumbnail_region_width(item_count)
         viewport_width = max(self.thumbnail_canvas.winfo_width(), 1)
         left_visible = self.thumbnail_canvas.canvasx(0)
         right_visible = left_visible + viewport_width
-        total_width = max(all_bbox[2] - all_bbox[0], 1)
+        item_left = self.thumbnail_left_padding + (self.session.active_index * self.thumbnail_pitch)
+        item_right = item_left + self.thumbnail_item_width
 
-        if bbox[0] < left_visible:
-            fraction = bbox[0] / total_width
-            self.thumbnail_canvas.xview_moveto(min(max(fraction, 0.0), 1.0))
-        elif bbox[2] > right_visible:
-            fraction = (bbox[2] - viewport_width) / total_width
-            self.thumbnail_canvas.xview_moveto(min(max(fraction, 0.0), 1.0))
+        if item_left < left_visible:
+            target_left = item_left
+        elif item_right > right_visible:
+            target_left = item_right - viewport_width
+        else:
+            return
+
+        max_offset = max(region_width - viewport_width, 0)
+        clamped_left = min(max(target_left, 0), max_offset)
+        fraction = clamped_left / max(max_offset, 1)
+        self.thumbnail_canvas.xview_moveto(min(max(fraction, 0.0), 1.0))
 
     def get_view_center(self) -> tuple[float, float]:
         bbox = self.preview_canvas.bbox("all")
@@ -682,10 +769,12 @@ class App(DnDCTk):
     def handle_thumbnail_wheel(self, event):
         steps = max(1, int(abs(event.delta) / 120)) if event.delta else 1
         direction = -1 if event.delta > 0 else 1
-        self.thumbnail_canvas.xview_scroll(direction * steps, "units")
+        self.thumbnail_canvas.xview_scroll(direction * steps * 72, "units")
+        self.refresh_thumbnail_strip()
         return "break"
 
     def handle_thumbnail_linux_wheel(self, event):
         direction = -1 if getattr(event, "num", None) == 4 else 1
-        self.thumbnail_canvas.xview_scroll(direction, "units")
+        self.thumbnail_canvas.xview_scroll(direction * 72, "units")
+        self.refresh_thumbnail_strip()
         return "break"
