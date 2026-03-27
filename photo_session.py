@@ -50,6 +50,7 @@ class ActionRecord:
     action_mode: ActionMode
     source: Path
     destination: Path
+    index: int
 
 
 class PhotoSession:
@@ -59,6 +60,7 @@ class PhotoSession:
         self.nah_dir: Path | None = None
         self.action_mode: ActionMode = "move"
         self.queue: list[Path] = []
+        self.active_index = 0
         self.history: list[ActionRecord] = []
         self.total_loaded = 0
         self.keep_count = 0
@@ -68,7 +70,7 @@ class PhotoSession:
     def active_photo(self) -> Path | None:
         if not self.queue:
             return None
-        return self.queue[0]
+        return self.queue[self.active_index]
 
     @property
     def remaining_count(self) -> int:
@@ -84,7 +86,7 @@ class PhotoSession:
     def current_position(self) -> int:
         if not self.remaining_count:
             return 0
-        return self.processed_count + 1
+        return self.active_index + 1
 
     @property
     def can_undo(self) -> bool:
@@ -106,6 +108,7 @@ class PhotoSession:
 
     def reset_queue(self) -> None:
         self.queue = []
+        self.active_index = 0
         self.history = []
         self.total_loaded = 0
         self.keep_count = 0
@@ -124,16 +127,29 @@ class PhotoSession:
         ]
 
         self.queue = files
+        self.active_index = 0
         self.history = []
         self.total_loaded = len(files)
         self.keep_count = 0
         self.nah_count = 0
         return self.total_loaded
 
+    def set_active_index(self, index: int) -> Path | None:
+        if not self.queue:
+            self.active_index = 0
+            return None
+
+        self.active_index = min(max(index, 0), len(self.queue) - 1)
+        return self.active_photo
+
+    def move_active(self, offset: int) -> Path | None:
+        return self.set_active_index(self.active_index + offset)
+
     def decide(self, decision: Decision) -> DecisionResult:
         source = self.active_photo
         if source is None:
             raise PhotoSessionError("There are no loaded photos left to sort.")
+        current_index = self.active_index
 
         destination_dir = self.keep_dir if decision == "keep" else self.nah_dir
         if destination_dir is None:
@@ -162,13 +178,18 @@ class PhotoSession:
         else:
             shutil.copy2(source, destination)
 
-        self.queue.pop(0)
+        self.queue.pop(current_index)
+        if self.queue:
+            self.active_index = min(current_index, len(self.queue) - 1)
+        else:
+            self.active_index = 0
         self.history.append(
             ActionRecord(
                 decision=decision,
                 action_mode=self.action_mode,
                 source=source,
                 destination=destination,
+                index=current_index,
             )
         )
         if decision == "keep":
@@ -201,7 +222,9 @@ class PhotoSession:
                 raise PhotoSessionError("The copied file is missing, so the last action cannot be undone.")
             record.destination.unlink()
 
-        self.queue.insert(0, record.source)
+        restore_index = min(max(record.index, 0), len(self.queue))
+        self.queue.insert(restore_index, record.source)
+        self.active_index = restore_index
         if record.decision == "keep":
             self.keep_count -= 1
         else:

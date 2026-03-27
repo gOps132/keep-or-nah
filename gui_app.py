@@ -40,6 +40,8 @@ class App(DnDCTk):
         self.preview_source_image = None
         self.preview_source_path = None
         self.preview_refresh_job = None
+        self.thumbnail_refs: list[ImageTk.PhotoImage] = []
+        self.thumbnail_cache: dict[Path, ImageTk.PhotoImage | None] = {}
         self.zoom_factor = 1.0
         self.min_zoom_factor = 0.25
         self.max_zoom_factor = 8.0
@@ -147,6 +149,25 @@ class App(DnDCTk):
         self.bind_if_supported(self.preview_canvas, "<Command-Button-5>", self.handle_linux_zoom_wheel)
         self.bind_if_supported(self.preview_canvas, "<Magnify>", self.handle_magnify)
 
+        self.queue_host = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.queue_host.grid(row=2, column=0, padx=18, pady=(0, 8), sticky="ew")
+        self.queue_host.grid_columnconfigure(0, weight=1)
+        self.queue_host.grid_rowconfigure(0, weight=1)
+
+        self.thumbnail_canvas = tk.Canvas(
+            self.queue_host,
+            bg=canvas_color,
+            bd=0,
+            highlightthickness=0,
+            height=108,
+            xscrollincrement=1,
+        )
+        self.thumbnail_canvas.grid(row=0, column=0, sticky="ew")
+        self.thumbnail_canvas.bind("<Configure>", lambda _event: self.redraw_thumbnail_strip())
+        self.thumbnail_canvas.bind("<MouseWheel>", self.handle_thumbnail_wheel)
+        self.thumbnail_canvas.bind("<Button-4>", self.handle_thumbnail_linux_wheel)
+        self.thumbnail_canvas.bind("<Button-5>", self.handle_thumbnail_linux_wheel)
+
     def setup_footer(self):
         self.nah_button = ctk.CTkButton(
             self.footer_frame,
@@ -198,8 +219,8 @@ class App(DnDCTk):
             self.dnd_enabled = False
 
     def bind_shortcuts(self):
-        self.bind("<Left>", lambda _event: self.sort_current_photo("nah"))
-        self.bind("<Right>", lambda _event: self.sort_current_photo("keep"))
+        self.bind("<Left>", lambda _event: self.navigate_selection(-1))
+        self.bind("<Right>", lambda _event: self.navigate_selection(1))
         self.bind("<KeyPress-a>", lambda _event: self.sort_current_photo("nah"))
         self.bind("<KeyPress-d>", lambda _event: self.sort_current_photo("keep"))
 
@@ -236,6 +257,8 @@ class App(DnDCTk):
 
         self.session.set_source_dir(path)
         self.last_browsed_dir = Path(path)
+        self.thumbnail_cache = {}
+        self.thumbnail_refs = []
         self.session.reset_queue()
         self.reset_zoom_state()
         self.clear_preview()
@@ -274,6 +297,24 @@ class App(DnDCTk):
     def handle_action_mode_change(self, value):
         self.session.set_action_mode(value)
         self.refresh_ui()
+
+    def select_photo_at_index(self, index: int):
+        if self.session.set_active_index(index) is None:
+            return
+
+        self.reset_zoom_state()
+        self.preview_source_path = None
+        self.refresh_ui()
+        self.refresh_preview(reload_image=True)
+
+    def navigate_selection(self, offset: int):
+        if self.session.move_active(offset) is None:
+            return
+
+        self.reset_zoom_state()
+        self.preview_source_path = None
+        self.refresh_ui()
+        self.refresh_preview(reload_image=True)
 
     def load_queue(self):
         try:
@@ -366,6 +407,7 @@ class App(DnDCTk):
         action_state = "normal" if current is not None else "disabled"
         self.keep_button.configure(state=action_state)
         self.nah_button.configure(state=action_state)
+        self.redraw_thumbnail_strip()
 
         if current is None:
             if self.session.total_loaded:
@@ -406,6 +448,99 @@ class App(DnDCTk):
             fill=self._apply_appearance_mode(("gray45", "gray65")),
             font=("SF Pro Display", 22, "bold"),
         )
+
+    def get_thumbnail_photo(self, path: Path) -> ImageTk.PhotoImage | None:
+        cached = self.thumbnail_cache.get(path)
+        if path in self.thumbnail_cache:
+            return cached
+
+        try:
+            with Image.open(path) as image:
+                prepared = ImageOps.exif_transpose(image).convert("RGBA")
+                prepared.thumbnail((72, 72), Image.Resampling.LANCZOS)
+                thumbnail = ImageTk.PhotoImage(prepared)
+        except OSError:
+            thumbnail = None
+
+        self.thumbnail_cache[path] = thumbnail
+        return thumbnail
+
+    def redraw_thumbnail_strip(self):
+        self.thumbnail_canvas.delete("all")
+        self.thumbnail_refs = []
+
+        canvas_width = max(self.thumbnail_canvas.winfo_width(), 1)
+        canvas_height = max(self.thumbnail_canvas.winfo_height(), 108)
+        paths = self.session.queue
+        if not paths:
+            self.thumbnail_canvas.configure(scrollregion=(0, 0, canvas_width, canvas_height))
+            return
+
+        x = 12
+        y = 12
+        box_size = 84
+        gap = 10
+        selected_outline = self._apply_appearance_mode(("#111827", "#f8fafc"))
+        default_outline = self._apply_appearance_mode(("#cbd5e1", "#334155"))
+
+        for index, path in enumerate(paths):
+            tag = f"thumb-{index}"
+            outline = selected_outline if index == self.session.active_index else default_outline
+            width = 3 if index == self.session.active_index else 1
+
+            self.thumbnail_canvas.create_rectangle(
+                x,
+                y,
+                x + box_size,
+                y + box_size,
+                outline=outline,
+                width=width,
+                tags=(tag, "thumbnail"),
+            )
+
+            thumbnail = self.get_thumbnail_photo(path)
+            if thumbnail is not None:
+                self.thumbnail_refs.append(thumbnail)
+                self.thumbnail_canvas.create_image(
+                    x + (box_size / 2),
+                    y + (box_size / 2),
+                    image=thumbnail,
+                    tags=(tag, "thumbnail"),
+                )
+            else:
+                self.thumbnail_canvas.create_text(
+                    x + (box_size / 2),
+                    y + (box_size / 2),
+                    text="?",
+                    fill=default_outline,
+                    font=("SF Pro Display", 18, "bold"),
+                    tags=(tag, "thumbnail"),
+                )
+
+            self.thumbnail_canvas.tag_bind(tag, "<Button-1>", lambda _event, i=index: self.select_photo_at_index(i))
+            x += box_size + gap
+
+        region_width = max(canvas_width, x + 2)
+        self.thumbnail_canvas.configure(scrollregion=(0, 0, region_width, canvas_height))
+        self.ensure_active_thumbnail_visible()
+
+    def ensure_active_thumbnail_visible(self):
+        bbox = self.thumbnail_canvas.bbox(f"thumb-{self.session.active_index}")
+        all_bbox = self.thumbnail_canvas.bbox("all")
+        if not bbox or not all_bbox:
+            return
+
+        viewport_width = max(self.thumbnail_canvas.winfo_width(), 1)
+        left_visible = self.thumbnail_canvas.canvasx(0)
+        right_visible = left_visible + viewport_width
+        total_width = max(all_bbox[2] - all_bbox[0], 1)
+
+        if bbox[0] < left_visible:
+            fraction = bbox[0] / total_width
+            self.thumbnail_canvas.xview_moveto(min(max(fraction, 0.0), 1.0))
+        elif bbox[2] > right_visible:
+            fraction = (bbox[2] - viewport_width) / total_width
+            self.thumbnail_canvas.xview_moveto(min(max(fraction, 0.0), 1.0))
 
     def get_view_center(self) -> tuple[float, float]:
         bbox = self.preview_canvas.bbox("all")
@@ -542,4 +677,15 @@ class App(DnDCTk):
     def handle_linux_shift_wheel(self, event):
         direction = -1 if getattr(event, "num", None) == 4 else 1
         self.preview_canvas.xview_scroll(direction, "units")
+        return "break"
+
+    def handle_thumbnail_wheel(self, event):
+        steps = max(1, int(abs(event.delta) / 120)) if event.delta else 1
+        direction = -1 if event.delta > 0 else 1
+        self.thumbnail_canvas.xview_scroll(direction * steps, "units")
+        return "break"
+
+    def handle_thumbnail_linux_wheel(self, event):
+        direction = -1 if getattr(event, "num", None) == 4 else 1
+        self.thumbnail_canvas.xview_scroll(direction, "units")
         return "break"
