@@ -40,7 +40,11 @@ class App(DnDCTk):
         self.preview_source_image = None
         self.preview_source_path = None
         self.preview_refresh_job = None
+        self.zoom_factor = 1.0
+        self.min_zoom_factor = 0.25
+        self.max_zoom_factor = 8.0
         self.action_mode_var = tk.StringVar(value="move")
+        self.last_browsed_dir: Path | None = None
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -49,16 +53,20 @@ class App(DnDCTk):
         self.header_frame.grid(row=0, column=0, padx=18, pady=(18, 10), sticky="ew")
         self.header_frame.grid_columnconfigure(0, weight=1)
 
-        self.body_frame = ctk.CTkFrame(self)
-        self.body_frame.grid(row=1, column=0, padx=18, pady=(0, 18), sticky="nsew")
-        self.body_frame.grid_columnconfigure(0, weight=1)
-        self.body_frame.grid_rowconfigure(1, weight=1)
+        self.main_frame = ctk.CTkFrame(self)
+        self.main_frame.grid(row=1, column=0, padx=18, pady=0, sticky="nsew")
+        self.main_frame.grid_columnconfigure(0, weight=1)
+        self.main_frame.grid_rowconfigure(1, weight=1)
+
+        self.footer_frame = ctk.CTkFrame(self)
+        self.footer_frame.grid(row=2, column=0, padx=18, pady=(10, 18), sticky="ew")
+        self.footer_frame.grid_columnconfigure((0, 1), weight=1)
 
         self.setup_header()
         self.setup_body()
+        self.setup_footer()
         self.initialize_drag_and_drop()
         self.bind_shortcuts()
-        self.update_runtime_notice()
         self.refresh_ui()
 
     def setup_header(self):
@@ -70,9 +78,9 @@ class App(DnDCTk):
         ).grid(row=0, column=0, padx=18, pady=16)
 
     def setup_body(self):
-        self.control_bar = ctk.CTkFrame(self.body_frame, fg_color="transparent")
-        self.control_bar.grid(row=0, column=0, padx=18, pady=(18, 12), sticky="ew")
-        self.control_bar.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1)
+        self.control_bar = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.control_bar.grid(row=0, column=0, padx=18, pady=(18, 10), sticky="ew")
+        self.control_bar.grid_columnconfigure((0, 1, 2, 3, 4, 5, 6, 7, 8), weight=1)
 
         self.source_button = ctk.CTkButton(self.control_bar, text="Source", command=self.choose_source_folder)
         self.source_button.grid(row=0, column=0, padx=(0, 8), sticky="ew")
@@ -95,61 +103,74 @@ class App(DnDCTk):
         self.undo_button.grid(row=0, column=4, padx=8, sticky="ew")
 
         self.load_button = ctk.CTkButton(self.control_bar, text="Load", command=self.load_queue)
-        self.load_button.grid(row=0, column=5, padx=(8, 0), sticky="ew")
+        self.load_button.grid(row=0, column=5, padx=8, sticky="ew")
 
-        center_frame = ctk.CTkFrame(self.body_frame, fg_color="transparent")
-        center_frame.grid(row=1, column=0, padx=18, pady=(0, 18), sticky="nsew")
-        center_frame.grid_columnconfigure(0, weight=1)
-        center_frame.grid_rowconfigure(0, weight=1)
+        self.zoom_out_button = ctk.CTkButton(self.control_bar, text="-", width=44, command=self.zoom_out)
+        self.zoom_out_button.grid(row=0, column=6, padx=(8, 4), sticky="ew")
 
-        self.preview_card = ctk.CTkFrame(center_frame, corner_radius=20, width=860, height=620)
-        self.preview_card.grid(row=0, column=0)
-        self.preview_card.grid_propagate(False)
-        self.preview_card.grid_columnconfigure(0, weight=1)
-        self.preview_card.grid_rowconfigure(0, weight=1)
+        self.zoom_fit_button = ctk.CTkButton(self.control_bar, text="Fit", width=60, command=self.reset_zoom)
+        self.zoom_fit_button.grid(row=0, column=7, padx=4, sticky="ew")
 
-        self.preview_stage = ctk.CTkFrame(
-            self.preview_card,
-            corner_radius=18,
-            fg_color=("gray92", "gray14"),
+        self.zoom_in_button = ctk.CTkButton(self.control_bar, text="+", width=44, command=self.zoom_in)
+        self.zoom_in_button.grid(row=0, column=8, padx=(4, 0), sticky="ew")
+
+        preview_host = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        preview_host.grid(row=1, column=0, padx=18, pady=(0, 12), sticky="nsew")
+        preview_host.grid_columnconfigure(0, weight=1)
+        preview_host.grid_rowconfigure(0, weight=1)
+
+        canvas_color = self.resolve_canvas_color()
+        self.preview_canvas = tk.Canvas(
+            preview_host,
+            bg=canvas_color,
+            bd=0,
+            highlightthickness=0,
+            xscrollincrement=1,
+            yscrollincrement=1,
         )
-        self.preview_stage.grid(row=0, column=0, padx=24, pady=(24, 18), sticky="nsew")
-        self.preview_stage.grid_columnconfigure(0, weight=1)
-        self.preview_stage.grid_rowconfigure(0, weight=1)
-        self.preview_stage.bind("<Configure>", self.schedule_preview_refresh)
+        self.preview_canvas.grid(row=0, column=0, sticky="nsew")
+        self.preview_canvas.bind("<Configure>", self.schedule_preview_refresh)
+        self.preview_canvas.bind("<MouseWheel>", self.handle_mousewheel)
+        self.preview_canvas.bind("<Shift-MouseWheel>", self.handle_shift_mousewheel)
+        self.preview_canvas.bind("<Button-4>", self.handle_linux_wheel)
+        self.preview_canvas.bind("<Button-5>", self.handle_linux_wheel)
+        self.preview_canvas.bind("<Shift-Button-4>", self.handle_linux_shift_wheel)
+        self.preview_canvas.bind("<Shift-Button-5>", self.handle_linux_shift_wheel)
+        self.preview_canvas.bind("<ButtonPress-1>", self.start_pan)
+        self.preview_canvas.bind("<B1-Motion>", self.drag_pan)
 
-        self.preview_label = ctk.CTkLabel(
-            self.preview_stage,
-            text="No Photo",
-            justify="center",
-            anchor="center",
-            font=ctk.CTkFont(size=22, weight="bold"),
-        )
-        self.preview_label.grid(row=0, column=0, padx=24, pady=24, sticky="nsew")
+        self.bind_if_supported(self.preview_canvas, "<Command-MouseWheel>", self.handle_zoom_mousewheel)
+        self.bind_if_supported(self.preview_canvas, "<Control-MouseWheel>", self.handle_zoom_mousewheel)
+        self.bind_if_supported(self.preview_canvas, "<Control-Button-4>", self.handle_linux_zoom_wheel)
+        self.bind_if_supported(self.preview_canvas, "<Control-Button-5>", self.handle_linux_zoom_wheel)
+        self.bind_if_supported(self.preview_canvas, "<Command-Button-4>", self.handle_linux_zoom_wheel)
+        self.bind_if_supported(self.preview_canvas, "<Command-Button-5>", self.handle_linux_zoom_wheel)
+        self.bind_if_supported(self.preview_canvas, "<Magnify>", self.handle_magnify)
 
-        action_bar = ctk.CTkFrame(self.preview_card, fg_color="transparent")
-        action_bar.grid(row=1, column=0, padx=24, pady=(0, 24), sticky="ew")
-        action_bar.grid_columnconfigure((0, 1), weight=1)
-
+    def setup_footer(self):
         self.nah_button = ctk.CTkButton(
-            action_bar,
+            self.footer_frame,
             text="Nah",
             fg_color="#b42318",
             hover_color="#912018",
-            height=48,
+            height=54,
             command=lambda: self.sort_current_photo("nah"),
         )
-        self.nah_button.grid(row=0, column=0, padx=(0, 8), sticky="ew")
+        self.nah_button.grid(row=0, column=0, padx=(18, 8), pady=18, sticky="ew")
 
         self.keep_button = ctk.CTkButton(
-            action_bar,
+            self.footer_frame,
             text="Keep",
             fg_color="#157f3b",
             hover_color="#126532",
-            height=48,
+            height=54,
             command=lambda: self.sort_current_photo("keep"),
         )
-        self.keep_button.grid(row=0, column=1, padx=(8, 0), sticky="ew")
+        self.keep_button.grid(row=0, column=1, padx=(8, 18), pady=18, sticky="ew")
+
+    def resolve_canvas_color(self) -> str:
+        raw_color = self.main_frame.cget("fg_color")
+        return self._apply_appearance_mode(raw_color)
 
     def folder_label(self, label: str, path: Path | None) -> str:
         if path is None:
@@ -176,46 +197,79 @@ class App(DnDCTk):
         except Exception:
             self.dnd_enabled = False
 
-    def update_runtime_notice(self):
-        return
-
     def bind_shortcuts(self):
         self.bind("<Left>", lambda _event: self.sort_current_photo("nah"))
         self.bind("<Right>", lambda _event: self.sort_current_photo("keep"))
         self.bind("<KeyPress-a>", lambda _event: self.sort_current_photo("nah"))
         self.bind("<KeyPress-d>", lambda _event: self.sort_current_photo("keep"))
+
         modifier = "Command" if sys.platform == "darwin" else "Control"
         self.bind(f"<{modifier}-z>", self.handle_undo_shortcut)
         self.bind(f"<{modifier}-Z>", self.handle_undo_shortcut)
+        self.bind(f"<{modifier}-minus>", self.handle_zoom_out_shortcut)
+        self.bind(f"<{modifier}-equal>", self.handle_zoom_in_shortcut)
+        self.bind(f"<{modifier}-plus>", self.handle_zoom_in_shortcut)
+        self.bind(f"<{modifier}-0>", self.handle_zoom_reset_shortcut)
+
+    def bind_if_supported(self, widget, sequence: str, handler):
+        try:
+            widget.bind(sequence, handler)
+        except tk.TclError:
+            return
 
     def handle_undo_shortcut(self, _event=None):
         self.undo_last_action()
 
+    def handle_zoom_in_shortcut(self, _event=None):
+        self.zoom_in()
+
+    def handle_zoom_out_shortcut(self, _event=None):
+        self.zoom_out()
+
+    def handle_zoom_reset_shortcut(self, _event=None):
+        self.reset_zoom()
+
     def choose_source_folder(self):
-        path = filedialog.askdirectory(title="Choose Source Folder")
+        path = filedialog.askdirectory(title="Choose Source Folder", initialdir=self.get_initial_directory())
         if not path:
             return
 
         self.session.set_source_dir(path)
+        self.last_browsed_dir = Path(path)
         self.session.reset_queue()
+        self.reset_zoom_state()
         self.clear_preview()
         self.refresh_ui()
 
     def choose_keep_folder(self):
-        path = filedialog.askdirectory(title="Choose Keep Folder")
+        path = filedialog.askdirectory(title="Choose Keep Folder", initialdir=self.get_initial_directory())
         if not path:
             return
 
         self.session.set_keep_dir(path)
+        self.last_browsed_dir = Path(path)
         self.refresh_ui()
 
     def choose_nah_folder(self):
-        path = filedialog.askdirectory(title="Choose Nah Folder")
+        path = filedialog.askdirectory(title="Choose Nah Folder", initialdir=self.get_initial_directory())
         if not path:
             return
 
         self.session.set_nah_dir(path)
+        self.last_browsed_dir = Path(path)
         self.refresh_ui()
+
+    def get_initial_directory(self) -> str | None:
+        candidates = [
+            self.last_browsed_dir,
+            self.session.source_dir,
+            self.session.keep_dir,
+            self.session.nah_dir,
+        ]
+        for candidate in candidates:
+            if candidate is not None and candidate.exists():
+                return str(candidate)
+        return None
 
     def handle_action_mode_change(self, value):
         self.session.set_action_mode(value)
@@ -229,11 +283,13 @@ class App(DnDCTk):
             return
 
         if count == 0:
+            self.reset_zoom_state()
             self.clear_preview("No Photo")
             self.refresh_ui()
             messagebox.showinfo("Keep or Nah", "No supported images found.")
             return
 
+        self.reset_zoom_state()
         self.preview_source_path = None
         self.refresh_ui()
         self.refresh_preview(reload_image=True)
@@ -248,6 +304,7 @@ class App(DnDCTk):
             messagebox.showerror("Keep or Nah", f"Could not process the file.\n\n{error}")
             return
 
+        self.reset_zoom_state()
         self.preview_source_path = None
         self.refresh_ui()
         self.refresh_preview(reload_image=True)
@@ -264,9 +321,35 @@ class App(DnDCTk):
             messagebox.showerror("Keep or Nah", f"Could not undo the last action.\n\n{error}")
             return
 
+        self.reset_zoom_state()
         self.preview_source_path = None
         self.refresh_ui()
         self.refresh_preview(reload_image=True)
+
+    def reset_zoom_state(self):
+        self.zoom_factor = 1.0
+
+    def zoom_in(self):
+        self.set_zoom(self.zoom_factor * 1.2)
+
+    def zoom_out(self):
+        self.set_zoom(self.zoom_factor / 1.2)
+
+    def reset_zoom(self):
+        self.set_zoom(1.0)
+
+    def set_zoom(self, value: float):
+        current = self.session.active_photo
+        if current is None:
+            return
+
+        clamped = min(max(value, self.min_zoom_factor), self.max_zoom_factor)
+        if abs(clamped - self.zoom_factor) < 0.001:
+            return
+
+        self.zoom_factor = clamped
+        self.refresh_preview(preserve_view=True)
+        self.refresh_ui()
 
     def refresh_ui(self):
         current = self.session.active_photo
@@ -274,9 +357,15 @@ class App(DnDCTk):
 
         self.load_button.configure(state="normal" if self.session.source_dir is not None else "disabled")
         self.undo_button.configure(state="normal" if self.session.can_undo else "disabled")
-        button_state = "normal" if current is not None else "disabled"
-        self.keep_button.configure(state=button_state)
-        self.nah_button.configure(state=button_state)
+
+        zoom_state = "normal" if current is not None else "disabled"
+        self.zoom_in_button.configure(state=zoom_state)
+        self.zoom_out_button.configure(state=zoom_state)
+        self.zoom_fit_button.configure(state=zoom_state)
+
+        action_state = "normal" if current is not None else "disabled"
+        self.keep_button.configure(state=action_state)
+        self.nah_button.configure(state=action_state)
 
         if current is None:
             if self.session.total_loaded:
@@ -289,15 +378,79 @@ class App(DnDCTk):
     def schedule_preview_refresh(self, _event=None):
         if self.preview_refresh_job is not None:
             self.after_cancel(self.preview_refresh_job)
-        self.preview_refresh_job = self.after(100, self.refresh_preview)
+        self.preview_refresh_job = self.after(80, self.refresh_preview_or_placeholder)
+
+    def refresh_preview_or_placeholder(self):
+        current = self.session.active_photo
+        if current is None:
+            if self.session.total_loaded:
+                self.clear_preview("Done")
+            else:
+                self.clear_preview("No Photo")
+            self.preview_refresh_job = None
+            return
+        self.refresh_preview()
 
     def clear_preview(self, message="No Photo"):
         self.preview_source_image = None
         self.preview_source_path = None
         self.preview_photo = None
-        self.preview_label.configure(text=message, image=None)
+        self.preview_canvas.delete("all")
+        width = max(self.preview_canvas.winfo_width(), 320)
+        height = max(self.preview_canvas.winfo_height(), 240)
+        self.preview_canvas.configure(scrollregion=(0, 0, width, height))
+        self.preview_canvas.create_text(
+            width / 2,
+            height / 2,
+            text=message,
+            fill=self._apply_appearance_mode(("gray45", "gray65")),
+            font=("SF Pro Display", 22, "bold"),
+        )
 
-    def refresh_preview(self, reload_image=False):
+    def get_view_center(self) -> tuple[float, float]:
+        bbox = self.preview_canvas.bbox("all")
+        if not bbox:
+            return (0.5, 0.5)
+
+        left, top, right, bottom = bbox
+        total_width = max(right - left, 1)
+        total_height = max(bottom - top, 1)
+        viewport_width = max(self.preview_canvas.winfo_width(), 1)
+        viewport_height = max(self.preview_canvas.winfo_height(), 1)
+        center_x = self.preview_canvas.canvasx(viewport_width / 2)
+        center_y = self.preview_canvas.canvasy(viewport_height / 2)
+        rel_x = min(max((center_x - left) / total_width, 0.0), 1.0)
+        rel_y = min(max((center_y - top) / total_height, 0.0), 1.0)
+        return (rel_x, rel_y)
+
+    def restore_view_center(self, rel_x: float, rel_y: float):
+        bbox = self.preview_canvas.bbox("all")
+        if not bbox:
+            return
+
+        left, top, right, bottom = bbox
+        total_width = max(right - left, 1)
+        total_height = max(bottom - top, 1)
+        viewport_width = max(self.preview_canvas.winfo_width(), 1)
+        viewport_height = max(self.preview_canvas.winfo_height(), 1)
+
+        if total_width <= viewport_width:
+            self.preview_canvas.xview_moveto(0)
+        else:
+            center_x = left + rel_x * total_width
+            left_target = center_x - (viewport_width / 2)
+            fraction = (left_target - left) / max(total_width - viewport_width, 1)
+            self.preview_canvas.xview_moveto(min(max(fraction, 0.0), 1.0))
+
+        if total_height <= viewport_height:
+            self.preview_canvas.yview_moveto(0)
+        else:
+            center_y = top + rel_y * total_height
+            top_target = center_y - (viewport_height / 2)
+            fraction = (top_target - top) / max(total_height - viewport_height, 1)
+            self.preview_canvas.yview_moveto(min(max(fraction, 0.0), 1.0))
+
+    def refresh_preview(self, reload_image=False, preserve_view=False):
         self.preview_refresh_job = None
         current = self.session.active_photo
         if current is None:
@@ -313,9 +466,80 @@ class App(DnDCTk):
                 return
             self.preview_source_path = current
 
-        width = max(self.preview_stage.winfo_width() - 48, 280)
-        height = max(self.preview_stage.winfo_height() - 48, 280)
-        preview_image = self.preview_source_image.copy()
-        preview_image.thumbnail((width, height), Image.Resampling.LANCZOS)
-        self.preview_photo = ImageTk.PhotoImage(preview_image)
-        self.preview_label.configure(text="", image=self.preview_photo)
+        canvas_width = self.preview_canvas.winfo_width()
+        canvas_height = self.preview_canvas.winfo_height()
+        if canvas_width < 8 or canvas_height < 8:
+            self.schedule_preview_refresh()
+            return
+
+        rel_x, rel_y = self.get_view_center() if preserve_view else (0.5, 0.5)
+
+        image_width = self.preview_source_image.width
+        image_height = self.preview_source_image.height
+        fit_scale = min(canvas_width / image_width, canvas_height / image_height)
+        display_scale = max(fit_scale * self.zoom_factor, 0.01)
+        display_width = max(int(round(image_width * display_scale)), 1)
+        display_height = max(int(round(image_height * display_scale)), 1)
+
+        resized = self.preview_source_image.resize((display_width, display_height), Image.Resampling.LANCZOS)
+        self.preview_photo = ImageTk.PhotoImage(resized)
+
+        region_width = max(canvas_width, display_width)
+        region_height = max(canvas_height, display_height)
+        origin_x = max((region_width - display_width) / 2, 0)
+        origin_y = max((region_height - display_height) / 2, 0)
+
+        self.preview_canvas.delete("all")
+        self.preview_canvas.configure(scrollregion=(0, 0, region_width, region_height))
+        self.preview_canvas.create_image(origin_x, origin_y, anchor="nw", image=self.preview_photo)
+        self.restore_view_center(rel_x, rel_y)
+
+    def start_pan(self, event):
+        self.preview_canvas.scan_mark(event.x, event.y)
+
+    def drag_pan(self, event):
+        self.preview_canvas.scan_dragto(event.x, event.y, gain=1)
+
+    def handle_zoom_mousewheel(self, event):
+        if event.delta > 0:
+            self.zoom_in()
+        elif event.delta < 0:
+            self.zoom_out()
+        return "break"
+
+    def handle_linux_zoom_wheel(self, event):
+        if getattr(event, "num", None) == 4:
+            self.zoom_in()
+        elif getattr(event, "num", None) == 5:
+            self.zoom_out()
+        return "break"
+
+    def handle_magnify(self, event):
+        delta = getattr(event, "delta", 0)
+        if delta > 0:
+            self.zoom_in()
+        elif delta < 0:
+            self.zoom_out()
+        return "break"
+
+    def handle_mousewheel(self, event):
+        steps = max(1, int(abs(event.delta) / 120)) if event.delta else 1
+        direction = -1 if event.delta > 0 else 1
+        self.preview_canvas.yview_scroll(direction * steps, "units")
+        return "break"
+
+    def handle_shift_mousewheel(self, event):
+        steps = max(1, int(abs(event.delta) / 120)) if event.delta else 1
+        direction = -1 if event.delta > 0 else 1
+        self.preview_canvas.xview_scroll(direction * steps, "units")
+        return "break"
+
+    def handle_linux_wheel(self, event):
+        direction = -1 if getattr(event, "num", None) == 4 else 1
+        self.preview_canvas.yview_scroll(direction, "units")
+        return "break"
+
+    def handle_linux_shift_wheel(self, event):
+        direction = -1 if getattr(event, "num", None) == 4 else 1
+        self.preview_canvas.xview_scroll(direction, "units")
+        return "break"
