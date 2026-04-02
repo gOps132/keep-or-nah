@@ -9,7 +9,9 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image, ImageOps, ImageTk
 
+from app_settings import AppSettings, MAX_PREVIEW_CACHE_BUDGET_MB, MIN_PREVIEW_CACHE_BUDGET_MB
 from photo_session import PhotoSession, PhotoSessionError
+from preview_pipeline import PreviewPipeline
 
 try:
     from tkinterdnd2 import TkinterDnD
@@ -36,11 +38,24 @@ class App(DnDCTk):
         self.geometry("1180x820")
         self.minsize(960, 700)
         self.dnd_enabled = False
+        self.settings = AppSettings.load()
         self.session = PhotoSession()
+        self.preview_pipeline = PreviewPipeline(cache_budget_mb=self.settings.preview_cache_budget_mb)
         self.preview_photo = None
         self.preview_source_image = None
         self.preview_source_path = None
         self.preview_refresh_job = None
+        self.preview_poll_job = None
+        self.preview_request_id = 0
+        self.preview_request_key: tuple[Path, int, int, str, bool] | None = None
+        self.loading_overlay_delay_job = None
+        self.loading_animation_job = None
+        self.loading_overlay_visible = False
+        self.loading_overlay_angle = 0
+        self.preview_settings_dialog = None
+        self.destroyed = False
+        self.preview_texture_cache: OrderedDict[tuple[object, ...], ImageTk.PhotoImage] = OrderedDict()
+        self.preview_texture_cache_limit = 12
         self.thumbnail_refs: list[ImageTk.PhotoImage] = []
         self.thumbnail_cache: OrderedDict[Path, ImageTk.PhotoImage | None] = OrderedDict()
         self.thumbnail_cache_limit = 192
@@ -77,9 +92,45 @@ class App(DnDCTk):
 
         self.setup_body()
         self.setup_footer()
+        self.setup_menu()
         self.initialize_drag_and_drop()
         self.bind_shortcuts()
+        self.protocol("WM_DELETE_WINDOW", self.handle_window_close)
         self.refresh_ui()
+
+    def handle_window_close(self):
+        self.destroy()
+
+    def destroy(self):
+        if self.destroyed:
+            return
+        self.destroyed = True
+        self.cancel_preview_jobs()
+        if self.preview_settings_dialog is not None and self.preview_settings_dialog.winfo_exists():
+            self.preview_settings_dialog.destroy()
+        self.preview_pipeline.shutdown()
+        super().destroy()
+
+    def cancel_preview_jobs(self):
+        if self.preview_refresh_job is not None:
+            self.after_cancel(self.preview_refresh_job)
+            self.preview_refresh_job = None
+        if self.preview_poll_job is not None:
+            self.after_cancel(self.preview_poll_job)
+            self.preview_poll_job = None
+        if self.loading_overlay_delay_job is not None:
+            self.after_cancel(self.loading_overlay_delay_job)
+            self.loading_overlay_delay_job = None
+        if self.loading_animation_job is not None:
+            self.after_cancel(self.loading_animation_job)
+            self.loading_animation_job = None
+        self.loading_overlay_visible = False
+        self.preview_canvas.delete("preview-loading")
+
+    def reset_preview_request_state(self):
+        self.cancel_preview_jobs()
+        self.preview_request_id = 0
+        self.preview_request_key = None
 
     def setup_body(self):
         self.control_bar = ctk.CTkFrame(self.main_frame, fg_color="transparent")
@@ -198,6 +249,24 @@ class App(DnDCTk):
         )
         self.keep_button.grid(row=0, column=1, padx=(8, 18), pady=18, sticky="ew")
 
+    def setup_menu(self):
+        menubar = tk.Menu(self)
+        settings_label = "Settings..." if sys.platform == "darwin" else "Preview Settings..."
+        accelerator = "Cmd+," if sys.platform == "darwin" else "Ctrl+,"
+
+        file_menu = tk.Menu(menubar, tearoff=False)
+        file_menu.add_command(label=settings_label, accelerator=accelerator, command=self.open_preview_settings_dialog)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit" if sys.platform != "darwin" else "Quit Keep or Nah", command=self.handle_window_close)
+        menubar.add_cascade(label="Keep or Nah" if sys.platform == "darwin" else "File", menu=file_menu)
+
+        view_menu = tk.Menu(menubar, tearoff=False)
+        view_menu.add_command(label="Preview Settings...", accelerator=accelerator, command=self.open_preview_settings_dialog)
+        menubar.add_cascade(label="View", menu=view_menu)
+
+        self.configure(menu=menubar)
+        self.menubar = menubar
+
     def toggle_action_buttons(self):
         self.show_action_buttons = not self.show_action_buttons
         self.update_action_button_visibility()
@@ -229,6 +298,109 @@ class App(DnDCTk):
         self.keep_folder_button.configure(text=self.folder_label("Keep", self.session.keep_dir))
         self.nah_folder_button.configure(text=self.folder_label("Nah", self.session.nah_dir))
 
+    def open_preview_settings_dialog(self):
+        if self.preview_settings_dialog is not None and self.preview_settings_dialog.winfo_exists():
+            self.preview_settings_dialog.focus()
+            self.preview_settings_dialog.lift()
+            return
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Preview Settings")
+        dialog.geometry("440x320")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.configure(fg_color=self.main_frame.cget("fg_color"))
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(0, weight=1)
+
+        progressive_var = tk.BooleanVar(value=self.settings.progressive_preview)
+        loading_var = tk.BooleanVar(value=self.settings.loading_indicator)
+        budget_var = tk.StringVar(value=str(self.settings.preview_cache_budget_mb))
+
+        container = ctk.CTkFrame(dialog, fg_color="transparent")
+        container.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
+        container.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            container,
+            text="Preview Performance",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).grid(row=0, column=0, sticky="w", pady=(2, 14))
+
+        ctk.CTkSwitch(container, text="Progressive Preview", variable=progressive_var).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=6,
+        )
+        ctk.CTkSwitch(container, text="Loading Indicator", variable=loading_var).grid(
+            row=2,
+            column=0,
+            sticky="w",
+            pady=6,
+        )
+
+        ctk.CTkLabel(container, text="Preview Cache Budget (MB)").grid(row=3, column=0, sticky="w", pady=(18, 6))
+        ctk.CTkEntry(container, textvariable=budget_var).grid(row=4, column=0, sticky="ew")
+
+        helper_text = f"Allowed range: {MIN_PREVIEW_CACHE_BUDGET_MB}-{MAX_PREVIEW_CACHE_BUDGET_MB} MB."
+        ctk.CTkLabel(
+            container,
+            text=helper_text,
+            text_color=self._apply_appearance_mode(("gray45", "gray65")),
+            justify="left",
+            wraplength=360,
+        ).grid(row=5, column=0, sticky="w", pady=(8, 22))
+
+        button_row = ctk.CTkFrame(container, fg_color="transparent")
+        button_row.grid(row=6, column=0, sticky="ew")
+        button_row.grid_columnconfigure((0, 1), weight=1)
+
+        def close_dialog():
+            if dialog.winfo_exists():
+                dialog.destroy()
+            self.preview_settings_dialog = None
+
+        def save_settings():
+            try:
+                budget = int(budget_var.get().strip())
+            except ValueError:
+                messagebox.showerror("Keep or Nah", "Preview cache budget must be a whole number.")
+                return
+
+            if budget < MIN_PREVIEW_CACHE_BUDGET_MB or budget > MAX_PREVIEW_CACHE_BUDGET_MB:
+                messagebox.showerror(
+                    "Keep or Nah",
+                    f"Preview cache budget must be between {MIN_PREVIEW_CACHE_BUDGET_MB} and {MAX_PREVIEW_CACHE_BUDGET_MB} MB.",
+                )
+                return
+
+            self.apply_preview_settings(
+                AppSettings(
+                    progressive_preview=progressive_var.get(),
+                    loading_indicator=loading_var.get(),
+                    preview_cache_budget_mb=budget,
+                )
+            )
+            close_dialog()
+
+        ctk.CTkButton(button_row, text="Cancel", command=close_dialog).grid(row=0, column=0, padx=(0, 6), sticky="ew")
+        ctk.CTkButton(button_row, text="Save", command=save_settings).grid(row=0, column=1, padx=(6, 0), sticky="ew")
+
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        dialog.after(0, dialog.grab_set)
+        self.preview_settings_dialog = dialog
+
+    def apply_preview_settings(self, settings: AppSettings):
+        self.settings = settings.normalized()
+        self.settings.save()
+        self.preview_pipeline.configure_cache_budget(self.settings.preview_cache_budget_mb)
+        self.prune_preview_texture_cache(set(self.session.queue))
+        self.preview_source_path = None
+        self.preview_source_image = None
+        self.reset_preview_request_state()
+        self.refresh_preview(reload_image=True)
+
     def initialize_drag_and_drop(self):
         if TkinterDnD is None:
             self.dnd_enabled = False
@@ -241,10 +413,10 @@ class App(DnDCTk):
             self.dnd_enabled = False
 
     def bind_shortcuts(self):
-        self.bind("<Left>", lambda _event: self.navigate_selection(-1))
-        self.bind("<Right>", lambda _event: self.navigate_selection(1))
-        self.bind("<KeyPress-a>", lambda _event: self.sort_current_photo("nah"))
-        self.bind("<KeyPress-d>", lambda _event: self.sort_current_photo("keep"))
+        self.bind_all("<Left>", self.handle_previous_shortcut)
+        self.bind_all("<Right>", self.handle_next_shortcut)
+        self.bind_all("<KeyPress-a>", self.handle_nah_shortcut)
+        self.bind_all("<KeyPress-d>", self.handle_keep_shortcut)
 
         modifier = "Command" if sys.platform == "darwin" else "Control"
         self.bind(f"<{modifier}-z>", self.handle_undo_shortcut)
@@ -253,6 +425,7 @@ class App(DnDCTk):
         self.bind(f"<{modifier}-equal>", self.handle_zoom_in_shortcut)
         self.bind(f"<{modifier}-plus>", self.handle_zoom_in_shortcut)
         self.bind(f"<{modifier}-0>", self.handle_zoom_reset_shortcut)
+        self.bind(f"<{modifier}-comma>", self.handle_open_preview_settings_shortcut)
 
     def bind_if_supported(self, widget, sequence: str, handler):
         try:
@@ -263,6 +436,30 @@ class App(DnDCTk):
     def handle_undo_shortcut(self, _event=None):
         self.undo_last_action()
 
+    def handle_previous_shortcut(self, _event=None):
+        if not self.shortcuts_enabled():
+            return None
+        self.navigate_selection(-1)
+        return "break"
+
+    def handle_next_shortcut(self, _event=None):
+        if not self.shortcuts_enabled():
+            return None
+        self.navigate_selection(1)
+        return "break"
+
+    def handle_nah_shortcut(self, _event=None):
+        if not self.shortcuts_enabled():
+            return None
+        self.sort_current_photo("nah")
+        return "break"
+
+    def handle_keep_shortcut(self, _event=None):
+        if not self.shortcuts_enabled():
+            return None
+        self.sort_current_photo("keep")
+        return "break"
+
     def handle_zoom_in_shortcut(self, _event=None):
         self.zoom_in()
 
@@ -272,13 +469,26 @@ class App(DnDCTk):
     def handle_zoom_reset_shortcut(self, _event=None):
         self.reset_zoom()
 
+    def handle_open_preview_settings_shortcut(self, _event=None):
+        self.open_preview_settings_dialog()
+        return "break"
+
+    def shortcuts_enabled(self) -> bool:
+        focused = self.focus_get()
+        if focused is None:
+            return True
+        widget_class = focused.winfo_class()
+        return widget_class not in {"Entry", "TEntry", "Text", "Spinbox", "TSpinbox"}
+
     def choose_source_folder(self):
         path = filedialog.askdirectory(title="Choose Source Folder", initialdir=self.get_initial_directory())
         if not path:
             return
 
+        self.reset_preview_request_state()
         self.session.set_source_dir(path)
         self.last_browsed_dir = Path(path)
+        self.preview_texture_cache = OrderedDict()
         self.thumbnail_cache = OrderedDict()
         self.thumbnail_refs = []
         self.thumbnail_signature = ()
@@ -287,6 +497,7 @@ class App(DnDCTk):
         self.rendered_thumbnail_range = (-1, -1)
         self.rendered_active_index = None
         self.session.reset_queue()
+        self.preview_pipeline.reset(self.session.queue)
         self.reset_zoom_state()
         self.clear_preview()
         self.refresh_ui()
@@ -331,8 +542,10 @@ class App(DnDCTk):
 
         self.reset_zoom_state()
         self.preview_source_path = None
+        self.preview_source_image = None
+        self.reset_preview_request_state()
         self.refresh_ui()
-        self.refresh_preview(reload_image=True)
+        self.refresh_preview()
 
     def navigate_selection(self, offset: int):
         if self.session.move_active(offset) is None:
@@ -340,8 +553,10 @@ class App(DnDCTk):
 
         self.reset_zoom_state()
         self.preview_source_path = None
+        self.preview_source_image = None
+        self.reset_preview_request_state()
         self.refresh_ui()
-        self.refresh_preview(reload_image=True)
+        self.refresh_preview()
 
     def load_queue(self):
         try:
@@ -349,6 +564,9 @@ class App(DnDCTk):
         except PhotoSessionError as error:
             messagebox.showerror("Keep or Nah", str(error))
             return
+        self.preview_pipeline.reset(self.session.queue)
+        self.prune_preview_texture_cache(set(self.session.queue))
+        self.reset_preview_request_state()
 
         if count == 0:
             self.reset_zoom_state()
@@ -359,8 +577,9 @@ class App(DnDCTk):
 
         self.reset_zoom_state()
         self.preview_source_path = None
+        self.preview_source_image = None
         self.refresh_ui()
-        self.refresh_preview(reload_image=True)
+        self.refresh_preview()
 
     def sort_current_photo(self, decision):
         try:
@@ -372,10 +591,14 @@ class App(DnDCTk):
             messagebox.showerror("Keep or Nah", f"Could not process the file.\n\n{error}")
             return
 
+        self.preview_pipeline.reset(self.session.queue)
+        self.prune_preview_texture_cache(set(self.session.queue))
         self.reset_zoom_state()
         self.preview_source_path = None
+        self.preview_source_image = None
+        self.reset_preview_request_state()
         self.refresh_ui()
-        self.refresh_preview(reload_image=True)
+        self.refresh_preview()
 
     def undo_last_action(self):
         try:
@@ -389,10 +612,14 @@ class App(DnDCTk):
             messagebox.showerror("Keep or Nah", f"Could not undo the last action.\n\n{error}")
             return
 
+        self.preview_pipeline.reset(self.session.queue)
+        self.prune_preview_texture_cache(set(self.session.queue))
         self.reset_zoom_state()
         self.preview_source_path = None
+        self.preview_source_image = None
+        self.reset_preview_request_state()
         self.refresh_ui()
-        self.refresh_preview(reload_image=True)
+        self.refresh_preview()
 
     def reset_zoom_state(self):
         self.zoom_factor = 1.0
@@ -438,6 +665,7 @@ class App(DnDCTk):
         self.refresh_thumbnail_strip()
 
         if current is None:
+            self.reset_preview_request_state()
             if self.session.total_loaded:
                 self.clear_preview("Done")
             else:
@@ -453,6 +681,7 @@ class App(DnDCTk):
     def refresh_preview_or_placeholder(self):
         current = self.session.active_photo
         if current is None:
+            self.reset_preview_request_state()
             if self.session.total_loaded:
                 self.clear_preview("Done")
             else:
@@ -469,13 +698,175 @@ class App(DnDCTk):
         width = max(self.preview_canvas.winfo_width(), 320)
         height = max(self.preview_canvas.winfo_height(), 240)
         self.preview_canvas.configure(scrollregion=(0, 0, width, height))
-        self.preview_canvas.create_text(
-            width / 2,
-            height / 2,
-            text=message,
-            fill=self._apply_appearance_mode(("gray45", "gray65")),
-            font=("SF Pro Display", 22, "bold"),
+        if message:
+            self.preview_canvas.create_text(
+                width / 2,
+                height / 2,
+                text=message,
+                fill=self._apply_appearance_mode(("gray45", "gray65")),
+                font=("SF Pro Display", 22, "bold"),
+            )
+        if self.loading_overlay_visible:
+            self.render_loading_overlay()
+
+    def get_preview_texture(self, cache_key: tuple[object, ...] | None, image: Image.Image) -> ImageTk.PhotoImage:
+        if cache_key is None:
+            return ImageTk.PhotoImage(image)
+
+        cached = self.preview_texture_cache.get(cache_key)
+        if cached is not None:
+            self.preview_texture_cache.move_to_end(cache_key)
+            return cached
+
+        texture = ImageTk.PhotoImage(image)
+        self.preview_texture_cache[cache_key] = texture
+        while len(self.preview_texture_cache) > self.preview_texture_cache_limit:
+            self.preview_texture_cache.popitem(last=False)
+        return texture
+
+    def prune_preview_texture_cache(self, allowed_paths: set[Path] | None = None):
+        if not allowed_paths:
+            self.preview_texture_cache = OrderedDict()
+            return
+
+        for key in list(self.preview_texture_cache.keys()):
+            path = key[0]
+            if isinstance(path, Path) and path in allowed_paths:
+                continue
+            self.preview_texture_cache.pop(key, None)
+
+    def schedule_preview_poll(self):
+        if self.preview_poll_job is not None or self.destroyed:
+            return
+        self.preview_poll_job = self.after(45, self.poll_preview_pipeline)
+
+    def poll_preview_pipeline(self):
+        self.preview_poll_job = None
+        completed = self.preview_pipeline.drain_completed()
+        current = self.session.active_photo
+        if self.destroyed or current is None or self.preview_request_key is None:
+            return
+
+        relevant = any(
+            event.path == current and event.request_id == self.preview_request_id
+            for event in completed
         )
+        if relevant or (completed and not self.preview_request_needs_more_work(current)):
+            self.refresh_preview()
+            return
+
+        if self.preview_request_needs_more_work(current):
+            self.schedule_preview_poll()
+
+    def preview_request_needs_more_work(self, current: Path) -> bool:
+        fit_mode = self.zoom_factor == 1.0
+        if fit_mode:
+            lookup = self.preview_pipeline.get_best_preview(current)
+            return not lookup.failed and lookup.stage != "full"
+        return not self.preview_pipeline.has_source(current)
+
+    def schedule_loading_overlay_delay(self, request_key: tuple[Path, int, int, str, bool]):
+        if not self.settings.loading_indicator or self.destroyed:
+            return
+        if self.loading_overlay_delay_job is not None:
+            self.after_cancel(self.loading_overlay_delay_job)
+        self.loading_overlay_delay_job = self.after(140, lambda: self.maybe_show_loading_overlay(request_key))
+
+    def maybe_show_loading_overlay(self, request_key: tuple[Path, int, int, str, bool]):
+        self.loading_overlay_delay_job = None
+        if self.destroyed or self.preview_request_key != request_key:
+            return
+        current = self.session.active_photo
+        if current is None:
+            return
+        if not self.preview_request_needs_more_work(current):
+            return
+        self.loading_overlay_visible = True
+        self.loading_overlay_angle = 0
+        self.render_loading_overlay()
+        self.schedule_loading_animation()
+
+    def schedule_loading_animation(self):
+        if self.loading_animation_job is not None or not self.loading_overlay_visible or self.destroyed:
+            return
+        self.loading_animation_job = self.after(90, self.advance_loading_animation)
+
+    def advance_loading_animation(self):
+        self.loading_animation_job = None
+        if not self.loading_overlay_visible or self.destroyed:
+            return
+        self.loading_overlay_angle = (self.loading_overlay_angle + 24) % 360
+        self.render_loading_overlay()
+        self.schedule_loading_animation()
+
+    def hide_loading_overlay(self):
+        if self.loading_overlay_delay_job is not None:
+            self.after_cancel(self.loading_overlay_delay_job)
+            self.loading_overlay_delay_job = None
+        if self.loading_animation_job is not None:
+            self.after_cancel(self.loading_animation_job)
+            self.loading_animation_job = None
+        self.loading_overlay_visible = False
+        self.preview_canvas.delete("preview-loading")
+
+    def render_loading_overlay(self):
+        self.preview_canvas.delete("preview-loading")
+        if not self.loading_overlay_visible:
+            return
+
+        width = max(self.preview_canvas.winfo_width(), 320)
+        height = max(self.preview_canvas.winfo_height(), 240)
+        center_x = self.preview_canvas.canvasx(width / 2)
+        center_y = self.preview_canvas.canvasy(height / 2)
+        spinner_size = 38
+        spinner_color = self._apply_appearance_mode(("#2563eb", "#93c5fd"))
+        text_color = self._apply_appearance_mode(("gray35", "gray78"))
+
+        self.preview_canvas.create_arc(
+            center_x - spinner_size / 2,
+            center_y - spinner_size / 2 - 14,
+            center_x + spinner_size / 2,
+            center_y + spinner_size / 2 - 14,
+            start=self.loading_overlay_angle,
+            extent=290,
+            style=tk.ARC,
+            outline=spinner_color,
+            width=4,
+            tags="preview-loading",
+        )
+        self.preview_canvas.create_text(
+            center_x,
+            center_y + 22,
+            text="Loading preview",
+            fill=text_color,
+            font=("SF Pro Display", 14, "bold"),
+            tags="preview-loading",
+        )
+
+    def display_preview_image(
+        self,
+        image: Image.Image,
+        rel_x: float = 0.5,
+        rel_y: float = 0.5,
+        cache_key: tuple[object, ...] | None = None,
+    ):
+        canvas_width = max(self.preview_canvas.winfo_width(), 1)
+        canvas_height = max(self.preview_canvas.winfo_height(), 1)
+        display_width = image.width
+        display_height = image.height
+        self.preview_photo = self.get_preview_texture(cache_key, image)
+
+        region_width = max(canvas_width, display_width)
+        region_height = max(canvas_height, display_height)
+        origin_x = max((region_width - display_width) / 2, 0)
+        origin_y = max((region_height - display_height) / 2, 0)
+
+        self.preview_canvas.delete("all")
+        self.preview_canvas.configure(scrollregion=(0, 0, region_width, region_height))
+        self.preview_canvas.create_image(origin_x, origin_y, anchor="nw", image=self.preview_photo)
+        self.restore_view_center(rel_x, rel_y)
+        if self.loading_overlay_visible:
+            self.render_loading_overlay()
 
     def get_thumbnail_photo(self, path: Path) -> ImageTk.PhotoImage | None:
         if path in self.thumbnail_cache:
@@ -678,23 +1069,66 @@ class App(DnDCTk):
         if current is None:
             return
 
-        if reload_image or self.preview_source_path != current:
-            try:
-                with Image.open(current) as image:
-                    prepared = ImageOps.exif_transpose(image).convert("RGBA")
-                    self.preview_source_image = prepared.copy()
-            except OSError:
-                self.clear_preview("Preview Error")
-                return
-            self.preview_source_path = current
-
         canvas_width = self.preview_canvas.winfo_width()
         canvas_height = self.preview_canvas.winfo_height()
         if canvas_width < 8 or canvas_height < 8:
             self.schedule_preview_refresh()
             return
 
+        self.preview_pipeline.set_viewport(canvas_width, canvas_height)
         rel_x, rel_y = self.get_view_center() if preserve_view else (0.5, 0.5)
+        mode = "fit" if self.zoom_factor == 1.0 and not preserve_view else "zoom"
+        request_key = (current, canvas_width, canvas_height, mode, self.settings.progressive_preview)
+        if request_key != self.preview_request_key:
+            self.preview_request_key = request_key
+            self.preview_request_id = self.preview_pipeline.start_preview_request(
+                current,
+                self.session.active_index,
+                progressive_enabled=self.settings.progressive_preview,
+            )
+
+        if mode == "fit":
+            lookup = self.preview_pipeline.get_best_preview(current)
+            if lookup.failed:
+                self.hide_loading_overlay()
+                self.clear_preview("Preview Error")
+                return
+
+            if lookup.image is not None and lookup.stage is not None:
+                self.preview_source_path = None
+                self.preview_source_image = None
+                texture_key = (current, lookup.stage, lookup.image.width, lookup.image.height)
+                self.display_preview_image(lookup.image, rel_x=rel_x, rel_y=rel_y, cache_key=texture_key)
+                if lookup.stage == "full":
+                    self.hide_loading_overlay()
+                    return
+                self.schedule_preview_poll()
+                self.schedule_loading_overlay_delay(request_key)
+                return
+
+            self.clear_preview("")
+            self.schedule_preview_poll()
+            self.schedule_loading_overlay_delay(request_key)
+            return
+
+        if reload_image or self.preview_source_path != current or self.preview_source_image is None:
+            if self.preview_pipeline.has_source(current):
+                self.preview_source_image = self.preview_pipeline.get_cached_source_copy(current)
+                self.preview_source_path = current if self.preview_source_image is not None else None
+            else:
+                lookup = self.preview_pipeline.get_best_preview(current)
+                if lookup.image is not None and lookup.stage is not None and self.settings.progressive_preview:
+                    texture_key = (current, lookup.stage, lookup.image.width, lookup.image.height)
+                    self.display_preview_image(lookup.image, rel_x=rel_x, rel_y=rel_y, cache_key=texture_key)
+                else:
+                    self.clear_preview("")
+                self.schedule_preview_poll()
+                self.schedule_loading_overlay_delay(request_key)
+                return
+
+        if self.preview_source_image is None:
+            self.clear_preview("Preview Error")
+            return
 
         image_width = self.preview_source_image.width
         image_height = self.preview_source_image.height
@@ -704,17 +1138,9 @@ class App(DnDCTk):
         display_height = max(int(round(image_height * display_scale)), 1)
 
         resized = self.preview_source_image.resize((display_width, display_height), Image.Resampling.LANCZOS)
-        self.preview_photo = ImageTk.PhotoImage(resized)
-
-        region_width = max(canvas_width, display_width)
-        region_height = max(canvas_height, display_height)
-        origin_x = max((region_width - display_width) / 2, 0)
-        origin_y = max((region_height - display_height) / 2, 0)
-
-        self.preview_canvas.delete("all")
-        self.preview_canvas.configure(scrollregion=(0, 0, region_width, region_height))
-        self.preview_canvas.create_image(origin_x, origin_y, anchor="nw", image=self.preview_photo)
-        self.restore_view_center(rel_x, rel_y)
+        texture_key = (current, "zoom", display_width, display_height, round(self.zoom_factor, 3))
+        self.display_preview_image(resized, rel_x=rel_x, rel_y=rel_y, cache_key=texture_key)
+        self.hide_loading_overlay()
 
     def start_pan(self, event):
         self.preview_canvas.scan_mark(event.x, event.y)
