@@ -20,7 +20,7 @@ def discover_extensions(source_dir: Path) -> tuple[str, ...]:
             {
                 path.suffix.lower()
                 for path in source_dir.iterdir()
-                if path.is_file() and path.suffix
+                if _is_direct_regular_file(path) and path.suffix
             }
         )
     )
@@ -35,7 +35,7 @@ def build_photo_groups(
     buckets: dict[str, list[Path]] = {}
 
     for path in source_dir.iterdir():
-        if path.is_file():
+        if _is_direct_regular_file(path):
             buckets.setdefault(path.stem, []).append(path)
 
     groups: list[PhotoGroup] = []
@@ -58,3 +58,7 @@ def build_photo_groups(
 
 def _filename_key(path: Path) -> tuple[str, str]:
     return path.name.lower(), path.name
+
+
+def _is_direct_regular_file(path: Path) -> bool:
+    return path.is_file() and not path.is_symlink()

@@ -78,6 +78,24 @@ class PhotoGroupTests(unittest.TestCase):
 
             self.assertEqual(discover_extensions(source), (".jpg", ".xmp"))
 
+    def test_groups_and_extensions_exclude_direct_child_file_symlinks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "source"
+            outside = Path(temp) / "outside.jpg"
+            source.mkdir()
+            (source / "photo.jpg").write_bytes(b"photo")
+            outside.write_bytes(b"outside")
+            alias = source / "photo.cr3"
+            try:
+                alias.symlink_to(outside)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+
+            groups = build_photo_groups(source, {".jpg", ".cr3"}, {".jpg"})
+
+            self.assertEqual(discover_extensions(source), (".jpg",))
+            self.assertEqual(groups, [PhotoGroup("photo", (source / "photo.jpg",), source / "photo.jpg")])
+
     def test_photo_group_is_immutable(self):
         group = PhotoGroup("A", (Path("A.jpg"),), Path("A.jpg"))
 
