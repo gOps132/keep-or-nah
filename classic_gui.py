@@ -11,6 +11,8 @@ from PIL import Image, ImageOps, ImageTk
 from app_settings import AppSettings, MAX_PREVIEW_CACHE_BUDGET_MB, MIN_PREVIEW_CACHE_BUDGET_MB
 from photo_session import PhotoSession, PhotoSessionError
 from preview_pipeline import PreviewPipeline
+from session_persistence import SessionLifecycle
+from session_startup import choose_source_directory, initialize_gui_session, show_session_warning
 
 
 class ClassicApp(tk.Tk):
@@ -21,9 +23,13 @@ class ClassicApp(tk.Tk):
         self.geometry("1100x780")
         self.minsize(920, 660)
         self.settings = AppSettings.load()
-        self.session = PhotoSession()
+        self.session_lifecycle = SessionLifecycle(
+            error_handler=lambda message: show_session_warning(self, message)
+        )
+        self.session = self.session_lifecycle.restore() or PhotoSession()
+        self.restored_startup_session = bool(self.session.queue)
         self.preview_pipeline = PreviewPipeline(cache_budget_mb=self.settings.preview_cache_budget_mb)
-        self.action_mode_var = tk.StringVar(value="move")
+        self.action_mode_var = tk.StringVar(value=self.session.action_mode)
         self.preview_photo = None
         self.preview_source_image = None
         self.preview_source_path = None
@@ -70,8 +76,16 @@ class ClassicApp(tk.Tk):
         self.bind_shortcuts()
         self.protocol("WM_DELETE_WINDOW", self.handle_window_close)
         self.refresh_ui()
+        self.after_idle(self.initialize_startup_session)
+
+    def initialize_startup_session(self):
+        initialize_gui_session(self)
+
+    def persist_session(self):
+        return self.session_lifecycle.persist(self.session)
 
     def handle_window_close(self):
+        self.persist_session()
         self.destroy()
 
     def destroy(self):
@@ -446,10 +460,9 @@ class ClassicApp(tk.Tk):
         return widget_class not in {"Entry", "TEntry", "Text", "Spinbox", "TSpinbox"}
 
     def choose_source_folder(self):
-        path = filedialog.askdirectory(title="Choose Source Folder", initialdir=self.get_initial_directory())
-        if not path:
-            return
+        choose_source_directory(self)
 
+    def replace_source_folder(self, path):
         self.reset_preview_request_state()
         self.session.set_source_dir(path)
         self.last_browsed_dir = Path(path)
@@ -462,6 +475,7 @@ class ClassicApp(tk.Tk):
         self.rendered_thumbnail_range = (-1, -1)
         self.rendered_active_index = None
         self.session.reset_queue()
+        self.session_lifecycle.clear()
         self.preview_pipeline.reset(self.session.queue)
         self.reset_zoom_state()
         self.clear_preview()
@@ -474,6 +488,7 @@ class ClassicApp(tk.Tk):
 
         self.session.set_keep_dir(path)
         self.last_browsed_dir = Path(path)
+        self.persist_session()
         self.refresh_ui()
 
     def choose_nah_folder(self):
@@ -483,6 +498,7 @@ class ClassicApp(tk.Tk):
 
         self.session.set_nah_dir(path)
         self.last_browsed_dir = Path(path)
+        self.persist_session()
         self.refresh_ui()
 
     def get_initial_directory(self) -> str | None:
@@ -499,6 +515,7 @@ class ClassicApp(tk.Tk):
 
     def handle_action_mode_change(self):
         self.session.set_action_mode(self.action_mode_var.get())
+        self.persist_session()
         self.refresh_ui()
 
     def select_photo_at_index(self, index: int):
@@ -509,6 +526,7 @@ class ClassicApp(tk.Tk):
         self.preview_source_path = None
         self.preview_source_image = None
         self.reset_preview_request_state()
+        self.persist_session()
         self.refresh_ui()
         self.refresh_preview()
 
@@ -520,6 +538,7 @@ class ClassicApp(tk.Tk):
         self.preview_source_path = None
         self.preview_source_image = None
         self.reset_preview_request_state()
+        self.persist_session()
         self.refresh_ui()
         self.refresh_preview()
 
@@ -532,6 +551,7 @@ class ClassicApp(tk.Tk):
         self.preview_pipeline.reset(self.session.queue)
         self.prune_preview_texture_cache(set(self.session.queue))
         self.reset_preview_request_state()
+        self.persist_session()
 
         if count == 0:
             self.reset_zoom_state()
@@ -562,6 +582,7 @@ class ClassicApp(tk.Tk):
         self.preview_source_path = None
         self.preview_source_image = None
         self.reset_preview_request_state()
+        self.persist_session()
         self.refresh_ui()
         self.refresh_preview()
 
@@ -583,6 +604,7 @@ class ClassicApp(tk.Tk):
         self.preview_source_path = None
         self.preview_source_image = None
         self.reset_preview_request_state()
+        self.persist_session()
         self.refresh_ui()
         self.refresh_preview()
 

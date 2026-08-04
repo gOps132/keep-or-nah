@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import math
 import shutil
 from typing import Literal
 
@@ -65,6 +66,144 @@ class PhotoSession:
         self.total_loaded = 0
         self.keep_count = 0
         self.nah_count = 0
+
+    def to_snapshot(self) -> dict[str, object]:
+        return {
+            "source_dir": str(self.source_dir) if self.source_dir is not None else None,
+            "keep_dir": str(self.keep_dir) if self.keep_dir is not None else None,
+            "nah_dir": str(self.nah_dir) if self.nah_dir is not None else None,
+            "action_mode": self.action_mode,
+            "queue": [str(path) for path in self.queue],
+            "active_index": self.active_index,
+            "total_loaded": self.total_loaded,
+            "keep_count": self.keep_count,
+            "nah_count": self.nah_count,
+            "history": [
+                {
+                    "decision": record.decision,
+                    "action_mode": record.action_mode,
+                    "source": str(record.source),
+                    "destination": str(record.destination),
+                    "index": record.index,
+                }
+                for record in self.history
+            ],
+        }
+
+    @classmethod
+    def from_snapshot(cls, data: object) -> "PhotoSession | None":
+        if not isinstance(data, dict):
+            return None
+        try:
+            source_value = data.get("source_dir")
+            source_dir = Path(source_value).expanduser() if isinstance(source_value, str) else None
+            if source_dir is None or not source_dir.is_dir():
+                return None
+
+            raw_queue = data.get("queue", [])
+            if not isinstance(raw_queue, list):
+                return None
+            source_root = source_dir.resolve()
+            valid_queue_items: list[tuple[int, Path]] = []
+            for index, value in enumerate(raw_queue):
+                if not isinstance(value, str):
+                    continue
+                path = Path(value).expanduser()
+                if path.resolve(strict=False).parent != source_root:
+                    return None
+                if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS:
+                    valid_queue_items.append((index, path))
+            if not valid_queue_items:
+                return None
+            queue = [path for _, path in valid_queue_items]
+            original_active_index = min(
+                cls._snapshot_int(data.get("active_index", 0), 0),
+                len(raw_queue) - 1,
+            )
+            nearest_original_index, _ = min(
+                valid_queue_items,
+                key=lambda item: (abs(item[0] - original_active_index), item[0]),
+            )
+
+            mode = data.get("action_mode", "move")
+            if mode not in {"move", "copy"}:
+                return None
+
+            session = cls()
+            session.source_dir = source_dir
+            session.keep_dir = cls._optional_path(data.get("keep_dir"))
+            session.nah_dir = cls._optional_path(data.get("nah_dir"))
+            session.action_mode = mode
+            session.queue = queue
+            session.active_index = next(
+                index for index, (original_index, _) in enumerate(valid_queue_items)
+                if original_index == nearest_original_index
+            )
+            session.total_loaded = max(cls._snapshot_int(data.get("total_loaded", len(queue)), len(queue)), len(queue))
+            session.keep_count = cls._snapshot_int(data.get("keep_count", 0), 0)
+            session.nah_count = cls._snapshot_int(data.get("nah_count", 0), 0)
+            session.history = cls._history_from_snapshot(
+                data.get("history", []),
+                source_dir=source_dir,
+                keep_dir=session.keep_dir,
+                nah_dir=session.nah_dir,
+            )
+            return session
+        except (OSError, OverflowError, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _snapshot_int(value: object, minimum: int) -> int:
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("Snapshot number must be finite")
+        return max(int(value), minimum)
+
+    @staticmethod
+    def _optional_path(value: object) -> Path | None:
+        return Path(value).expanduser() if isinstance(value, str) and value else None
+
+    @staticmethod
+    def _history_from_snapshot(
+        value: object,
+        *,
+        source_dir: Path,
+        keep_dir: Path | None,
+        nah_dir: Path | None,
+    ) -> list[ActionRecord]:
+        if not isinstance(value, list):
+            return []
+        history: list[ActionRecord] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            try:
+                decision = item["decision"]
+                action_mode = item["action_mode"]
+                if decision not in {"keep", "nah"} or action_mode not in {"move", "copy"}:
+                    continue
+                source = Path(item["source"]).expanduser()
+                destination = Path(item["destination"]).expanduser()
+                destination_root = keep_dir if decision == "keep" else nah_dir
+                if destination_root is None:
+                    continue
+                if not PhotoSession._is_direct_child(source, source_dir):
+                    continue
+                if not PhotoSession._is_direct_child(destination, destination_root):
+                    continue
+                history.append(ActionRecord(
+                    decision=decision,
+                    action_mode=action_mode,
+                    source=source,
+                    destination=destination,
+                    index=PhotoSession._snapshot_int(item["index"], 0),
+                ))
+            except (KeyError, OverflowError, TypeError, ValueError):
+                continue
+        return history
+
+    @staticmethod
+    def _is_direct_child(path: Path, root: Path) -> bool:
+        return path.resolve(strict=False).parent == root.resolve(strict=False)
 
     @property
     def active_photo(self) -> Path | None:
