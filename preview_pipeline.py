@@ -8,7 +8,9 @@ from queue import Empty, PriorityQueue, Queue
 import threading
 from typing import Literal, Sequence
 
-from PIL import Image, ImageOps
+from PIL import Image
+
+from preview_strategies import DEFAULT_PREVIEW_STRATEGY_REGISTRY, PreviewStrategyRegistry
 
 
 logger = logging.getLogger(__name__)
@@ -24,13 +26,14 @@ class PreviewLookup:
     image: Image.Image | None
     stage: PreviewStage | None
     failed: bool = False
+    unavailable: bool = False
 
 
 @dataclass(frozen=True)
 class CompletedPreview:
     path: Path
     request_id: int
-    stage: Literal["source", "fast", "full", "error"]
+    stage: Literal["source", "fast", "full", "unavailable", "error"]
 
 
 @dataclass(order=True)
@@ -44,7 +47,13 @@ class PreviewTask:
 
 
 class PreviewPipeline:
-    def __init__(self, window_radius: int = 2, cache_budget_mb: int = 256, max_workers: int = 1) -> None:
+    def __init__(
+        self,
+        window_radius: int = 2,
+        cache_budget_mb: int = 256,
+        max_workers: int = 1,
+        preview_registry: PreviewStrategyRegistry | None = None,
+    ) -> None:
         self.base_window_radius = max(window_radius, 0)
         self.window_radius = self.base_window_radius
         self.paths: tuple[Path, ...] = ()
@@ -55,6 +64,8 @@ class PreviewPipeline:
         self.render_cache: OrderedDict[RenderKey, Image.Image] = OrderedDict()
         self.render_cache_bytes = 0
         self.failed_preview_keys: set[PreviewKey] = set()
+        self.unavailable_preview_keys: set[PreviewKey] = set()
+        self.preview_registry = preview_registry or DEFAULT_PREVIEW_STRATEGY_REGISTRY
 
         self.cache_budget_mb = 0
         self.source_cache_limit_bytes = 0
@@ -99,6 +110,9 @@ class PreviewPipeline:
             self._prune_source_cache_locked(allowed)
             self._prune_render_cache_locked(allowed)
             self.failed_preview_keys = {key for key in self.failed_preview_keys if key[0] in allowed}
+            self.unavailable_preview_keys = {
+                key for key in self.unavailable_preview_keys if key[0] in allowed
+            }
 
     def set_viewport(self, width: int, height: int) -> None:
         self.viewport = (max(int(width), 0), max(int(height), 0))
@@ -145,7 +159,12 @@ class PreviewPipeline:
                 self.render_cache.move_to_end(fast_key)
                 return PreviewLookup(image=fast_image, stage="fast")
 
-            return PreviewLookup(image=None, stage=None, failed=key in self.failed_preview_keys)
+            return PreviewLookup(
+                image=None,
+                stage=None,
+                failed=key in self.failed_preview_keys,
+                unavailable=key in self.unavailable_preview_keys,
+            )
 
     def get_cached_source_copy(self, path: Path) -> Image.Image | None:
         with self._lock:
@@ -259,11 +278,16 @@ class PreviewPipeline:
             if cached is not None:
                 self.source_cache.move_to_end(path)
                 return cached
+            if self._preview_key(path, viewport) in self.unavailable_preview_keys:
+                return None
 
         try:
             source = self._load_source(path)
         except OSError:
             self._mark_failed(path, viewport, request_id)
+            return None
+        if source is None:
+            self._mark_unavailable(path, viewport, request_id)
             return None
 
         self._store_source(path, source)
@@ -296,6 +320,7 @@ class PreviewPipeline:
             self.render_cache[key] = preview
             self.render_cache_bytes += preview_bytes
             self.failed_preview_keys.discard((path, viewport[0], viewport[1]))
+            self.unavailable_preview_keys.discard((path, viewport[0], viewport[1]))
             self._trim_render_cache_locked()
 
     def _mark_failed(self, path: Path, viewport: tuple[int, int], request_id: int) -> None:
@@ -303,7 +328,16 @@ class PreviewPipeline:
         if key is not None:
             with self._lock:
                 self.failed_preview_keys.add(key)
+                self.unavailable_preview_keys.discard(key)
         self._completed.put(CompletedPreview(path=path, request_id=request_id, stage="error"))
+
+    def _mark_unavailable(self, path: Path, viewport: tuple[int, int], request_id: int) -> None:
+        key = self._preview_key(path, viewport)
+        if key is not None:
+            with self._lock:
+                self.unavailable_preview_keys.add(key)
+                self.failed_preview_keys.discard(key)
+        self._completed.put(CompletedPreview(path=path, request_id=request_id, stage="unavailable"))
 
     def _has_render(self, path: Path, viewport: tuple[int, int], stage: PreviewStage) -> bool:
         key = self._preview_key(path, viewport)
@@ -353,11 +387,8 @@ class PreviewPipeline:
         channels = len(image.getbands()) or 4
         return image.width * image.height * channels
 
-    @staticmethod
-    def _load_source(path: Path) -> Image.Image:
-        with Image.open(path) as image:
-            prepared = ImageOps.exif_transpose(image).convert("RGBA")
-            return prepared.copy()
+    def _load_source(self, path: Path) -> Image.Image | None:
+        return self.preview_registry.for_path(path).load(path)
 
     @staticmethod
     def _render_fit_preview(source: Image.Image, viewport: tuple[int, int], stage: PreviewStage) -> Image.Image:
