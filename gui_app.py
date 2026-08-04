@@ -781,9 +781,11 @@ class App(DnDCTk):
             self.schedule_preview_poll()
 
     def preview_request_needs_more_work(self, current: Path) -> bool:
+        lookup = self.preview_pipeline.get_best_preview(current)
+        if lookup.unavailable:
+            return False
         fit_mode = self.zoom_factor == 1.0
         if fit_mode:
-            lookup = self.preview_pipeline.get_best_preview(current)
             return not lookup.failed and lookup.stage != "full"
         return not self.preview_pipeline.has_source(current)
 
@@ -1109,8 +1111,13 @@ class App(DnDCTk):
                 progressive_enabled=self.settings.progressive_preview,
             )
 
+        lookup = self.preview_pipeline.get_best_preview(current)
+        if lookup.unavailable:
+            self.hide_loading_overlay()
+            self.clear_preview(f"Preview not available\n{current.name} ({current.suffix})")
+            return
+
         if mode == "fit":
-            lookup = self.preview_pipeline.get_best_preview(current)
             if lookup.failed:
                 self.hide_loading_overlay()
                 self.clear_preview("Preview Error")
@@ -1138,7 +1145,6 @@ class App(DnDCTk):
                 self.preview_source_image = self.preview_pipeline.get_cached_source_copy(current)
                 self.preview_source_path = current if self.preview_source_image is not None else None
             else:
-                lookup = self.preview_pipeline.get_best_preview(current)
                 if lookup.image is not None and lookup.stage is not None and self.settings.progressive_preview:
                     texture_key = (current, lookup.stage, lookup.image.width, lookup.image.height)
                     self.display_preview_image(lookup.image, rel_x=rel_x, rel_y=rel_y, cache_key=texture_key)

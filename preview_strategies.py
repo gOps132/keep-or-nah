@@ -19,7 +19,7 @@ class PillowPreviewStrategy:
 
     def load(self, path: Path) -> Image.Image:
         with Image.open(path) as image:
-            return ImageOps.exif_transpose(image).convert("RGB")
+            return ImageOps.exif_transpose(image).convert("RGBA")
 
 
 class UnavailablePreviewStrategy:

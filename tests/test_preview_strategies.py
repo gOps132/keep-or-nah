@@ -3,10 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from PIL import Image
 
+from classic_gui import ClassicApp
+from gui_app import App
 from preview_pipeline import PreviewPipeline
+from preview_pipeline import PreviewLookup
 from preview_strategies import (
     PillowPreviewStrategy,
     PreviewStrategyRegistry,
@@ -23,7 +28,7 @@ class PreviewStrategyRegistryTests(unittest.TestCase):
         self.assertIsInstance(registry.for_path(Path("A.JPG")), PillowPreviewStrategy)
         self.assertIsInstance(registry.for_path(Path("A.cr3")), UnavailablePreviewStrategy)
 
-    def test_pillow_strategy_transposes_exif_and_converts_to_rgb(self) -> None:
+    def test_pillow_strategy_transposes_exif_and_converts_to_rgba(self) -> None:
         path = Path(self._testMethodName).with_suffix(".jpg")
         self.addCleanup(path.unlink, missing_ok=True)
         exif = Image.Exif()
@@ -32,8 +37,18 @@ class PreviewStrategyRegistryTests(unittest.TestCase):
 
         image = PillowPreviewStrategy().load(path)
 
-        self.assertEqual(image.mode, "RGB")
+        self.assertEqual(image.mode, "RGBA")
         self.assertEqual(image.size, (3, 2))
+
+    def test_pillow_strategy_preserves_transparent_png_alpha(self) -> None:
+        path = Path(self._testMethodName).with_suffix(".png")
+        self.addCleanup(path.unlink, missing_ok=True)
+        Image.new("RGBA", (2, 3), (255, 0, 0, 128)).save(path)
+
+        image = PillowPreviewStrategy().load(path)
+
+        self.assertEqual(image.mode, "RGBA")
+        self.assertEqual(image.getpixel((0, 0))[3], 128)
 
 
 class PreviewPipelineUnavailableTests(unittest.TestCase):
@@ -66,6 +81,62 @@ class PreviewPipelineUnavailableTests(unittest.TestCase):
                 return completed
             time.sleep(0.01)
         self.fail("Preview pipeline did not report a completion")
+
+
+class UnavailablePreviewFrontendTests(unittest.TestCase):
+    def test_both_frontends_stop_requesting_unavailable_previews(self) -> None:
+        path = Path("A.cr3")
+        pipeline = SimpleNamespace(
+            get_best_preview=lambda _path: PreviewLookup(None, None, unavailable=True),
+            has_source=lambda _path: False,
+        )
+
+        for frontend in (App, ClassicApp):
+            for zoom_factor in (1.0, 2.0):
+                with self.subTest(frontend=frontend.__name__, zoom_factor=zoom_factor):
+                    fake = SimpleNamespace(zoom_factor=zoom_factor, preview_pipeline=pipeline)
+                    self.assertFalse(frontend.preview_request_needs_more_work(fake, path))
+
+    def test_both_frontends_render_unavailable_message_in_fit_and_zoom_modes(self) -> None:
+        path = Path("A.cr3")
+        for frontend in (App, ClassicApp):
+            for preserve_view in (False, True):
+                with self.subTest(frontend=frontend.__name__, preserve_view=preserve_view):
+                    fake = self._refresh_fake(path, preserve_view)
+
+                    frontend.refresh_preview(fake, preserve_view=preserve_view)
+
+                    fake.hide_loading_overlay.assert_called_once_with()
+                    fake.clear_preview.assert_called_once_with(
+                        "Preview not available\nA.cr3 (.cr3)"
+                    )
+                    fake.schedule_preview_poll.assert_not_called()
+                    fake.schedule_loading_overlay_delay.assert_not_called()
+
+    @staticmethod
+    def _refresh_fake(path: Path, preserve_view: bool) -> SimpleNamespace:
+        mode = "zoom" if preserve_view else "fit"
+        pipeline = SimpleNamespace(
+            set_viewport=Mock(),
+            get_best_preview=lambda _path: PreviewLookup(None, None, unavailable=True),
+            has_source=lambda _path: False,
+        )
+        return SimpleNamespace(
+            preview_refresh_job="pending",
+            session=SimpleNamespace(active_photo=path, active_index=0),
+            preview_canvas=SimpleNamespace(winfo_width=lambda: 100, winfo_height=lambda: 100),
+            preview_pipeline=pipeline,
+            get_view_center=lambda: (0.5, 0.5),
+            zoom_factor=2.0 if preserve_view else 1.0,
+            settings=SimpleNamespace(progressive_preview=True),
+            preview_request_key=(path, 100, 100, mode, True),
+            preview_source_path=None,
+            preview_source_image=None,
+            hide_loading_overlay=Mock(),
+            clear_preview=Mock(),
+            schedule_preview_poll=Mock(),
+            schedule_loading_overlay_delay=Mock(),
+        )
 
 
 if __name__ == "__main__":
