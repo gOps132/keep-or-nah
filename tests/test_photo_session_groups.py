@@ -406,6 +406,63 @@ class PhotoSessionGroupTests(unittest.TestCase):
         session.load_queue()
         self.assertEqual(session.enabled_extensions, {".cr3", ".xmp"})
 
+    def test_filter_reconciles_new_same_stem_companion_into_group_decision(self):
+        for action_mode in ("copy", "move"):
+            with self.subTest(action_mode=action_mode):
+                case = self.root / action_mode
+                source = case / "source"
+                keep = case / "keep"
+                source.mkdir(parents=True)
+                keep.mkdir()
+                jpg = source / "IMG.jpg"
+                jpg.write_bytes(b"jpg")
+                session = PhotoSession()
+                session.set_source_dir(source)
+                session.set_keep_dir(keep)
+                session.set_action_mode(action_mode)
+                session.load_queue()
+                xmp = source / "IMG.xmp"
+                xmp.write_bytes(b"metadata")
+
+                session.apply_extension_filter({".xmp"})
+
+                self.assertEqual(session.active_photo, xmp)
+                self.assertEqual(session.active_group.members, (jpg, xmp))
+                result = session.decide("keep")
+                self.assertEqual([item.source for item in result.files], [jpg, xmp])
+                self.assertTrue((keep / "IMG.jpg").is_file())
+                self.assertTrue((keep / "IMG.xmp").is_file())
+
+    def test_filter_reconciliation_adds_new_stem_but_not_completed_copy_stem(self):
+        self.write("A.jpg", b"a")
+        self.keep.mkdir()
+        session = self.make_session(action_mode="copy")
+        session.load_queue()
+        session.decide("keep")
+        self.write("B.jpg", b"b")
+
+        session.apply_extension_filter({".jpg"})
+
+        self.assertEqual(session.completed_stems, {"A"})
+        self.assertEqual([group.stem for group in session.pending_groups], ["B"])
+        self.assertEqual([group.stem for group in session.queue], ["B"])
+
+    def test_undo_and_reload_clear_completed_stem_tracking(self):
+        self.write("A.jpg")
+        self.keep.mkdir()
+        session = self.make_session(action_mode="copy")
+        session.load_queue()
+        session.decide("keep")
+
+        self.assertEqual(session.completed_stems, {"A"})
+        session.undo()
+        self.assertEqual(session.completed_stems, set())
+
+        session.decide("keep")
+        session.load_queue()
+        self.assertEqual(session.completed_stems, set())
+        self.assertEqual([group.stem for group in session.queue], ["A"])
+
     def test_move_group_uses_one_collision_suffix_and_undoes_every_member(self):
         raw = self.write("IMG.cr3", b"raw")
         jpg = self.write("IMG.jpg", b"jpg")

@@ -42,6 +42,7 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
                 }
                 for group in session.pending_groups
             ],
+            "completed_stems": sorted(session.completed_stems),
             "active_index": session.active_index,
             "active_stem": (
                 session.active_group.stem if session.active_group is not None else None
@@ -137,6 +138,7 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             session.apply_extension_filter({".cr3"})
 
             self.assertEqual(session.queue, [])
+            self.assertEqual(session.completed_stems, {"A"})
             self.assertEqual([group.stem for group in session.pending_groups], ["B"])
 
             store = SessionPersistence(root / "session.json")
@@ -146,10 +148,39 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             restored = SessionLifecycle(store).restore()
             self.assertIsNotNone(restored)
             self.assertEqual(restored.queue, [])
+            self.assertEqual(restored.completed_stems, {"A"})
             self.assertEqual([group.stem for group in restored.pending_groups], ["B"])
             self.assertTrue(session_has_pending_photos(restored))
             restored.apply_extension_filter({".jpg"})
             self.assertEqual([group.stem for group in restored.queue], ["B"])
+
+    def test_version_two_rejects_invalid_or_pending_completed_stems(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "source"
+            source.mkdir()
+            (source / "A.jpg").write_bytes(b"jpg")
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.load_queue()
+            snapshot = session.to_snapshot()
+
+            invalid_values = (
+                "A",
+                ["A", "A"],
+                [""],
+                [1],
+                ["../A"],
+                ["A/B"],
+                ["A\\B"],
+                ["A"],
+            )
+            for completed_stems in invalid_values:
+                with self.subTest(completed_stems=completed_stems):
+                    self.assertIsNone(
+                        PhotoSession.from_snapshot(
+                            {**snapshot, "completed_stems": completed_stems}
+                        )
+                    )
 
     def test_reload_counts_hidden_pending_group_and_round_trips_snapshot(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -495,6 +526,32 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             restored = PhotoSession.from_snapshot(snapshot)
 
             self.assertFalse(restored.can_undo)
+
+    def test_old_version_two_derives_completed_stem_from_non_undoable_history(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            keep = root / "keep"
+            source.mkdir()
+            (source / "A_done.jpg").write_bytes(b"done")
+            (source / "Z_remaining.jpg").write_bytes(b"remaining")
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.set_keep_dir(keep)
+            session.set_action_mode("copy")
+            session.load_queue()
+            result = session.decide("keep")
+            snapshot = session.to_snapshot()
+            snapshot.pop("completed_stems")
+            result.destination.unlink()
+
+            restored = PhotoSession.from_snapshot(snapshot)
+
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.history, [])
+            self.assertEqual(restored.completed_stems, {"A_done"})
+            restored.apply_extension_filter({".jpg"})
+            self.assertEqual([group.stem for group in restored.queue], ["Z_remaining"])
 
     def test_version_two_drops_missing_active_group_and_selects_nearest_earlier(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -234,6 +234,7 @@ class ViewFilterApplicationTests(unittest.TestCase):
         session.apply_prepared_extension_filter.assert_called_once_with(
             (".cr3",),
             {".cr3"},
+            (),
         )
         app.preview_pipeline.reset.assert_called_once_with((Path("IMG.cr3"),))
         self.assertEqual(app.preview_texture_cache, OrderedDict())

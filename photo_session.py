@@ -10,6 +10,8 @@ import stat
 import tempfile
 from typing import Literal
 
+from PIL import Image
+
 from photo_groups import PhotoGroup, build_photo_groups, discover_extensions
 
 
@@ -24,6 +26,18 @@ SUPPORTED_IMAGE_EXTENSIONS = {
     ".tiff",
     ".webp",
 }
+
+
+def pillow_previewable_extensions() -> frozenset[str]:
+    """Return desired image suffixes backed by a loaded Pillow decoder."""
+    Image.init()
+    open_formats = set(Image.OPEN)
+    return frozenset(
+        extension.lower()
+        for extension, format_name in Image.registered_extensions().items()
+        if extension.lower() in SUPPORTED_IMAGE_EXTENSIONS
+        and format_name in open_formats
+    )
 
 Decision = Literal["keep", "nah"]
 ActionMode = Literal["move", "copy"]
@@ -165,13 +179,28 @@ class ActionRecord:
 class PhotoSession:
     snapshot_version = 2
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        previewable_extensions: set[str] | frozenset[str] | None = None,
+    ) -> None:
+        runtime_previewable = (
+            pillow_previewable_extensions()
+            if previewable_extensions is None
+            else previewable_extensions
+        )
+        self.previewable_extensions = frozenset(
+            extension.lower()
+            for extension in runtime_previewable
+            if extension.lower() in SUPPORTED_IMAGE_EXTENSIONS
+        )
         self.source_dir: Path | None = None
         self.keep_dir: Path | None = None
         self.nah_dir: Path | None = None
         self.action_mode: ActionMode = "move"
         self.queue: list[PhotoGroup | Path] = []
         self.pending_groups: list[PhotoGroup] = []
+        self.completed_stems: set[str] = set()
         self.active_index = 0
         self.history: list[ActionRecord] = []
         self.total_loaded = 0
@@ -195,6 +224,7 @@ class PhotoSession:
             "pending_groups": [
                 self._group_to_snapshot(group) for group in self.pending_groups
             ],
+            "completed_stems": sorted(self.completed_stems),
             "active_index": self.active_index,
             "active_stem": (
                 self.active_group.stem if self.active_group is not None else None
@@ -253,6 +283,7 @@ class PhotoSession:
 
     @classmethod
     def _from_grouped_snapshot(cls, data: dict[object, object]) -> PhotoSession | None:
+        previewable_extensions = pillow_previewable_extensions()
         source_dir = cls._snapshot_source_root(data.get("source_dir"))
         keep_dir = cls._optional_path(data.get("keep_dir"))
         nah_dir = cls._optional_path(data.get("nah_dir"))
@@ -261,6 +292,23 @@ class PhotoSession:
         enabled = set(cls._snapshot_extensions(data.get("enabled_extensions")))
         if not enabled.issubset(available):
             return None
+        raw_completed = data.get("completed_stems")
+        if raw_completed is not None:
+            if (
+                not isinstance(raw_completed, list)
+                or any(
+                    not cls._is_safe_completed_stem(stem)
+                    for stem in raw_completed
+                )
+                or len(set(raw_completed)) != len(raw_completed)
+            ):
+                return None
+            declared_completed = set(raw_completed)
+        else:
+            declared_completed = cls._safe_raw_history_stems(
+                data.get("history"),
+                source_dir=source_dir,
+            )
 
         raw_queue = data.get("queue")
         if not isinstance(raw_queue, list):
@@ -283,6 +331,7 @@ class PhotoSession:
                     item,
                     source_dir=source_dir,
                     enabled_extensions=enabled,
+                    previewable_extensions=previewable_extensions,
                 ),
             )
             for index, item in enumerate(raw_queue)
@@ -306,6 +355,7 @@ class PhotoSession:
                 item,
                 source_dir=source_dir,
                 enabled_extensions=set(available),
+                previewable_extensions=previewable_extensions,
             )
             for item in raw_pending
         ]
@@ -328,7 +378,7 @@ class PhotoSession:
         if total_loaded < keep_count + nah_count + len(raw_pending):
             return None
 
-        session = cls()
+        session = cls(previewable_extensions=previewable_extensions)
         session.source_dir = source_dir
         session.keep_dir = keep_dir
         session.nah_dir = nah_dir
@@ -372,11 +422,50 @@ class PhotoSession:
             keep_dir=keep_dir,
             nah_dir=nah_dir,
         )
-        if {group.stem for group in session.pending_groups} & {
-            record.group.stem for record in session.history
-        }:
+        history_stems = {record.group.stem for record in session.history}
+        session.completed_stems = declared_completed
+        if not history_stems.issubset(session.completed_stems):
+            return None
+        if {group.stem for group in session.pending_groups} & session.completed_stems:
             return None
         return session
+
+    @classmethod
+    def _safe_raw_history_stems(
+        cls,
+        value: object,
+        *,
+        source_dir: Path,
+    ) -> set[str]:
+        """Recover processed stems without trusting undo ownership metadata."""
+        if not isinstance(value, list):
+            return set()
+        stems: set[str] = set()
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            try:
+                group = cls._group_from_snapshot(
+                    item.get("group"),
+                    source_dir=source_dir,
+                    require_existing=False,
+                )
+            except (OSError, TypeError, ValueError):
+                continue
+            if cls._is_safe_completed_stem(group.stem):
+                stems.add(group.stem)
+        return stems
+
+    @staticmethod
+    def _is_safe_completed_stem(value: object) -> bool:
+        return (
+            type(value) is str
+            and bool(value)
+            and value not in {".", ".."}
+            and "/" not in value
+            and "\\" not in value
+            and "\x00" not in value
+        )
 
     @classmethod
     def _queue_group_from_snapshot(
@@ -385,6 +474,7 @@ class PhotoSession:
         *,
         source_dir: Path,
         enabled_extensions: set[str],
+        previewable_extensions: frozenset[str],
     ) -> PhotoGroup | None:
         if not isinstance(value, dict):
             raise ValueError("Snapshot photo group is invalid")
@@ -430,25 +520,20 @@ class PhotoSession:
         ]
         if not eligible:
             return None
-        if (
-            persisted_representative in members
-            and persisted_representative.suffix.lower() in enabled_extensions
-        ):
-            representative = persisted_representative
-        else:
-            representative = min(
-                eligible,
-                key=lambda path: (
-                    path.suffix.lower() not in SUPPORTED_IMAGE_EXTENSIONS,
-                    path.suffix.lower(),
-                    path.name.lower(),
-                    path.name,
-                ),
-            )
+        representative = min(
+            eligible,
+            key=lambda path: (
+                path.suffix.lower() not in previewable_extensions,
+                path.suffix.lower(),
+                path.name.lower(),
+                path.name,
+            ),
+        )
         return PhotoGroup(stem, tuple(members), representative)
 
     @classmethod
     def _from_legacy_snapshot(cls, data: dict[object, object]) -> PhotoSession | None:
+        previewable_extensions = pillow_previewable_extensions()
         source_dir = cls._snapshot_source_root(data.get("source_dir"))
         keep_dir = cls._optional_path(data.get("keep_dir"))
         nah_dir = cls._optional_path(data.get("nah_dir"))
@@ -486,7 +571,7 @@ class PhotoSession:
             for group in build_photo_groups(
                 source_dir,
                 enabled,
-                SUPPORTED_IMAGE_EXTENSIONS,
+                previewable_extensions,
             )
             if group.stem in pending_stems
         ]
@@ -522,7 +607,7 @@ class PhotoSession:
         nah_count = cls._snapshot_int(data.get("nah_count", 0))
         total_loaded = max(total_loaded, keep_count + nah_count + len(queue))
 
-        session = cls()
+        session = cls(previewable_extensions=previewable_extensions)
         session.source_dir = source_dir
         session.keep_dir = keep_dir
         session.nah_dir = nah_dir
@@ -542,6 +627,7 @@ class PhotoSession:
             keep_dir=keep_dir,
             nah_dir=nah_dir,
         )
+        session.completed_stems = {record.group.stem for record in session.history}
         return session
 
     @staticmethod
@@ -880,6 +966,7 @@ class PhotoSession:
     def reset_queue(self) -> None:
         self.queue = []
         self.pending_groups = []
+        self.completed_stems = set()
         self.active_index = 0
         self.history = []
         self.total_loaded = 0
@@ -901,8 +988,9 @@ class PhotoSession:
         self.pending_groups = build_photo_groups(
             source_dir,
             set(available),
-            SUPPORTED_IMAGE_EXTENSIONS,
+            self.previewable_extensions,
         )
+        self.completed_stems = set()
         self.queue = self._project_pending_groups()
         self.active_index = 0
         self.history = []
@@ -915,12 +1003,22 @@ class PhotoSession:
     def apply_extension_filter(self, enabled: set[str]) -> int:
         source_dir = self._validated_source_dir()
         available = discover_extensions(source_dir)
-        return self.apply_prepared_extension_filter(available, enabled)
+        reconciled_groups = build_photo_groups(
+            source_dir,
+            set(available),
+            self.previewable_extensions,
+        )
+        return self.apply_prepared_extension_filter(
+            available,
+            enabled,
+            reconciled_groups,
+        )
 
     def apply_prepared_extension_filter(
         self,
         available: tuple[str, ...],
         enabled: set[str],
+        reconciled_groups: list[PhotoGroup] | tuple[PhotoGroup, ...] | None = None,
     ) -> int:
         previous_group = self.active_group
         previous_stem = previous_group.stem if previous_group is not None else None
@@ -939,6 +1037,12 @@ class PhotoSession:
         }
         if not effective_enabled:
             raise PhotoSessionError(EMPTY_EXTENSION_SELECTION_MESSAGE)
+        if reconciled_groups is not None:
+            self.pending_groups = [
+                group
+                for group in reconciled_groups
+                if group.stem not in self.completed_stems
+            ]
         self.available_extensions = available
         self.enabled_extensions = effective_enabled
 
@@ -1073,6 +1177,7 @@ class PhotoSession:
                 current_index,
             )
         )
+        self.completed_stems.add(group.stem)
         if decision == "keep":
             self.keep_count += 1
         else:
@@ -1100,7 +1205,7 @@ class PhotoSession:
         return min(
             members,
             key=lambda path: (
-                path.suffix.lower() not in SUPPORTED_IMAGE_EXTENSIONS,
+                path.suffix.lower() not in self.previewable_extensions,
                 path.suffix.lower(),
                 path.name.lower(),
                 path.name,
@@ -1836,6 +1941,7 @@ class PhotoSession:
             self._undo_copy_record(record, destination_root)
 
         self.history.pop()
+        self.completed_stems.discard(record.group.stem)
         self._partial_copy_undo.difference_update(record.files)
         self.pending_groups.append(record.group)
         self.pending_groups.sort(key=lambda group: (group.stem.lower(), group.stem))

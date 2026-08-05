@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
 import threading
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from PIL import Image
 
@@ -18,9 +19,51 @@ from preview_strategies import (
     PreviewStrategyRegistry,
     UnavailablePreviewStrategy,
 )
+from photo_session import PhotoSession, pillow_previewable_extensions
 
 
 class PreviewStrategyRegistryTests(unittest.TestCase):
+    def test_pillow_extensions_require_an_installed_open_handler(self) -> None:
+        with (
+            patch("photo_session.Image.init"),
+            patch(
+                "photo_session.Image.registered_extensions",
+                return_value={".jpg": "JPEG", ".heic": "HEIF"},
+            ),
+            patch.dict("photo_session.Image.OPEN", {"JPEG": object()}, clear=True),
+        ):
+            self.assertEqual(pillow_previewable_extensions(), frozenset({".jpg"}))
+
+    def test_session_prefers_runtime_previewable_jpg_over_unavailable_heic(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp)
+            jpg = source / "A.jpg"
+            heic = source / "A.heic"
+            jpg.write_bytes(b"jpg")
+            heic.write_bytes(b"heic")
+
+            session = PhotoSession(previewable_extensions={".jpg"})
+            session.set_source_dir(source)
+            session.load_queue()
+
+            self.assertEqual(session.active_photo, jpg)
+            self.assertEqual(session.active_group.members, (heic, jpg))
+
+    def test_runtime_unsupported_heic_uses_unavailable_strategy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp)
+            heic = source / "A.heic"
+            heic.write_bytes(b"heic")
+            session = PhotoSession(previewable_extensions=set())
+            session.set_source_dir(source)
+            session.load_queue()
+            registry = PreviewStrategyRegistry(
+                [PillowPreviewStrategy(extensions={".jpg"})]
+            )
+
+            self.assertEqual(session.active_photo, heic)
+            self.assertIsInstance(registry.for_path(heic), UnavailablePreviewStrategy)
+
     def test_registry_selects_pillow_or_unavailable_case_insensitively(self) -> None:
         registry = PreviewStrategyRegistry([PillowPreviewStrategy()])
 

@@ -4,10 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Protocol
 
-from photo_groups import discover_extensions
+from photo_groups import PhotoGroup, build_photo_groups, discover_extensions
 from photo_session import (
     EMPTY_EXTENSION_SELECTION_MESSAGE,
     PhotoSession,
+    SUPPORTED_IMAGE_EXTENSIONS,
 )
 from session_startup import preview_paths_for
 
@@ -24,12 +25,14 @@ class PreparedViewFilter:
     source_identity: Path
     available_extensions: tuple[str, ...]
     enabled_extensions: frozenset[str]
+    reconciled_groups: tuple[PhotoGroup, ...]
 
 
 @dataclass(frozen=True)
 class _SessionFilterState:
     available_extensions: tuple[str, ...]
     enabled_extensions: frozenset[str]
+    pending_groups: tuple[PhotoGroup, ...]
     queue: tuple[object, ...]
     active_index: int
     total_loaded: int
@@ -86,6 +89,17 @@ def prepare_view_filter(
         source_identity,
         discovered,
         frozenset(effective),
+        tuple(
+            build_photo_groups(
+                source_dir,
+                set(discovered),
+                getattr(
+                    session,
+                    "previewable_extensions",
+                    SUPPORTED_IMAGE_EXTENSIONS,
+                ),
+            )
+        ),
     )
 
 
@@ -103,6 +117,7 @@ def apply_prepared_view_filter(
     count = app.session.apply_prepared_extension_filter(
         plan.available_extensions,
         set(plan.enabled_extensions),
+        plan.reconciled_groups,
     )
     paths = preview_paths_for(app.session)
     app.preview_pipeline.reset(paths)
@@ -183,6 +198,7 @@ def _capture_filter_state(session: PhotoSession) -> _SessionFilterState:
     return _SessionFilterState(
         session.available_extensions,
         frozenset(session.enabled_extensions),
+        tuple(session.pending_groups),
         tuple(session.queue),
         session.active_index,
         session.total_loaded,
@@ -195,6 +211,7 @@ def _restore_filter_state(
 ) -> None:
     session.available_extensions = state.available_extensions
     session.enabled_extensions = set(state.enabled_extensions)
+    session.pending_groups = list(state.pending_groups)
     session.queue = list(state.queue)
     session.active_index = state.active_index
     session.total_loaded = state.total_loaded

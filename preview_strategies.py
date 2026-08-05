@@ -5,7 +5,7 @@ from typing import Protocol
 
 from PIL import Image, ImageOps
 
-from photo_session import SUPPORTED_IMAGE_EXTENSIONS
+from photo_session import pillow_previewable_extensions
 
 
 class PreviewStrategy(Protocol):
@@ -15,7 +15,16 @@ class PreviewStrategy(Protocol):
 
 
 class PillowPreviewStrategy:
-    extensions = frozenset(SUPPORTED_IMAGE_EXTENSIONS)
+    def __init__(
+        self,
+        extensions: set[str] | frozenset[str] | None = None,
+    ) -> None:
+        runtime_extensions = (
+            pillow_previewable_extensions() if extensions is None else extensions
+        )
+        self.extensions = frozenset(
+            extension.lower() for extension in runtime_extensions
+        )
 
     def load(self, path: Path) -> Image.Image:
         with Image.open(path) as image:
