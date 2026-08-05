@@ -260,31 +260,71 @@ class PhotoSession:
         raw_queue = data.get("queue")
         if not isinstance(raw_queue, list) or not raw_queue:
             return None
-        queue = [
-            cls._group_from_snapshot(
-                item,
-                source_dir=source_dir,
-                require_existing=True,
+        active_index = cls._snapshot_int(data.get("active_index"))
+        if active_index >= len(raw_queue):
+            return None
+        active_stem = data.get("active_stem")
+        if type(active_stem) is not str:
+            return None
+
+        restored_queue = [
+            (
+                index,
+                cls._queue_group_from_snapshot(
+                    item,
+                    source_dir=source_dir,
+                    enabled_extensions=enabled,
+                ),
             )
+            for index, item in enumerate(raw_queue)
+        ]
+        declared_stems = [
+            item.get("stem") if isinstance(item, dict) else None
             for item in raw_queue
         ]
-        if len({group.stem for group in queue}) != len(queue):
+        if active_stem != declared_stems[active_index]:
             return None
+        if len(set(declared_stems)) != len(declared_stems):
+            return None
+
+        surviving_queue = [
+            (original_index, group)
+            for original_index, group in restored_queue
+            if group is not None
+        ]
+        if not surviving_queue:
+            return None
+        queue = [group for _, group in surviving_queue]
         all_members = [member for group in queue for member in group.members]
         if len(set(all_members)) != len(all_members):
             return None
 
-        active_index = cls._snapshot_int(data.get("active_index"))
-        if active_index >= len(queue):
-            return None
-        active_stem = data.get("active_stem")
-        if type(active_stem) is not str or active_stem != queue[active_index].stem:
-            return None
+        retained_active_index = next(
+            (
+                index
+                for index, (original_index, _group) in enumerate(surviving_queue)
+                if original_index == active_index
+            ),
+            None,
+        )
+        if retained_active_index is None:
+            nearest_original_index, _ = min(
+                surviving_queue,
+                key=lambda item: (
+                    abs(item[0] - active_index),
+                    item[0],
+                ),
+            )
+            retained_active_index = next(
+                index
+                for index, (original_index, _group) in enumerate(surviving_queue)
+                if original_index == nearest_original_index
+            )
 
         total_loaded = cls._snapshot_int(data.get("total_loaded"))
         keep_count = cls._snapshot_int(data.get("keep_count"))
         nah_count = cls._snapshot_int(data.get("nah_count"))
-        if total_loaded < keep_count + nah_count + len(queue):
+        if total_loaded < keep_count + nah_count + len(raw_queue):
             return None
 
         session = cls()
@@ -293,7 +333,7 @@ class PhotoSession:
         session.nah_dir = nah_dir
         session.action_mode = mode
         session.queue = queue
-        session.active_index = active_index
+        session.active_index = retained_active_index
         session.total_loaded = total_loaded
         session.keep_count = keep_count
         session.nah_count = nah_count
@@ -307,6 +347,75 @@ class PhotoSession:
             nah_dir=nah_dir,
         )
         return session
+
+    @classmethod
+    def _queue_group_from_snapshot(
+        cls,
+        value: object,
+        *,
+        source_dir: Path,
+        enabled_extensions: set[str],
+    ) -> PhotoGroup | None:
+        if not isinstance(value, dict):
+            raise ValueError("Snapshot photo group is invalid")
+        stem = value.get("stem")
+        raw_members = value.get("members")
+        if type(stem) is not str or not stem or not isinstance(raw_members, list):
+            raise ValueError("Snapshot photo group fields are invalid")
+        if not raw_members:
+            raise ValueError("Snapshot photo group has no members")
+        declared_members = tuple(
+            cls._source_path_from_snapshot(
+                item,
+                source_dir=source_dir,
+                require_existing=False,
+            )
+            for item in raw_members
+        )
+        if len(set(declared_members)) != len(declared_members):
+            raise ValueError("Snapshot photo group has duplicate members")
+        persisted_representative = cls._source_path_from_snapshot(
+            value.get("representative"),
+            source_dir=source_dir,
+            require_existing=False,
+        )
+        if persisted_representative not in declared_members:
+            raise ValueError("Snapshot representative is not a group member")
+        if any(member.stem != stem for member in declared_members):
+            raise ValueError("Snapshot photo group stem does not match its members")
+
+        members: list[Path] = []
+        for member in declared_members:
+            if cls._is_regular_file(member):
+                members.append(member)
+            elif member.exists():
+                raise ValueError("Snapshot source path is not a regular file")
+        if not members:
+            return None
+
+        eligible = [
+            member
+            for member in members
+            if member.suffix.lower() in enabled_extensions
+        ]
+        if not eligible:
+            return None
+        if (
+            persisted_representative in members
+            and persisted_representative.suffix.lower() in enabled_extensions
+        ):
+            representative = persisted_representative
+        else:
+            representative = min(
+                eligible,
+                key=lambda path: (
+                    path.suffix.lower() not in SUPPORTED_IMAGE_EXTENSIONS,
+                    path.suffix.lower(),
+                    path.name.lower(),
+                    path.name,
+                ),
+            )
+        return PhotoGroup(stem, tuple(members), representative)
 
     @classmethod
     def _from_legacy_snapshot(cls, data: dict[object, object]) -> PhotoSession | None:
@@ -558,6 +667,18 @@ class PhotoSession:
                     )
                     for operation in raw_files
                 )
+                sources = [operation.source for operation in files]
+                destinations = [operation.destination for operation in files]
+                destination_identities = [
+                    operation.destination_identity for operation in files
+                ]
+                if (
+                    len(set(sources)) != len(sources)
+                    or len(set(destinations)) != len(destinations)
+                    or len(set(destination_identities))
+                    != len(destination_identities)
+                ):
+                    raise ValueError("Snapshot action files contain duplicates")
                 if tuple(operation.source for operation in files) != group.members:
                     raise ValueError("Snapshot action files do not match its group")
                 history.append(
