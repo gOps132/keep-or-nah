@@ -359,6 +359,252 @@ class PhotoSessionGroupTests(unittest.TestCase):
         self.assertEqual(list(self.keep.iterdir()), [])
         self.assertEqual(session.remaining_count, 1)
 
+    def test_fallback_uses_canonical_root_after_destination_alias_repoints(self):
+        photo = self.write("IMG.jpg", b"jpg")
+        real_keep = self.root / "real-keep"
+        outside = self.root / "outside"
+        alias = self.root / "keep-alias"
+        real_keep.mkdir()
+        outside.mkdir()
+        try:
+            alias.symlink_to(real_keep, target_is_directory=True)
+        except OSError:
+            self.skipTest("directory symlinks unavailable")
+        session = self.force_fallback(self.make_session(action_mode="copy"))
+        session.set_keep_dir(alias)
+        session.load_queue()
+        real_publish = session._publish_hard_link
+        published_destinations = []
+
+        def repoint_alias_before_publish(source, destination):
+            published_destinations.append(destination)
+            alias.unlink()
+            alias.symlink_to(outside, target_is_directory=True)
+            return real_publish(source, destination)
+
+        with patch.object(
+            session,
+            "_publish_hard_link",
+            side_effect=repoint_alias_before_publish,
+        ):
+            result = session.decide("keep")
+
+        canonical_destination = real_keep.resolve() / "IMG.jpg"
+        self.assertEqual(published_destinations, [canonical_destination])
+        self.assertEqual(result.files[0].destination, canonical_destination)
+        self.assertEqual((real_keep / "IMG.jpg").read_bytes(), photo.read_bytes())
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_posix_move_does_not_unlink_replaced_source_name(self):
+        raw = self.write("IMG.cr3", b"raw")
+        self.write("IMG.jpg", b"jpg")
+        session = self.make_session()
+        session.load_queue()
+        real_copy = session._copy_open_source_exclusive
+        replaced = False
+
+        def replace_source_after_copy(*args):
+            nonlocal replaced
+            result = real_copy(*args)
+            if not replaced:
+                replaced = True
+                raw.unlink()
+                raw.write_bytes(b"replacement")
+            return result
+
+        with patch.object(
+            session,
+            "_copy_open_source_exclusive",
+            side_effect=replace_source_after_copy,
+        ):
+            with self.assertRaisesRegex(PhotoSessionError, "identity|replaced"):
+                session.decide("keep")
+
+        self.assertEqual(raw.read_bytes(), b"replacement")
+        self.assertEqual(list(self.keep.iterdir()), [])
+        self.assertEqual(session.remaining_count, 1)
+
+    def test_fallback_move_does_not_unlink_replaced_source_name(self):
+        raw = self.write("IMG.cr3", b"raw")
+        self.write("IMG.jpg", b"jpg")
+        session = self.force_fallback(self.make_session())
+        session.load_queue()
+        real_copy = session._copy_path_exclusive_fallback
+        replaced = False
+
+        def replace_source_after_copy(source, *args, **kwargs):
+            nonlocal replaced
+            result = real_copy(source, *args, **kwargs)
+            if not replaced:
+                replaced = True
+                raw.unlink()
+                raw.write_bytes(b"replacement")
+            return result
+
+        with patch.object(
+            session,
+            "_copy_path_exclusive_fallback",
+            side_effect=replace_source_after_copy,
+        ):
+            with self.assertRaisesRegex(PhotoSessionError, "identity|replaced"):
+                session.decide("keep")
+
+        self.assertEqual(raw.read_bytes(), b"replacement")
+        self.assertEqual(list(self.keep.iterdir()), [])
+        self.assertEqual(session.remaining_count, 1)
+
+    def test_posix_move_undo_does_not_unlink_replaced_action_destination(self):
+        self.write("IMG.cr3", b"raw")
+        self.write("IMG.jpg", b"jpg")
+        session = self.make_session()
+        session.load_queue()
+        result = session.decide("keep")
+        first_reverse = result.files[-1]
+        real_copy = session._copy_open_source_exclusive
+        replaced = False
+
+        def replace_action_destination_after_copy(*args):
+            nonlocal replaced
+            copied = real_copy(*args)
+            if not replaced:
+                replaced = True
+                first_reverse.destination.unlink()
+                first_reverse.destination.write_bytes(b"replacement")
+            return copied
+
+        with patch.object(
+            session,
+            "_copy_open_source_exclusive",
+            side_effect=replace_action_destination_after_copy,
+        ):
+            with self.assertRaisesRegex(PhotoSessionError, "identity|replaced"):
+                session.undo()
+
+        self.assertEqual(first_reverse.destination.read_bytes(), b"replacement")
+        self.assertFalse(first_reverse.source.exists())
+        self.assertTrue(session.can_undo)
+        self.assertEqual(session.keep_count, 1)
+
+    def test_fallback_move_undo_does_not_unlink_replaced_action_destination(self):
+        self.write("IMG.cr3", b"raw")
+        self.write("IMG.jpg", b"jpg")
+        session = self.force_fallback(self.make_session())
+        session.load_queue()
+        result = session.decide("keep")
+        first_reverse = result.files[-1]
+        real_copy = session._copy_path_exclusive_fallback
+        replaced = False
+
+        def replace_action_destination_after_copy(source, *args, **kwargs):
+            nonlocal replaced
+            copied = real_copy(source, *args, **kwargs)
+            if not replaced:
+                replaced = True
+                first_reverse.destination.unlink()
+                first_reverse.destination.write_bytes(b"replacement")
+            return copied
+
+        with patch.object(
+            session,
+            "_copy_path_exclusive_fallback",
+            side_effect=replace_action_destination_after_copy,
+        ):
+            with self.assertRaisesRegex(PhotoSessionError, "identity|replaced"):
+                session.undo()
+
+        self.assertEqual(first_reverse.destination.read_bytes(), b"replacement")
+        self.assertFalse(first_reverse.source.exists())
+        self.assertTrue(session.can_undo)
+        self.assertEqual(session.keep_count, 1)
+
+    def test_posix_rollback_does_not_unlink_replaced_action_destination(self):
+        raw = self.write("IMG.cr3", b"raw")
+        self.write("IMG.jpg", b"jpg")
+        session = self.make_session()
+        session.load_queue()
+        real_move = session._move_at_exclusive
+        real_copy = session._copy_open_source_exclusive
+        move_calls = 0
+        replaced = False
+
+        def fail_second_move(*args):
+            nonlocal move_calls
+            move_calls += 1
+            if move_calls == 2:
+                raise OSError("primary move failure")
+            return real_move(*args)
+
+        def replace_during_rollback(*args):
+            nonlocal replaced
+            destination = args[1]
+            copied = real_copy(*args)
+            if destination.parent == self.source and not replaced:
+                replaced = True
+                moved_raw = self.keep / raw.name
+                moved_raw.unlink()
+                moved_raw.write_bytes(b"replacement")
+            return copied
+
+        with patch.object(
+            session, "_move_at_exclusive", side_effect=fail_second_move
+        ), patch.object(
+            session,
+            "_copy_open_source_exclusive",
+            side_effect=replace_during_rollback,
+        ):
+            with self.assertRaises(PhotoSessionError) as raised:
+                session.decide("keep")
+
+        self.assertIn("primary move failure", str(raised.exception))
+        self.assertIn("identity", str(raised.exception))
+        self.assertEqual((self.keep / raw.name).read_bytes(), b"replacement")
+        self.assertFalse(raw.exists())
+        self.assertEqual(session.remaining_count, 1)
+
+    def test_fallback_rollback_does_not_unlink_replaced_action_destination(self):
+        raw = self.write("IMG.cr3", b"raw")
+        self.write("IMG.jpg", b"jpg")
+        session = self.force_fallback(self.make_session())
+        session.load_queue()
+        real_move = session._move_path_exclusive_fallback
+        real_copy = session._copy_path_exclusive_fallback
+        move_calls = 0
+        replaced = False
+
+        def fail_second_move(*args, **kwargs):
+            nonlocal move_calls
+            move_calls += 1
+            if move_calls == 2:
+                raise OSError("primary move failure")
+            return real_move(*args, **kwargs)
+
+        def replace_during_rollback(source, destination, *args, **kwargs):
+            nonlocal replaced
+            copied = real_copy(source, destination, *args, **kwargs)
+            if destination.parent == self.source and not replaced:
+                replaced = True
+                source.unlink()
+                source.write_bytes(b"replacement")
+            return copied
+
+        with patch.object(
+            session,
+            "_move_path_exclusive_fallback",
+            side_effect=fail_second_move,
+        ), patch.object(
+            session,
+            "_copy_path_exclusive_fallback",
+            side_effect=replace_during_rollback,
+        ):
+            with self.assertRaises(PhotoSessionError) as raised:
+                session.decide("keep")
+
+        self.assertIn("primary move failure", str(raised.exception))
+        self.assertIn("replaced", str(raised.exception))
+        self.assertEqual((self.keep / raw.name).read_bytes(), b"replacement")
+        self.assertFalse(raw.exists())
+        self.assertEqual(session.remaining_count, 1)
+
     def test_failed_group_copy_rolls_back_completed_members(self):
         self.write("IMG.cr3", b"raw")
         self.write("IMG.jpg", b"jpg")
