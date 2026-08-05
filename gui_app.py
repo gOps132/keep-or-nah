@@ -468,10 +468,12 @@ class App(DnDCTk):
         dialog.after(0, dialog.grab_set)
         self.preview_settings_dialog = dialog
 
-    def apply_preview_settings(self, settings: AppSettings):
-        self.settings = settings.normalized()
-        self.settings.save()
-        self.preview_pipeline.configure_cache_budget(self.settings.preview_cache_budget_mb)
+    def apply_preview_settings(self, settings: AppSettings, *, persist: bool = True):
+        normalized = settings.normalized()
+        if persist:
+            normalized.save()
+        self.settings = normalized
+        self.preview_pipeline.configure_cache_budget(normalized.preview_cache_budget_mb)
         self.prune_preview_texture_cache(set(preview_paths_for(self.session)))
         self.preview_source_path = None
         self.preview_source_image = None

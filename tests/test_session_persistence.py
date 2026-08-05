@@ -151,6 +151,29 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             restored.apply_extension_filter({".jpg"})
             self.assertEqual([group.stem for group in restored.queue], ["B"])
 
+    def test_reload_counts_hidden_pending_group_and_round_trips_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "source"
+            source.mkdir()
+            (source / "A.jpg").write_bytes(b"jpg")
+            (source / "B.cr3").write_bytes(b"raw")
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.load_queue()
+            session.apply_extension_filter({".jpg"})
+
+            visible = session.load_queue()
+
+            self.assertEqual(visible, 1)
+            self.assertEqual(session.total_loaded, 2)
+            self.assertEqual(session.remaining_count, 2)
+            self.assertEqual(session.processed_count, 0)
+            restored = PhotoSession.from_snapshot(session.to_snapshot())
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.total_loaded, 2)
+            self.assertEqual([group.stem for group in restored.pending_groups], ["A", "B"])
+            self.assertEqual([group.stem for group in restored.queue], ["A"])
+
     def test_version_two_unsafe_group_payload_invalidates_entire_session(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -906,14 +906,22 @@ class PhotoSession:
         self.queue = self._project_pending_groups()
         self.active_index = 0
         self.history = []
-        self.total_loaded = len(self.queue)
+        self.total_loaded = len(self.pending_groups)
         self.keep_count = 0
         self.nah_count = 0
         self._partial_copy_undo.clear()
-        return self.total_loaded
+        return len(self.queue)
 
     def apply_extension_filter(self, enabled: set[str]) -> int:
         source_dir = self._validated_source_dir()
+        available = discover_extensions(source_dir)
+        return self.apply_prepared_extension_filter(available, enabled)
+
+    def apply_prepared_extension_filter(
+        self,
+        available: tuple[str, ...],
+        enabled: set[str],
+    ) -> int:
         previous_group = self.active_group
         previous_stem = previous_group.stem if previous_group is not None else None
         previous_position = next(
@@ -924,7 +932,6 @@ class PhotoSession:
             ),
             self.active_index,
         )
-        available = discover_extensions(source_dir)
         effective_enabled = {
             extension.lower()
             for extension in enabled

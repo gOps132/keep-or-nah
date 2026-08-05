@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock
 
+from app_settings import AppSettings
 from classic_gui import ClassicApp
 from gui_app import App
 from photo_session import PhotoSession
@@ -51,6 +52,130 @@ class ExtensionFilterModelTests(unittest.TestCase):
 
 
 class ViewFilterApplicationTests(unittest.TestCase):
+    def test_unexpected_filter_apply_failure_rolls_back_settings_and_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "A.jpg").write_bytes(b"jpg")
+            (source / "B.png").write_bytes(b"png")
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.load_queue()
+            old_settings = AppSettings(True, True, 256)
+            new_settings = AppSettings(False, False, 128)
+            fake = SimpleNamespace(
+                session=session,
+                settings=old_settings,
+                preview_pipeline=SimpleNamespace(
+                    reset=Mock(side_effect=RuntimeError("pipeline reset failed")),
+                    configure_cache_budget=Mock(),
+                ),
+                preview_texture_cache=OrderedDict(),
+                thumbnail_cache=OrderedDict(),
+                thumbnail_refs=[],
+                thumbnail_signature=(),
+                rendered_thumbnail_range=(-1, -1),
+                rendered_active_index=None,
+                preview_source_path=None,
+                preview_source_image=None,
+                reset_zoom_state=Mock(),
+                reset_preview_request_state=Mock(),
+                persist_session=Mock(),
+                refresh_ui=Mock(),
+                refresh_preview=Mock(),
+                prune_preview_texture_cache=Mock(),
+            )
+            fake.apply_preview_settings = lambda settings, **kwargs: App.apply_preview_settings(
+                fake,
+                settings,
+                **kwargs,
+            )
+            old_queue = list(session.queue)
+            show_error = Mock()
+
+            with unittest.mock.patch.object(AppSettings, "save"):
+                saved = App.save_settings_changes(
+                    fake,
+                    new_settings,
+                    {".jpg"},
+                    show_error,
+                )
+
+            self.assertFalse(saved)
+            show_error.assert_called_once_with("Keep or Nah", "pipeline reset failed")
+            self.assertIs(fake.settings, old_settings)
+            self.assertEqual(session.enabled_extensions, {".jpg", ".png"})
+            self.assertEqual(session.queue, old_queue)
+
+    def test_both_frontend_settings_saves_are_atomic_when_settings_write_fails(self) -> None:
+        for frontend in (App, ClassicApp):
+            with tempfile.TemporaryDirectory() as directory:
+                source = Path(directory)
+                (source / "A.jpg").write_bytes(b"jpg")
+                (source / "B.png").write_bytes(b"png")
+                session = PhotoSession()
+                session.set_source_dir(source)
+                session.load_queue()
+                old_settings = AppSettings(True, True, 256)
+                new_settings = AppSettings(False, False, 128)
+                show_error = Mock()
+                fake = SimpleNamespace(
+                    session=session,
+                    settings=old_settings,
+                    preview_pipeline=SimpleNamespace(
+                        reset=Mock(),
+                        configure_cache_budget=Mock(),
+                    ),
+                    preview_texture_cache=OrderedDict({("old",): object()}),
+                    thumbnail_cache=OrderedDict({Path("old.jpg"): object()}),
+                    thumbnail_refs=[object()],
+                    thumbnail_signature=(Path("old.jpg"),),
+                    rendered_thumbnail_range=(0, 1),
+                    rendered_active_index=0,
+                    preview_source_path=Path("old.jpg"),
+                    preview_source_image=object(),
+                    reset_zoom_state=Mock(),
+                    reset_preview_request_state=Mock(),
+                    persist_session=Mock(),
+                    refresh_ui=Mock(),
+                    refresh_preview=Mock(),
+                    prune_preview_texture_cache=Mock(),
+                )
+                fake.apply_preview_settings = lambda settings, **kwargs: frontend.apply_preview_settings(
+                    fake,
+                    settings,
+                    **kwargs,
+                )
+                old_queue = list(session.queue)
+
+                with self.subTest(frontend=frontend.__name__), unittest.mock.patch.object(
+                    AppSettings,
+                    "save",
+                    side_effect=OSError("settings disk full"),
+                ):
+                    saved = frontend.save_settings_changes(
+                        fake,
+                        new_settings,
+                        {".jpg"},
+                        show_error,
+                    )
+
+                    self.assertFalse(saved)
+                    show_error.assert_called_once_with(
+                        "Keep or Nah",
+                        "settings disk full",
+                    )
+                    self.assertIs(fake.settings, old_settings)
+                    self.assertEqual(session.enabled_extensions, {".jpg", ".png"})
+                    self.assertEqual(session.queue, old_queue)
+                    fake.preview_pipeline.reset.assert_not_called()
+                    fake.preview_pipeline.configure_cache_budget.assert_not_called()
+                    fake.prune_preview_texture_cache.assert_not_called()
+                    self.assertEqual(list(fake.preview_texture_cache), [("old",)])
+                    self.assertEqual(list(fake.thumbnail_cache), [Path("old.jpg")])
+                    fake.persist_session.assert_not_called()
+                    fake.refresh_ui.assert_not_called()
+                    fake.refresh_preview.assert_not_called()
+
     def test_source_drift_to_no_effective_selection_is_atomic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)
@@ -77,9 +202,9 @@ class ViewFilterApplicationTests(unittest.TestCase):
 
     def test_shared_coordinator_applies_filter_resets_and_refreshes(self) -> None:
         session = SimpleNamespace(
-            source_dir=Path("source"),
+            source_dir=Path.cwd(),
             preview_paths=(Path("IMG.cr3"),),
-            apply_extension_filter=Mock(return_value=1),
+            apply_prepared_extension_filter=Mock(return_value=1),
         )
         app = SimpleNamespace(
             session=session,
@@ -106,7 +231,10 @@ class ViewFilterApplicationTests(unittest.TestCase):
             count = apply_extension_filter(app, {".cr3"})
 
         self.assertEqual(count, 1)
-        session.apply_extension_filter.assert_called_once_with({".cr3"})
+        session.apply_prepared_extension_filter.assert_called_once_with(
+            (".cr3",),
+            {".cr3"},
+        )
         app.preview_pipeline.reset.assert_called_once_with((Path("IMG.cr3"),))
         self.assertEqual(app.preview_texture_cache, OrderedDict())
         self.assertEqual(app.thumbnail_cache, OrderedDict())
