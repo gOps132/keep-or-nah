@@ -24,9 +24,17 @@ class SessionPersistence:
     def load(self) -> dict[str, object] | None:
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except FileNotFoundError:
             return None
-        return data if isinstance(data, dict) else None
+        except json.JSONDecodeError:
+            self.clear()
+            return None
+        except OSError:
+            return None
+        if not isinstance(data, dict):
+            self.clear()
+            return None
+        return data
 
     def save(self, payload: dict[str, object]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

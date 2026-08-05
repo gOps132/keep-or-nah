@@ -4,7 +4,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import errno
-import math
 import os
 import secrets
 import stat
@@ -163,6 +162,8 @@ class ActionRecord:
 
 
 class PhotoSession:
+    snapshot_version = 2
+
     def __init__(self) -> None:
         self.source_dir: Path | None = None
         self.keep_dir: Path | None = None
@@ -180,119 +181,346 @@ class PhotoSession:
         self._partial_copy_undo: set[FileOperation] = set()
 
     def to_snapshot(self) -> dict[str, object]:
-        snapshot: dict[str, object] = {
+        return {
+            "snapshot_version": self.snapshot_version,
             "source_dir": str(self.source_dir) if self.source_dir is not None else None,
             "keep_dir": str(self.keep_dir) if self.keep_dir is not None else None,
             "nah_dir": str(self.nah_dir) if self.nah_dir is not None else None,
             "action_mode": self.action_mode,
-            # Keep the version-1 queue field compatible until Task 4 introduces
-            # explicit snapshot versioning and migration.
-            "queue": [str(self._as_group(item).representative) for item in self.queue],
+            "queue": [
+                self._group_to_snapshot(self._as_group(item)) for item in self.queue
+            ],
             "active_index": self.active_index,
+            "active_stem": (
+                self.active_group.stem if self.active_group is not None else None
+            ),
             "total_loaded": self.total_loaded,
             "keep_count": self.keep_count,
             "nah_count": self.nah_count,
+            "available_extensions": list(self.available_extensions),
+            "enabled_extensions": sorted(self.enabled_extensions),
             "history": [
                 {
                     "decision": record.decision,
                     "action_mode": record.action_mode,
-                    "source": str(record.source),
-                    "destination": str(record.destination),
-                    "destination_identity": (
-                        list(record.destination_identity)
-                        if record.destination_identity is not None
-                        else None
-                    ),
+                    "group": self._group_to_snapshot(record.group),
+                    "files": [
+                        {
+                            "source": str(operation.source),
+                            "destination": str(operation.destination),
+                            "destination_identity": (
+                                list(operation.destination_identity)
+                                if operation.destination_identity is not None
+                                else None
+                            ),
+                        }
+                        for operation in record.files
+                    ],
                     "index": record.index,
                 }
                 for record in self.history
             ],
         }
-        return snapshot
+
+    @staticmethod
+    def _group_to_snapshot(group: PhotoGroup) -> dict[str, object]:
+        return {
+            "stem": group.stem,
+            "members": [str(member) for member in group.members],
+            "representative": str(group.representative),
+        }
 
     @classmethod
     def from_snapshot(cls, data: object) -> PhotoSession | None:
         if not isinstance(data, dict):
             return None
         try:
-            source_value = data.get("source_dir")
-            source_dir = (
-                Path(source_value).expanduser() if isinstance(source_value, str) else None
-            )
-            if source_dir is None or not source_dir.is_dir():
+            version = data.get("snapshot_version", 1)
+            if type(version) is not int:
                 return None
-
-            raw_queue = data.get("queue", [])
-            if not isinstance(raw_queue, list):
-                return None
-            source_root = source_dir.resolve()
-            valid_queue_items: list[tuple[int, Path]] = []
-            for index, value in enumerate(raw_queue):
-                if not isinstance(value, str):
-                    continue
-                path = Path(value).expanduser()
-                if path.resolve(strict=False).parent != source_root:
-                    return None
-                if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS:
-                    valid_queue_items.append((index, path))
-            if not valid_queue_items:
-                return None
-            queue = [path for _, path in valid_queue_items]
-            original_active_index = min(
-                cls._snapshot_int(data.get("active_index", 0), 0),
-                len(raw_queue) - 1,
-            )
-            nearest_original_index, _ = min(
-                valid_queue_items,
-                key=lambda item: (abs(item[0] - original_active_index), item[0]),
-            )
-
-            mode = data.get("action_mode", "move")
-            if mode not in {"move", "copy"}:
-                return None
-
-            session = cls()
-            session.source_dir = source_dir
-            session.keep_dir = cls._optional_path(data.get("keep_dir"))
-            session.nah_dir = cls._optional_path(data.get("nah_dir"))
-            session.action_mode = mode
-            session.queue = queue
-            session.active_index = next(
-                index
-                for index, (original_index, _) in enumerate(valid_queue_items)
-                if original_index == nearest_original_index
-            )
-            session.total_loaded = max(
-                cls._snapshot_int(data.get("total_loaded", len(queue)), len(queue)),
-                len(queue),
-            )
-            session.keep_count = cls._snapshot_int(data.get("keep_count", 0), 0)
-            session.nah_count = cls._snapshot_int(data.get("nah_count", 0), 0)
-            session.history = cls._history_from_snapshot(
-                data.get("history", []),
-                source_dir=source_dir,
-                keep_dir=session.keep_dir,
-                nah_dir=session.nah_dir,
-            )
-            session.available_extensions = discover_extensions(source_dir)
-            session.enabled_extensions = set(session.available_extensions)
-            session._extensions_source = source_dir.resolve()
-            return session
+            if version == cls.snapshot_version:
+                return cls._from_grouped_snapshot(data)
+            if version == 1:
+                return cls._from_legacy_snapshot(data)
+            return None
         except (OSError, OverflowError, TypeError, ValueError):
             return None
 
+    @classmethod
+    def _from_grouped_snapshot(cls, data: dict[object, object]) -> PhotoSession | None:
+        source_dir = cls._snapshot_source_root(data.get("source_dir"))
+        keep_dir = cls._optional_path(data.get("keep_dir"))
+        nah_dir = cls._optional_path(data.get("nah_dir"))
+        mode = cls._snapshot_mode(data.get("action_mode"))
+        available = cls._snapshot_extensions(data.get("available_extensions"))
+        enabled = set(cls._snapshot_extensions(data.get("enabled_extensions")))
+        if not enabled.issubset(available):
+            return None
+
+        raw_queue = data.get("queue")
+        if not isinstance(raw_queue, list) or not raw_queue:
+            return None
+        queue = [
+            cls._group_from_snapshot(
+                item,
+                source_dir=source_dir,
+                require_existing=True,
+            )
+            for item in raw_queue
+        ]
+        if len({group.stem for group in queue}) != len(queue):
+            return None
+        all_members = [member for group in queue for member in group.members]
+        if len(set(all_members)) != len(all_members):
+            return None
+
+        active_index = cls._snapshot_int(data.get("active_index"))
+        if active_index >= len(queue):
+            return None
+        active_stem = data.get("active_stem")
+        if type(active_stem) is not str or active_stem != queue[active_index].stem:
+            return None
+
+        total_loaded = cls._snapshot_int(data.get("total_loaded"))
+        keep_count = cls._snapshot_int(data.get("keep_count"))
+        nah_count = cls._snapshot_int(data.get("nah_count"))
+        if total_loaded < keep_count + nah_count + len(queue):
+            return None
+
+        session = cls()
+        session.source_dir = source_dir
+        session.keep_dir = keep_dir
+        session.nah_dir = nah_dir
+        session.action_mode = mode
+        session.queue = queue
+        session.active_index = active_index
+        session.total_loaded = total_loaded
+        session.keep_count = keep_count
+        session.nah_count = nah_count
+        session.available_extensions = tuple(available)
+        session.enabled_extensions = enabled
+        session._extensions_source = source_dir.resolve(strict=True)
+        session.history = cls._grouped_history_from_snapshot(
+            data.get("history"),
+            source_dir=source_dir,
+            keep_dir=keep_dir,
+            nah_dir=nah_dir,
+        )
+        return session
+
+    @classmethod
+    def _from_legacy_snapshot(cls, data: dict[object, object]) -> PhotoSession | None:
+        source_dir = cls._snapshot_source_root(data.get("source_dir"))
+        keep_dir = cls._optional_path(data.get("keep_dir"))
+        nah_dir = cls._optional_path(data.get("nah_dir"))
+        mode = cls._snapshot_mode(data.get("action_mode", "move"))
+        raw_queue = data.get("queue", [])
+        if not isinstance(raw_queue, list) or not raw_queue:
+            return None
+        original_active_index = min(
+            cls._snapshot_int(data.get("active_index", 0)),
+            len(raw_queue) - 1,
+        )
+
+        valid_queue_items: list[tuple[int, Path]] = []
+        active_stem: str | None = None
+        for index, value in enumerate(raw_queue):
+            path = cls._source_path_from_snapshot(
+                value,
+                source_dir=source_dir,
+                require_existing=False,
+            )
+            if index == original_active_index:
+                active_stem = path.stem
+            if (
+                cls._is_regular_file(path)
+                and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS
+            ):
+                valid_queue_items.append((index, path))
+        if not valid_queue_items:
+            return None
+
+        enabled = {path.suffix.lower() for _, path in valid_queue_items}
+        pending_stems = {path.stem for _, path in valid_queue_items}
+        queue = [
+            group
+            for group in build_photo_groups(
+                source_dir,
+                enabled,
+                SUPPORTED_IMAGE_EXTENSIONS,
+            )
+            if group.stem in pending_stems
+        ]
+        if not queue:
+            return None
+
+        active_index = next(
+            (
+                index
+                for index, group in enumerate(queue)
+                if group.stem == active_stem
+            ),
+            None,
+        )
+        if active_index is None:
+            _, nearest_path = min(
+                valid_queue_items,
+                key=lambda item: (
+                    abs(item[0] - original_active_index),
+                    item[0],
+                ),
+            )
+            active_index = next(
+                index
+                for index, group in enumerate(queue)
+                if group.stem == nearest_path.stem
+            )
+
+        total_loaded = cls._snapshot_int(
+            data.get("total_loaded", len(queue)),
+        )
+        keep_count = cls._snapshot_int(data.get("keep_count", 0))
+        nah_count = cls._snapshot_int(data.get("nah_count", 0))
+        total_loaded = max(total_loaded, keep_count + nah_count + len(queue))
+
+        session = cls()
+        session.source_dir = source_dir
+        session.keep_dir = keep_dir
+        session.nah_dir = nah_dir
+        session.action_mode = mode
+        session.queue = queue
+        session.active_index = active_index
+        session.total_loaded = total_loaded
+        session.keep_count = keep_count
+        session.nah_count = nah_count
+        session.available_extensions = discover_extensions(source_dir)
+        session.enabled_extensions = enabled
+        session._extensions_source = source_dir.resolve(strict=True)
+        session.history = cls._legacy_history_from_snapshot(
+            data.get("history", []),
+            source_dir=source_dir,
+            keep_dir=keep_dir,
+            nah_dir=nah_dir,
+        )
+        return session
+
     @staticmethod
-    def _snapshot_int(value: object, minimum: int) -> int:
-        if isinstance(value, float) and not math.isfinite(value):
-            raise ValueError("Snapshot number must be finite")
-        return max(int(value), minimum)
+    def _snapshot_int(value: object) -> int:
+        if type(value) is not int or value < 0:
+            raise ValueError("Snapshot number must be a non-negative integer")
+        return value
+
+    @staticmethod
+    def _snapshot_mode(value: object) -> ActionMode:
+        if value not in {"move", "copy"} or type(value) is not str:
+            raise ValueError("Snapshot action mode is invalid")
+        return value
+
+    @classmethod
+    def _snapshot_source_root(cls, value: object) -> Path:
+        if type(value) is not str or not value:
+            raise ValueError("Snapshot source folder is invalid")
+        source_dir = Path(value).expanduser()
+        if not source_dir.is_dir():
+            raise ValueError("Snapshot source folder is unavailable")
+        source_dir.resolve(strict=True)
+        return source_dir
 
     @staticmethod
     def _optional_path(value: object) -> Path | None:
-        return Path(value).expanduser() if isinstance(value, str) and value else None
+        if value is None:
+            return None
+        if type(value) is not str or not value:
+            raise ValueError("Snapshot destination folder is invalid")
+        return Path(value).expanduser()
 
     @staticmethod
-    def _history_from_snapshot(
+    def _snapshot_extensions(value: object) -> tuple[str, ...]:
+        if not isinstance(value, list):
+            raise ValueError("Snapshot extensions must be a list")
+        extensions: list[str] = []
+        for extension in value:
+            if (
+                type(extension) is not str
+                or len(extension) < 2
+                or not extension.startswith(".")
+                or extension != extension.lower()
+                or "/" in extension
+                or "\\" in extension
+                or extension.strip() != extension
+            ):
+                raise ValueError("Snapshot extension is invalid")
+            extensions.append(extension)
+        if len(set(extensions)) != len(extensions):
+            raise ValueError("Snapshot extensions must be unique")
+        return tuple(extensions)
+
+    @classmethod
+    def _group_from_snapshot(
+        cls,
+        value: object,
+        *,
+        source_dir: Path,
+        require_existing: bool,
+    ) -> PhotoGroup:
+        if not isinstance(value, dict):
+            raise ValueError("Snapshot photo group is invalid")
+        stem = value.get("stem")
+        raw_members = value.get("members")
+        if type(stem) is not str or not stem or not isinstance(raw_members, list):
+            raise ValueError("Snapshot photo group fields are invalid")
+        if not raw_members:
+            raise ValueError("Snapshot photo group has no members")
+        members = tuple(
+            cls._source_path_from_snapshot(
+                item,
+                source_dir=source_dir,
+                require_existing=require_existing,
+            )
+            for item in raw_members
+        )
+        if len(set(members)) != len(members):
+            raise ValueError("Snapshot photo group has duplicate members")
+        representative = cls._source_path_from_snapshot(
+            value.get("representative"),
+            source_dir=source_dir,
+            require_existing=require_existing,
+        )
+        if representative not in members:
+            raise ValueError("Snapshot representative is not a group member")
+        if any(member.stem != stem for member in members):
+            raise ValueError("Snapshot photo group stem does not match its members")
+        return PhotoGroup(stem, members, representative)
+
+    @classmethod
+    def _source_path_from_snapshot(
+        cls,
+        value: object,
+        *,
+        source_dir: Path,
+        require_existing: bool,
+    ) -> Path:
+        if type(value) is not str or not value:
+            raise ValueError("Snapshot source path is invalid")
+        path = Path(value).expanduser()
+        if ".." in path.parts or not cls._is_direct_child(path, source_dir):
+            raise ValueError("Snapshot source path escapes its source folder")
+        if path.is_symlink():
+            raise ValueError("Snapshot source path cannot be a symbolic link")
+        if require_existing and not cls._is_regular_file(path):
+            raise ValueError("Snapshot source path is not a regular file")
+        return path
+
+    @staticmethod
+    def _is_regular_file(path: Path) -> bool:
+        try:
+            return stat.S_ISREG(path.lstat().st_mode)
+        except FileNotFoundError:
+            return False
+
+    @classmethod
+    def _grouped_history_from_snapshot(
+        cls,
         value: object,
         *,
         source_dir: Path,
@@ -308,44 +536,118 @@ class PhotoSession:
             try:
                 decision = item["decision"]
                 action_mode = item["action_mode"]
-                if decision not in {"keep", "nah"} or action_mode not in {
-                    "move",
-                    "copy",
-                }:
-                    continue
-                source = Path(item["source"]).expanduser()
-                destination = Path(item["destination"]).expanduser()
-                destination_identity = PhotoSession._snapshot_identity(
-                    item["destination_identity"]
-                )
+                if type(decision) is not str or decision not in {"keep", "nah"}:
+                    raise ValueError("Snapshot decision is invalid")
+                action_mode = cls._snapshot_mode(action_mode)
                 destination_root = keep_dir if decision == "keep" else nah_dir
                 if destination_root is None:
-                    continue
-                if not PhotoSession._is_direct_child(source, source_dir):
-                    continue
-                if not PhotoSession._is_direct_child(destination, destination_root):
-                    continue
-                if PhotoSession._path_identity(destination) != destination_identity:
-                    continue
-                group = PhotoGroup(source.stem, (source,), source)
+                    raise ValueError("Snapshot action destination root is unavailable")
+                group = cls._group_from_snapshot(
+                    item["group"],
+                    source_dir=source_dir,
+                    require_existing=False,
+                )
+                raw_files = item["files"]
+                if not isinstance(raw_files, list) or not raw_files:
+                    raise ValueError("Snapshot action files are invalid")
+                files = tuple(
+                    cls._file_operation_from_snapshot(
+                        operation,
+                        source_dir=source_dir,
+                        destination_root=destination_root,
+                    )
+                    for operation in raw_files
+                )
+                if tuple(operation.source for operation in files) != group.members:
+                    raise ValueError("Snapshot action files do not match its group")
                 history.append(
                     ActionRecord(
                         decision,
                         action_mode,
                         group,
-                        (
-                            FileOperation(
-                                source,
-                                destination,
-                                destination_identity,
-                            ),
-                        ),
-                        PhotoSession._snapshot_int(item["index"], 0),
+                        files,
+                        cls._snapshot_int(item["index"]),
                     )
                 )
             except (KeyError, OSError, OverflowError, TypeError, ValueError):
                 continue
         return history
+
+    @classmethod
+    def _legacy_history_from_snapshot(
+        cls,
+        value: object,
+        *,
+        source_dir: Path,
+        keep_dir: Path | None,
+        nah_dir: Path | None,
+    ) -> list[ActionRecord]:
+        if not isinstance(value, list):
+            return []
+        history: list[ActionRecord] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            try:
+                decision = item["decision"]
+                if type(decision) is not str or decision not in {"keep", "nah"}:
+                    raise ValueError("Snapshot decision is invalid")
+                action_mode = cls._snapshot_mode(item["action_mode"])
+                destination_root = keep_dir if decision == "keep" else nah_dir
+                if destination_root is None:
+                    raise ValueError("Snapshot action destination root is unavailable")
+                operation = cls._file_operation_from_snapshot(
+                    item,
+                    source_dir=source_dir,
+                    destination_root=destination_root,
+                )
+                group = PhotoGroup(
+                    operation.source.stem,
+                    (operation.source,),
+                    operation.source,
+                )
+                history.append(
+                    ActionRecord(
+                        decision,
+                        action_mode,
+                        group,
+                        (operation,),
+                        cls._snapshot_int(item["index"]),
+                    )
+                )
+            except (KeyError, OSError, OverflowError, TypeError, ValueError):
+                continue
+        return history
+
+    @classmethod
+    def _file_operation_from_snapshot(
+        cls,
+        value: object,
+        *,
+        source_dir: Path,
+        destination_root: Path,
+    ) -> FileOperation:
+        if not isinstance(value, dict):
+            raise ValueError("Snapshot file operation is invalid")
+        source = cls._source_path_from_snapshot(
+            value["source"],
+            source_dir=source_dir,
+            require_existing=False,
+        )
+        destination_value = value["destination"]
+        if type(destination_value) is not str or not destination_value:
+            raise ValueError("Snapshot destination path is invalid")
+        destination = Path(destination_value).expanduser()
+        if ".." in destination.parts or not cls._is_direct_child(
+            destination, destination_root
+        ):
+            raise ValueError("Snapshot destination escapes its action folder")
+        if destination.is_symlink() or not cls._is_regular_file(destination):
+            raise ValueError("Snapshot destination is not an owned regular file")
+        destination_identity = cls._snapshot_identity(value["destination_identity"])
+        if cls._path_identity(destination) != destination_identity:
+            raise ValueError("Snapshot destination ownership has changed")
+        return FileOperation(source, destination, destination_identity)
 
     @staticmethod
     def _snapshot_identity(value: object) -> tuple[int, int]:

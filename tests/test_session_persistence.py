@@ -13,52 +13,306 @@ from session_startup import choose_source_directory, initialize_gui_session, sho
 
 
 class PhotoSessionSnapshotTests(unittest.TestCase):
-    def test_snapshot_round_trip_preserves_full_state(self):
+    @staticmethod
+    def _version_two_snapshot(session):
+        return {
+            "snapshot_version": 2,
+            "source_dir": str(session.source_dir),
+            "keep_dir": str(session.keep_dir) if session.keep_dir is not None else None,
+            "nah_dir": str(session.nah_dir) if session.nah_dir is not None else None,
+            "action_mode": session.action_mode,
+            "queue": [
+                {
+                    "stem": group.stem,
+                    "members": [str(member) for member in group.members],
+                    "representative": str(group.representative),
+                }
+                for group in session.queue
+            ],
+            "active_index": session.active_index,
+            "active_stem": (
+                session.active_group.stem if session.active_group is not None else None
+            ),
+            "total_loaded": session.total_loaded,
+            "keep_count": session.keep_count,
+            "nah_count": session.nah_count,
+            "available_extensions": list(session.available_extensions),
+            "enabled_extensions": sorted(session.enabled_extensions),
+            "history": [
+                {
+                    "decision": record.decision,
+                    "action_mode": record.action_mode,
+                    "group": {
+                        "stem": record.group.stem,
+                        "members": [str(member) for member in record.group.members],
+                        "representative": str(record.group.representative),
+                    },
+                    "files": [
+                        {
+                            "source": str(operation.source),
+                            "destination": str(operation.destination),
+                            "destination_identity": list(
+                                operation.destination_identity
+                            ),
+                        }
+                        for operation in record.files
+                    ],
+                    "index": record.index,
+                }
+                for record in session.history
+            ],
+        }
+
+    def test_grouped_snapshot_round_trip_preserves_filter_groups_and_history(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "source"
             keep = root / "keep"
             nah = root / "nah"
             source.mkdir()
-            active = source / "active.jpg"
-            other = source / "other.png"
-            active.touch()
-            other.touch()
-            keep.mkdir()
-            (keep / "done.jpg").touch()
+            (source / "A_done.cr3").write_bytes(b"raw")
+            (source / "A_done.jpg").write_bytes(b"jpg")
+            active = source / "Z_active.png"
+            active.write_bytes(b"png")
 
             session = PhotoSession()
-            session.source_dir = source
-            session.keep_dir = keep
-            session.nah_dir = nah
-            session.action_mode = "copy"
-            session.queue = [active, other]
-            session.active_index = 1
-            session.total_loaded = 5
-            session.keep_count = 2
-            session.nah_count = 1
-            done_source = source / "done.jpg"
-            done_destination = keep / "done.jpg"
-            done_stat = done_destination.stat()
-            session.history = [
-                ActionRecord(
-                    "keep",
-                    "copy",
-                    PhotoGroup("done", (done_source,), done_source),
-                    (
-                        FileOperation(
-                            done_source,
-                            done_destination,
-                            (done_stat.st_dev, done_stat.st_ino),
-                        ),
-                    ),
-                    0,
+            session.set_source_dir(source)
+            session.set_keep_dir(keep)
+            session.set_nah_dir(nah)
+            session.set_action_mode("copy")
+            session.load_queue()
+            result = session.decide("keep")
+            session.apply_extension_filter({".png"})
+
+            expected_snapshot = self._version_two_snapshot(session)
+            snapshot = session.to_snapshot()
+            self.assertEqual(snapshot, expected_snapshot)
+            restored = PhotoSession.from_snapshot(snapshot)
+
+            self.assertEqual(snapshot["snapshot_version"], 2)
+            self.assertEqual(snapshot["active_stem"], "Z_active")
+            self.assertEqual(len(snapshot["queue"][0]["members"]), 1)
+            self.assertEqual(len(snapshot["history"][0]["files"]), 2)
+            self.assertEqual(
+                snapshot["history"][0]["files"][0]["destination_identity"],
+                list(result.files[0].destination_identity),
+            )
+            self.assertEqual(getattr(restored, "snapshot_version", None), 2)
+            self.assertEqual(restored.queue, session.queue)
+            self.assertEqual(restored.active_group.stem, session.active_group.stem)
+            self.assertEqual(restored.available_extensions, session.available_extensions)
+            self.assertEqual(restored.enabled_extensions, session.enabled_extensions)
+            self.assertEqual(restored.history, session.history)
+            self.assertEqual(restored.to_snapshot(), snapshot)
+
+    def test_version_two_unsafe_group_payload_invalidates_entire_session(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            source.mkdir()
+            photo = source / "photo.jpg"
+            photo.touch()
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.load_queue()
+            snapshot = self._version_two_snapshot(session)
+            self.assertIsNotNone(PhotoSession.from_snapshot(snapshot))
+            outside = root / "outside.jpg"
+            outside.touch()
+
+            unsafe_groups = (
+                {**snapshot["queue"][0], "members": [str(outside)]},
+                {**snapshot["queue"][0], "representative": str(outside)},
+                {**snapshot["queue"][0], "stem": "wrong"},
+                {**snapshot["queue"][0], "members": []},
+            )
+            for group in unsafe_groups:
+                with self.subTest(group=group):
+                    self.assertIsNone(
+                        PhotoSession.from_snapshot({**snapshot, "queue": [group]})
+                    )
+
+    def test_version_two_rejects_group_member_symlink_escape(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            source.mkdir()
+            photo = source / "photo.jpg"
+            photo.touch()
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.load_queue()
+            snapshot = self._version_two_snapshot(session)
+            self.assertIsNotNone(PhotoSession.from_snapshot(snapshot))
+            outside = root / "outside.jpg"
+            outside.touch()
+            escaped = source / "escaped.jpg"
+            try:
+                escaped.symlink_to(outside)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+            snapshot["queue"][0]["members"] = [str(escaped)]
+            snapshot["queue"][0]["representative"] = str(escaped)
+            snapshot["queue"][0]["stem"] = "escaped"
+
+            self.assertIsNone(PhotoSession.from_snapshot(snapshot))
+
+    def test_version_two_drops_whole_compound_history_record_when_one_file_is_unsafe(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            keep = root / "keep"
+            source.mkdir()
+            (source / "done.cr3").touch()
+            (source / "done.jpg").touch()
+            (source / "remaining.jpg").touch()
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.set_keep_dir(keep)
+            session.set_action_mode("copy")
+            session.load_queue()
+            session.decide("keep")
+            snapshot = self._version_two_snapshot(session)
+            self.assertIsNotNone(PhotoSession.from_snapshot(snapshot))
+            outside = root / "outside.cr3"
+            outside.touch()
+            snapshot["history"][0]["files"][0]["destination"] = str(outside)
+
+            restored = PhotoSession.from_snapshot(snapshot)
+
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.history, [])
+
+    def test_version_two_drops_history_when_destination_identity_no_longer_owns_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            keep = root / "keep"
+            source.mkdir()
+            (source / "done.jpg").touch()
+            (source / "remaining.jpg").touch()
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.set_keep_dir(keep)
+            session.set_action_mode("copy")
+            session.load_queue()
+            result = session.decide("keep")
+            snapshot = self._version_two_snapshot(session)
+            self.assertIsNotNone(PhotoSession.from_snapshot(snapshot))
+            result.destination.unlink()
+            result.destination.write_bytes(b"replacement")
+
+            restored = PhotoSession.from_snapshot(snapshot)
+
+            self.assertIsNotNone(restored)
+            self.assertFalse(restored.can_undo)
+
+    def test_version_two_rejects_malformed_numeric_fields(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "source"
+            source.mkdir()
+            (source / "photo.jpg").touch()
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.load_queue()
+            snapshot = self._version_two_snapshot(session)
+            self.assertIsNotNone(PhotoSession.from_snapshot(snapshot))
+
+            invalid_fields = (
+                ("active_index", True),
+                ("active_index", -1),
+                ("total_loaded", "1"),
+                ("keep_count", 1.5),
+                ("nah_count", float("inf")),
+            )
+            for field, value in invalid_fields:
+                with self.subTest(field=field, value=value):
+                    self.assertIsNone(
+                        PhotoSession.from_snapshot({**snapshot, field: value})
+                    )
+
+    def test_version_two_rejects_unknown_version_and_malformed_extensions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "source"
+            source.mkdir()
+            (source / "photo.jpg").touch()
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.load_queue()
+            snapshot = self._version_two_snapshot(session)
+            self.assertIsNotNone(PhotoSession.from_snapshot(snapshot))
+
+            self.assertIsNone(
+                PhotoSession.from_snapshot({**snapshot, "snapshot_version": 99})
+            )
+            self.assertIsNone(
+                PhotoSession.from_snapshot(
+                    {**snapshot, "enabled_extensions": ["../jpg"]}
                 )
-            ]
+            )
 
-            restored = PhotoSession.from_snapshot(session.to_snapshot())
+    def test_legacy_snapshot_rebuilds_groups_and_preserves_active_stem_and_filter(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "source"
+            source.mkdir()
+            raw = source / "IMG_1.cr3"
+            jpg = source / "IMG_1.jpg"
+            active = source / "IMG_2.jpg"
+            png = source / "IGNORED.png"
+            for path in (raw, jpg, active, png):
+                path.touch()
+            legacy = {
+                "source_dir": str(source),
+                "queue": [str(jpg), str(active)],
+                "active_index": 1,
+                "history": [],
+            }
 
-            self.assertEqual(restored.to_snapshot(), session.to_snapshot())
+            restored = PhotoSession.from_snapshot(legacy)
+
+            self.assertIsNotNone(restored)
+            self.assertEqual(getattr(restored, "snapshot_version", None), 2)
+            self.assertEqual(restored.enabled_extensions, {".jpg"})
+            self.assertEqual(
+                restored.queue,
+                [
+                    PhotoGroup("IMG_1", (raw, jpg), jpg),
+                    PhotoGroup("IMG_2", (active,), active),
+                ],
+            )
+            self.assertEqual(restored.active_group.stem, "IMG_2")
+
+    def test_legacy_identity_history_migrates_to_one_file_compound_record(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            keep = root / "keep"
+            source.mkdir()
+            keep.mkdir()
+            remaining = source / "remaining.jpg"
+            remaining.touch()
+            destination = keep / "done.jpg"
+            destination.touch()
+            identity = destination.stat().st_dev, destination.stat().st_ino
+            legacy = {
+                "source_dir": str(source),
+                "keep_dir": str(keep),
+                "queue": [str(remaining)],
+                "history": [{
+                    "decision": "keep",
+                    "action_mode": "move",
+                    "source": str(source / "done.jpg"),
+                    "destination": str(destination),
+                    "destination_identity": list(identity),
+                    "index": 0,
+                }],
+            }
+
+            restored = PhotoSession.from_snapshot(legacy)
+
+            self.assertEqual(len(restored.history), 1)
+            self.assertEqual(len(restored.history[0].files), 1)
+            self.assertEqual(restored.history[0].files[0].destination_identity, identity)
 
     def test_restore_prunes_missing_and_unsupported_queue_and_normalizes_index(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -76,7 +330,7 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
 
             restored = PhotoSession.from_snapshot(snapshot)
 
-            self.assertEqual(restored.queue, [valid])
+            self.assertEqual(restored.queue, [PhotoGroup("valid", (valid,), valid)])
             self.assertEqual(restored.active_index, 0)
 
     def test_restore_rejects_existing_queue_file_outside_source(self):
@@ -205,9 +459,9 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             result = session.decide("keep")
 
             snapshot = session.to_snapshot()
-            self.assertIn("destination_identity", snapshot["history"][0])
+            self.assertIn("files", snapshot["history"][0])
             self.assertEqual(
-                snapshot["history"][0]["destination_identity"],
+                snapshot["history"][0]["files"][0]["destination_identity"],
                 list(result.files[0].destination_identity),
             )
 
@@ -407,6 +661,22 @@ class SessionPersistenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             store = SessionPersistence(Path(temp) / "session.json")
             store.save({"source_dir": "/missing", "queue": ["/missing/a.jpg"]})
+            self.assertIsNone(SessionLifecycle(store).restore())
+            self.assertFalse(store.path.exists())
+
+    def test_lifecycle_clears_corrupt_json_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = SessionPersistence(Path(temp) / "session.json")
+            store.path.write_text("not json", encoding="utf-8")
+
+            self.assertIsNone(SessionLifecycle(store).restore())
+            self.assertFalse(store.path.exists())
+
+    def test_lifecycle_clears_non_object_json_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = SessionPersistence(Path(temp) / "session.json")
+            store.path.write_text("[]", encoding="utf-8")
+
             self.assertIsNone(SessionLifecycle(store).restore())
             self.assertFalse(store.path.exists())
 
