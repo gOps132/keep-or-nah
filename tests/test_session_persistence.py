@@ -9,7 +9,12 @@ from photo_groups import PhotoGroup
 from photo_session import ActionRecord, FileOperation, PhotoSession
 from app_settings import resolve_settings_path
 from session_persistence import SessionLifecycle, SessionPersistence, resolve_session_path
-from session_startup import choose_source_directory, initialize_gui_session, show_session_warning
+from session_startup import (
+    choose_source_directory,
+    initialize_gui_session,
+    session_has_pending_photos,
+    show_session_warning,
+)
 
 
 class PhotoSessionSnapshotTests(unittest.TestCase):
@@ -28,6 +33,14 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
                     "representative": str(group.representative),
                 }
                 for group in session.queue
+            ],
+            "pending_groups": [
+                {
+                    "stem": group.stem,
+                    "members": [str(member) for member in group.members],
+                    "representative": str(group.representative),
+                }
+                for group in session.pending_groups
             ],
             "active_index": session.active_index,
             "active_stem": (
@@ -105,6 +118,39 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             self.assertEqual(restored.history, session.history)
             self.assertEqual(restored.to_snapshot(), snapshot)
 
+    def test_copy_filter_restart_keeps_processed_group_out_and_hidden_pending_group_saved(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            keep = root / "keep"
+            source.mkdir()
+            (source / "A.cr3").write_bytes(b"raw")
+            (source / "A.jpg").write_bytes(b"jpg")
+            (source / "B.jpg").write_bytes(b"jpg")
+
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.set_keep_dir(keep)
+            session.set_action_mode("copy")
+            session.load_queue()
+            session.decide("keep")
+            session.apply_extension_filter({".cr3"})
+
+            self.assertEqual(session.queue, [])
+            self.assertEqual([group.stem for group in session.pending_groups], ["B"])
+
+            store = SessionPersistence(root / "session.json")
+            self.assertTrue(SessionLifecycle(store).persist(session))
+            self.assertTrue(store.path.exists())
+
+            restored = SessionLifecycle(store).restore()
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.queue, [])
+            self.assertEqual([group.stem for group in restored.pending_groups], ["B"])
+            self.assertTrue(session_has_pending_photos(restored))
+            restored.apply_extension_filter({".jpg"})
+            self.assertEqual([group.stem for group in restored.queue], ["B"])
+
     def test_version_two_unsafe_group_payload_invalidates_entire_session(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -131,6 +177,46 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
                     self.assertIsNone(
                         PhotoSession.from_snapshot({**snapshot, "queue": [group]})
                     )
+
+    def test_version_two_rejects_pending_group_member_outside_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            source.mkdir()
+            (source / "A.jpg").write_bytes(b"jpg")
+            (source / "B.png").write_bytes(b"png")
+            outside = root / "outside.png"
+            outside.write_bytes(b"outside")
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.load_queue()
+            session.apply_extension_filter({".jpg"})
+            snapshot = session.to_snapshot()
+            snapshot["pending_groups"][1]["members"] = [str(outside)]
+            snapshot["pending_groups"][1]["representative"] = str(outside)
+
+            self.assertIsNone(PhotoSession.from_snapshot(snapshot))
+
+    def test_version_two_rejects_processed_group_hidden_in_pending_groups(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            keep = root / "keep"
+            source.mkdir()
+            (source / "A.cr3").write_bytes(b"raw")
+            (source / "B.jpg").write_bytes(b"jpg")
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.set_keep_dir(keep)
+            session.set_action_mode("copy")
+            session.load_queue()
+            session.decide("keep")
+            session.apply_extension_filter({".jpg"})
+            snapshot = session.to_snapshot()
+            snapshot["pending_groups"].append(snapshot["history"][0]["group"])
+            snapshot["total_loaded"] = 3
+
+            self.assertIsNone(PhotoSession.from_snapshot(snapshot))
 
     def test_version_two_rejects_group_member_symlink_escape(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -917,6 +1003,7 @@ class SessionPersistenceTests(unittest.TestCase):
             restored = lifecycle.restore()
             self.assertEqual(restored.active_photo, photo)
             restored.queue.clear()
+            restored.pending_groups.clear()
             lifecycle.persist(restored)
             self.assertIsNone(store.load())
 
@@ -962,7 +1049,7 @@ class SessionPersistenceTests(unittest.TestCase):
         errors = []
         lifecycle = SessionLifecycle(store, error_handler=errors.append)
 
-        self.assertFalse(lifecycle.persist(Mock(remaining_count=0)))
+        self.assertFalse(lifecycle.persist(Mock(remaining_count=0, pending_count=0)))
         self.assertEqual(len(errors), 1)
 
 

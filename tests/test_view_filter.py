@@ -13,6 +13,7 @@ from photo_session import PhotoSession
 from view_filter import (
     EMPTY_SELECTION_MESSAGE,
     ExtensionFilterModel,
+    ViewFilterError,
     apply_extension_filter,
     selected_extensions,
     unavailable_preview_message,
@@ -50,8 +51,33 @@ class ExtensionFilterModelTests(unittest.TestCase):
 
 
 class ViewFilterApplicationTests(unittest.TestCase):
+    def test_source_drift_to_no_effective_selection_is_atomic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            jpg = source / "IMG.jpg"
+            jpg.write_bytes(b"jpg")
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.load_queue()
+            old_queue = list(session.queue)
+
+            jpg.unlink()
+            (source / "IMG.png").write_bytes(b"png")
+            app = SimpleNamespace(session=session)
+
+            with self.assertRaisesRegex(
+                ViewFilterError,
+                f"^{EMPTY_SELECTION_MESSAGE}$",
+            ):
+                apply_extension_filter(app, {".jpg"})
+
+            self.assertEqual(session.available_extensions, (".jpg",))
+            self.assertEqual(session.enabled_extensions, {".jpg"})
+            self.assertEqual(session.queue, old_queue)
+
     def test_shared_coordinator_applies_filter_resets_and_refreshes(self) -> None:
         session = SimpleNamespace(
+            source_dir=Path("source"),
             preview_paths=(Path("IMG.cr3"),),
             apply_extension_filter=Mock(return_value=1),
         )
@@ -73,7 +99,11 @@ class ViewFilterApplicationTests(unittest.TestCase):
             refresh_preview=Mock(),
         )
 
-        count = apply_extension_filter(app, {".cr3"})
+        with unittest.mock.patch(
+            "view_filter.discover_extensions",
+            return_value=(".cr3",),
+        ):
+            count = apply_extension_filter(app, {".cr3"})
 
         self.assertEqual(count, 1)
         session.apply_extension_filter.assert_called_once_with({".cr3"})
@@ -154,6 +184,64 @@ class ViewFilterApplicationTests(unittest.TestCase):
                         "Preview not available\nIMG_1.cr3\n.cr3",
                     )
 
+    def test_both_frontend_settings_saves_catch_filter_drift_before_preview_mutation(self) -> None:
+        for frontend in (App, ClassicApp):
+            with tempfile.TemporaryDirectory() as directory:
+                source = Path(directory)
+                jpg = source / "IMG.jpg"
+                jpg.write_bytes(b"jpg")
+                session = PhotoSession()
+                session.set_source_dir(source)
+                session.load_queue()
+                jpg.unlink()
+                (source / "IMG.png").write_bytes(b"png")
+                show_error = Mock()
+                fake = SimpleNamespace(
+                    session=session,
+                    apply_preview_settings=Mock(),
+                )
+
+                with self.subTest(frontend=frontend.__name__):
+                    saved = frontend.save_settings_changes(
+                        fake,
+                        SimpleNamespace(),
+                        {".jpg"},
+                        show_error,
+                    )
+                    self.assertFalse(saved)
+                    show_error.assert_called_once_with(
+                        "Keep or Nah",
+                        EMPTY_SELECTION_MESSAGE,
+                    )
+                    fake.apply_preview_settings.assert_not_called()
+
+    def test_both_frontend_settings_saves_catch_missing_source(self) -> None:
+        for frontend in (App, ClassicApp):
+            with tempfile.TemporaryDirectory() as directory:
+                source = Path(directory) / "source"
+                source.mkdir()
+                (source / "IMG.jpg").write_bytes(b"jpg")
+                session = PhotoSession()
+                session.set_source_dir(source)
+                session.load_queue()
+                source.rename(source.with_name("moved"))
+                show_error = Mock()
+                fake = SimpleNamespace(
+                    session=session,
+                    apply_preview_settings=Mock(),
+                )
+
+                with self.subTest(frontend=frontend.__name__):
+                    saved = frontend.save_settings_changes(
+                        fake,
+                        SimpleNamespace(),
+                        {".jpg"},
+                        show_error,
+                    )
+                    self.assertFalse(saved)
+                    self.assertIn("No such file", show_error.call_args.args[1])
+                    fake.apply_preview_settings.assert_not_called()
+
 
 class UnsupportedPreviewControlTests(unittest.TestCase):
     def test_both_frontends_keep_sorting_controls_enabled_for_unsupported_path(self) -> None:
@@ -200,6 +288,38 @@ class UnsupportedPreviewControlTests(unittest.TestCase):
         ClassicApp.refresh_ui(classic)
         classic.keep_button.state.assert_called_with(["!disabled"])
         classic.nah_button.state.assert_called_with(["!disabled"])
+
+    def test_both_frontends_show_filtered_empty_state_with_pending_groups(self) -> None:
+        session = SimpleNamespace(
+            active_photo=None,
+            source_dir=Path("source"),
+            can_undo=True,
+            total_loaded=2,
+            pending_count=1,
+        )
+        for frontend in (App, ClassicApp):
+            fake = SimpleNamespace(
+                session=session,
+                update_selector_buttons=Mock(),
+                update_action_button_visibility=Mock(),
+                refresh_thumbnail_strip=Mock(),
+                focus_set=Mock(),
+                reset_preview_request_state=Mock(),
+                clear_preview=Mock(),
+                load_button=Mock(),
+                undo_button=Mock(),
+                zoom_in_button=Mock(),
+                zoom_out_button=Mock(),
+                zoom_fit_button=Mock(),
+                keep_button=Mock(),
+                nah_button=Mock(),
+            )
+
+            with self.subTest(frontend=frontend.__name__):
+                frontend.refresh_ui(fake)
+                fake.clear_preview.assert_called_once_with(
+                    "No Photo\nNo pending photos match the extension filter."
+                )
 
 
 class UnavailablePreviewMessageTests(unittest.TestCase):

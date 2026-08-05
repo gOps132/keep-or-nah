@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 import time
 import unittest
 from types import SimpleNamespace
@@ -56,6 +57,7 @@ class PreviewPipelineUnavailableTests(unittest.TestCase):
         pipeline = PreviewPipeline(max_workers=1)
         path = Path("unsupported.cr3")
         try:
+            pipeline.reset([path])
             pipeline.set_viewport(100, 100)
             request_id = pipeline.start_preview_request(path, active_index=0)
 
@@ -81,6 +83,41 @@ class PreviewPipelineUnavailableTests(unittest.TestCase):
                 return completed
             time.sleep(0.01)
         self.fail("Preview pipeline did not report a completion")
+
+    def test_reset_discards_in_flight_cache_writes_and_completion_from_old_generation(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
+        class BlockingStrategy:
+            extensions = frozenset({".slow"})
+
+            def load(self, _path):
+                entered.set()
+                release.wait(timeout=1)
+                return Image.new("RGBA", (20, 20), "red")
+
+        old_path = Path("old.slow")
+        new_path = Path("new.slow")
+        registry = PreviewStrategyRegistry([BlockingStrategy()])
+        pipeline = PreviewPipeline(max_workers=1, preview_registry=registry)
+        try:
+            pipeline.reset([old_path])
+            pipeline.set_viewport(100, 100)
+            pipeline.start_preview_request(old_path, active_index=0)
+            self.assertTrue(entered.wait(timeout=1))
+
+            pipeline.reset([new_path])
+            release.set()
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline and pipeline._pending_keys:
+                time.sleep(0.01)
+
+            self.assertFalse(pipeline.has_source(old_path))
+            self.assertIsNone(pipeline.get_best_preview(old_path).image)
+            self.assertNotIn(old_path, [event.path for event in pipeline.drain_completed()])
+        finally:
+            release.set()
+            pipeline.shutdown()
 
 
 class UnavailablePreviewFrontendTests(unittest.TestCase):

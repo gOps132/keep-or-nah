@@ -44,6 +44,7 @@ class PreviewTask:
     path: Path = field(compare=False)
     viewport: tuple[int, int] = field(compare=False)
     request_id: int = field(compare=False)
+    generation: int = field(compare=False)
 
 
 class PreviewPipeline:
@@ -72,7 +73,8 @@ class PreviewPipeline:
         self.render_cache_limit_bytes = 0
 
         self._sequence = 0
-        self._pending_keys: set[tuple[TaskKind, Path, tuple[int, int]]] = set()
+        self._generation = 0
+        self._pending_keys: set[tuple[int, TaskKind, Path, tuple[int, int]]] = set()
         self._tasks: PriorityQueue[PreviewTask] = PriorityQueue()
         self._completed: Queue[CompletedPreview] = Queue()
         self._lock = threading.Lock()
@@ -98,15 +100,17 @@ class PreviewPipeline:
                     path=Path("."),
                     viewport=(0, 0),
                     request_id=0,
+                    generation=self._generation,
                 )
             )
         for worker in self._workers:
             worker.join(timeout=0.2)
 
     def reset(self, paths: Sequence[Path]) -> None:
-        self.paths = tuple(paths)
-        allowed = set(self.paths)
         with self._lock:
+            self._generation += 1
+            self.paths = tuple(paths)
+            allowed = set(self.paths)
             self._prune_source_cache_locked(allowed)
             self._prune_render_cache_locked(allowed)
             self.failed_preview_keys = {key for key in self.failed_preview_keys if key[0] in allowed}
@@ -131,14 +135,16 @@ class PreviewPipeline:
     def start_preview_request(self, path: Path, active_index: int, progressive_enabled: bool = True) -> int:
         viewport = self.viewport
         request_id = self._next_sequence()
+        with self._lock:
+            generation = self._generation
         if viewport[0] < 8 or viewport[1] < 8:
             return request_id
 
         if progressive_enabled and not self._has_render(path, viewport, "fast"):
-            self._enqueue_task("active_fast", path, viewport, request_id, priority=(0, 0, request_id))
+            self._enqueue_task("active_fast", path, viewport, request_id, generation, priority=(0, 0, request_id))
         if not self._has_render(path, viewport, "full"):
-            self._enqueue_task("active_full", path, viewport, request_id, priority=(1, 0, request_id))
-        self._enqueue_prefetch(active_index, viewport, request_id)
+            self._enqueue_task("active_full", path, viewport, request_id, generation, priority=(1, 0, request_id))
+        self._enqueue_prefetch(active_index, viewport, request_id, generation)
         return request_id
 
     def get_best_preview(self, path: Path) -> PreviewLookup:
@@ -186,7 +192,13 @@ class PreviewPipeline:
             except Empty:
                 return completed
 
-    def _enqueue_prefetch(self, active_index: int, viewport: tuple[int, int], request_id: int) -> None:
+    def _enqueue_prefetch(
+        self,
+        active_index: int,
+        viewport: tuple[int, int],
+        request_id: int,
+        generation: int,
+    ) -> None:
         if not self.paths:
             return
 
@@ -202,6 +214,7 @@ class PreviewPipeline:
                     path,
                     viewport,
                     request_id,
+                    generation,
                     priority=(2, distance, request_id),
                 )
 
@@ -211,11 +224,17 @@ class PreviewPipeline:
         path: Path,
         viewport: tuple[int, int],
         request_id: int,
+        generation: int,
         priority: tuple[int, int, int],
     ) -> None:
-        key = (kind, path, viewport)
+        key = (generation, kind, path, viewport)
         with self._lock:
-            if key in self._pending_keys or self._closed:
+            if (
+                key in self._pending_keys
+                or self._closed
+                or generation != self._generation
+                or path not in self.paths
+            ):
                 return
             self._pending_keys.add(key)
         self._tasks.put(
@@ -226,6 +245,7 @@ class PreviewPipeline:
                 path=path,
                 viewport=viewport,
                 request_id=request_id,
+                generation=generation,
             )
         )
 
@@ -235,12 +255,13 @@ class PreviewPipeline:
             if task.kind == "shutdown":
                 return
 
-            pending_key = (task.kind, task.path, task.viewport)
+            pending_key = (task.generation, task.kind, task.path, task.viewport)
             try:
-                self._process_task(task)
+                if self._task_is_current(task):
+                    self._process_task(task)
             except Exception:
                 logger.exception("Preview task failed for %s", task.path)
-                self._mark_failed(task.path, task.viewport, task.request_id)
+                self._mark_failed(task)
             finally:
                 with self._lock:
                     self._pending_keys.discard(pending_key)
@@ -253,91 +274,116 @@ class PreviewPipeline:
         if task.kind == "active_full" and self._has_render(task.path, task.viewport, "full"):
             return
 
-        source = self._get_or_load_source(task.path, task.request_id, task.viewport)
+        source = self._get_or_load_source(task)
         if source is None:
             return
 
         if task.kind == "active_fast":
             preview = self._render_fit_preview(source, task.viewport, stage="fast")
-            self._store_render(task.path, task.viewport, "fast", preview)
-            self._completed.put(CompletedPreview(path=task.path, request_id=task.request_id, stage="fast"))
+            if self._store_render(task, "fast", preview):
+                self._publish_completion(task, "fast")
             return
 
         preview = self._render_fit_preview(source, task.viewport, stage="full")
-        self._store_render(task.path, task.viewport, "full", preview)
-        self._completed.put(CompletedPreview(path=task.path, request_id=task.request_id, stage="full"))
+        if self._store_render(task, "full", preview):
+            self._publish_completion(task, "full")
 
     def _get_or_load_source(
         self,
-        path: Path,
-        request_id: int,
-        viewport: tuple[int, int],
+        task: PreviewTask,
     ) -> Image.Image | None:
         with self._lock:
-            cached = self.source_cache.get(path)
+            if not self._task_is_current_locked(task):
+                return None
+            cached = self.source_cache.get(task.path)
             if cached is not None:
-                self.source_cache.move_to_end(path)
+                self.source_cache.move_to_end(task.path)
                 return cached
-            if self._preview_key(path, viewport) in self.unavailable_preview_keys:
+            if self._preview_key(task.path, task.viewport) in self.unavailable_preview_keys:
                 return None
 
         try:
-            source = self._load_source(path)
+            source = self._load_source(task.path)
         except OSError:
-            self._mark_failed(path, viewport, request_id)
+            self._mark_failed(task)
             return None
         if source is None:
-            self._mark_unavailable(path, viewport, request_id)
+            self._mark_unavailable(task)
             return None
 
-        self._store_source(path, source)
-        self._completed.put(CompletedPreview(path=path, request_id=request_id, stage="source"))
+        if not self._store_source(task, source):
+            return None
+        self._publish_completion(task, "source")
         return source
 
-    def _store_source(self, path: Path, source: Image.Image) -> None:
+    def _store_source(self, task: PreviewTask, source: Image.Image) -> bool:
         source_bytes = self._estimate_bytes(source)
         with self._lock:
-            previous = self.source_cache.pop(path, None)
+            if not self._task_is_current_locked(task):
+                return False
+            previous = self.source_cache.pop(task.path, None)
             if previous is not None:
                 self.source_cache_bytes -= self._estimate_bytes(previous)
-            self.source_cache[path] = source
+            self.source_cache[task.path] = source
             self.source_cache_bytes += source_bytes
             self._trim_source_cache_locked()
+            return True
 
     def _store_render(
         self,
-        path: Path,
-        viewport: tuple[int, int],
+        task: PreviewTask,
         stage: PreviewStage,
         preview: Image.Image,
-    ) -> None:
-        key = (path, viewport[0], viewport[1], stage)
+    ) -> bool:
+        key = (task.path, task.viewport[0], task.viewport[1], stage)
         preview_bytes = self._estimate_bytes(preview)
         with self._lock:
+            if not self._task_is_current_locked(task):
+                return False
             previous = self.render_cache.pop(key, None)
             if previous is not None:
                 self.render_cache_bytes -= self._estimate_bytes(previous)
             self.render_cache[key] = preview
             self.render_cache_bytes += preview_bytes
-            self.failed_preview_keys.discard((path, viewport[0], viewport[1]))
-            self.unavailable_preview_keys.discard((path, viewport[0], viewport[1]))
+            self.failed_preview_keys.discard((task.path, task.viewport[0], task.viewport[1]))
+            self.unavailable_preview_keys.discard((task.path, task.viewport[0], task.viewport[1]))
             self._trim_render_cache_locked()
+            return True
 
-    def _mark_failed(self, path: Path, viewport: tuple[int, int], request_id: int) -> None:
-        key = self._preview_key(path, viewport)
-        if key is not None:
-            with self._lock:
+    def _mark_failed(self, task: PreviewTask) -> None:
+        key = self._preview_key(task.path, task.viewport)
+        with self._lock:
+            if not self._task_is_current_locked(task):
+                return
+            if key is not None:
                 self.failed_preview_keys.add(key)
                 self.unavailable_preview_keys.discard(key)
-        self._completed.put(CompletedPreview(path=path, request_id=request_id, stage="error"))
+            self._completed.put(CompletedPreview(path=task.path, request_id=task.request_id, stage="error"))
 
-    def _mark_unavailable(self, path: Path, viewport: tuple[int, int], request_id: int) -> None:
-        key = self._preview_key(path, viewport)
-        if key is not None:
-            with self._lock:
+    def _mark_unavailable(self, task: PreviewTask) -> None:
+        key = self._preview_key(task.path, task.viewport)
+        with self._lock:
+            if not self._task_is_current_locked(task):
+                return
+            if key is not None:
                 self.unavailable_preview_keys.add(key)
                 self.failed_preview_keys.discard(key)
-        self._completed.put(CompletedPreview(path=path, request_id=request_id, stage="unavailable"))
+            self._completed.put(CompletedPreview(path=task.path, request_id=task.request_id, stage="unavailable"))
+
+    def _publish_completion(self, task: PreviewTask, stage) -> None:
+        with self._lock:
+            if not self._task_is_current_locked(task):
+                return
+            self._completed.put(
+                CompletedPreview(path=task.path, request_id=task.request_id, stage=stage)
+            )
+
+    def _task_is_current(self, task: PreviewTask) -> bool:
+        with self._lock:
+            return self._task_is_current_locked(task)
+
+    def _task_is_current_locked(self, task: PreviewTask) -> bool:
+        return task.generation == self._generation and task.path in self.paths
 
     def _has_render(self, path: Path, viewport: tuple[int, int], stage: PreviewStage) -> bool:
         key = self._preview_key(path, viewport)

@@ -4,11 +4,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Protocol
 
-from photo_session import PhotoSession
+from photo_groups import discover_extensions
+from photo_session import (
+    EMPTY_EXTENSION_SELECTION_MESSAGE,
+    PhotoSession,
+    PhotoSessionError,
+)
 from session_startup import preview_paths_for
 
 
-EMPTY_SELECTION_MESSAGE = "Choose at least one file extension."
+EMPTY_SELECTION_MESSAGE = EMPTY_EXTENSION_SELECTION_MESSAGE
+
+
+class ViewFilterError(RuntimeError):
+    """A settings error that should be shown without closing the dialog."""
 
 
 @dataclass(frozen=True)
@@ -43,7 +52,18 @@ class ExtensionFilterApp(Protocol):
 
 def apply_extension_filter(app: ExtensionFilterApp, extensions: Iterable[str]) -> int:
     selected = validate_extension_selection(extensions)
-    count = app.session.apply_extension_filter(set(selected))
+    source_dir = app.session.source_dir
+    if source_dir is None:
+        raise ViewFilterError("Choose a source folder before loading photos.")
+    try:
+        available = set(discover_extensions(source_dir))
+    except OSError as error:
+        raise ViewFilterError(str(error)) from error
+    effective = {extension.lower() for extension in selected} & available
+    if not effective:
+        raise ViewFilterError(EMPTY_SELECTION_MESSAGE)
+
+    count = app.session.apply_extension_filter(effective)
     paths = preview_paths_for(app.session)
     app.preview_pipeline.reset(paths)
     app.preview_texture_cache.clear()
@@ -62,5 +82,27 @@ def apply_extension_filter(app: ExtensionFilterApp, extensions: Iterable[str]) -
     return count
 
 
+def save_view_filter_settings(
+    app: ExtensionFilterApp,
+    settings,
+    extensions: Iterable[str] | None,
+    show_error,
+) -> bool:
+    try:
+        if extensions is not None:
+            apply_extension_filter(app, extensions)
+    except (ViewFilterError, PhotoSessionError, OSError) as error:
+        show_error("Keep or Nah", str(error))
+        return False
+    app.apply_preview_settings(settings)
+    return True
+
+
 def unavailable_preview_message(path: Path) -> str:
     return f"Preview not available\n{path.name}\n{path.suffix}"
+
+
+def empty_preview_message(session: PhotoSession) -> str:
+    if getattr(session, "pending_count", 0):
+        return "No Photo\nNo pending photos match the extension filter."
+    return "Done" if session.total_loaded else "No Photo"

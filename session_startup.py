@@ -24,6 +24,14 @@ def initialize_gui_session(app: StartupSessionApp) -> None:
     app.refresh_preview()
 
 
+def session_has_pending_photos(session) -> bool:
+    """Return whether recovery has pending work, even when the filter hides it."""
+    pending_count = getattr(session, "pending_count", None)
+    if pending_count is not None:
+        return bool(pending_count)
+    return bool(session.queue)
+
+
 def preview_paths_for(session):
     """Project a session queue to paths, including legacy test/session objects."""
     if hasattr(session, "preview_paths"):

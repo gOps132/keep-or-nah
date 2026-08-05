@@ -27,6 +27,7 @@ SUPPORTED_IMAGE_EXTENSIONS = {
 
 Decision = Literal["keep", "nah"]
 ActionMode = Literal["move", "copy"]
+EMPTY_EXTENSION_SELECTION_MESSAGE = "Choose at least one file extension."
 
 
 class PhotoSessionError(RuntimeError):
@@ -170,6 +171,7 @@ class PhotoSession:
         self.nah_dir: Path | None = None
         self.action_mode: ActionMode = "move"
         self.queue: list[PhotoGroup | Path] = []
+        self.pending_groups: list[PhotoGroup] = []
         self.active_index = 0
         self.history: list[ActionRecord] = []
         self.total_loaded = 0
@@ -189,6 +191,9 @@ class PhotoSession:
             "action_mode": self.action_mode,
             "queue": [
                 self._group_to_snapshot(self._as_group(item)) for item in self.queue
+            ],
+            "pending_groups": [
+                self._group_to_snapshot(group) for group in self.pending_groups
             ],
             "active_index": self.active_index,
             "active_stem": (
@@ -258,16 +263,20 @@ class PhotoSession:
             return None
 
         raw_queue = data.get("queue")
-        if not isinstance(raw_queue, list) or not raw_queue:
+        if not isinstance(raw_queue, list):
+            return None
+        raw_pending = data.get("pending_groups", raw_queue)
+        if not isinstance(raw_pending, list) or not raw_pending:
             return None
         active_index = cls._snapshot_int(data.get("active_index"))
-        if active_index >= len(raw_queue):
-            return None
         active_stem = data.get("active_stem")
-        if type(active_stem) is not str:
+        if raw_queue:
+            if active_index >= len(raw_queue) or type(active_stem) is not str:
+                return None
+        elif active_index != 0 or active_stem is not None:
             return None
 
-        restored_queue = [
+        restored_visible = [
             (
                 index,
                 cls._queue_group_from_snapshot(
@@ -278,53 +287,45 @@ class PhotoSession:
             )
             for index, item in enumerate(raw_queue)
         ]
-        declared_stems = [
+        declared_visible_stems = [
             item.get("stem") if isinstance(item, dict) else None
             for item in raw_queue
         ]
-        if active_stem != declared_stems[active_index]:
+        if raw_queue and active_stem != declared_visible_stems[active_index]:
             return None
-        if len(set(declared_stems)) != len(declared_stems):
+        if len(set(declared_visible_stems)) != len(declared_visible_stems):
             return None
 
-        surviving_queue = [
+        surviving_visible = [
             (original_index, group)
-            for original_index, group in restored_queue
+            for original_index, group in restored_visible
             if group is not None
         ]
-        if not surviving_queue:
+        restored_pending = [
+            cls._queue_group_from_snapshot(
+                item,
+                source_dir=source_dir,
+                enabled_extensions=set(available),
+            )
+            for item in raw_pending
+        ]
+        pending_groups = [group for group in restored_pending if group is not None]
+        if not pending_groups:
             return None
-        queue = [group for _, group in surviving_queue]
-        all_members = [member for group in queue for member in group.members]
+        pending_stems = [
+            item.get("stem") if isinstance(item, dict) else None
+            for item in raw_pending
+        ]
+        if len(set(pending_stems)) != len(pending_stems):
+            return None
+        all_members = [member for group in pending_groups for member in group.members]
         if len(set(all_members)) != len(all_members):
             return None
-
-        retained_active_index = next(
-            (
-                index
-                for index, (original_index, _group) in enumerate(surviving_queue)
-                if original_index == active_index
-            ),
-            None,
-        )
-        if retained_active_index is None:
-            nearest_original_index, _ = min(
-                surviving_queue,
-                key=lambda item: (
-                    abs(item[0] - active_index),
-                    item[0],
-                ),
-            )
-            retained_active_index = next(
-                index
-                for index, (original_index, _group) in enumerate(surviving_queue)
-                if original_index == nearest_original_index
-            )
 
         total_loaded = cls._snapshot_int(data.get("total_loaded"))
         keep_count = cls._snapshot_int(data.get("keep_count"))
         nah_count = cls._snapshot_int(data.get("nah_count"))
-        if total_loaded < keep_count + nah_count + len(raw_queue):
+        if total_loaded < keep_count + nah_count + len(raw_pending):
             return None
 
         session = cls()
@@ -332,20 +333,49 @@ class PhotoSession:
         session.keep_dir = keep_dir
         session.nah_dir = nah_dir
         session.action_mode = mode
-        session.queue = queue
-        session.active_index = retained_active_index
+        session.pending_groups = pending_groups
         session.total_loaded = total_loaded
         session.keep_count = keep_count
         session.nah_count = nah_count
         session.available_extensions = tuple(available)
         session.enabled_extensions = enabled
         session._extensions_source = source_dir.resolve(strict=True)
+        session.queue = session._project_pending_groups()
+        parsed_visible = [group for _, group in surviving_visible]
+        if session.queue != parsed_visible:
+            return None
+        if session.queue:
+            retained_active_index = next(
+                (
+                    index
+                    for index, group in enumerate(session.queue)
+                    if group.stem == active_stem
+                ),
+                None,
+            )
+            if retained_active_index is None:
+                nearest_original_index, _ = min(
+                    surviving_visible,
+                    key=lambda item: (abs(item[0] - active_index), item[0]),
+                )
+                retained_active_index = next(
+                    index
+                    for index, (original_index, _group) in enumerate(surviving_visible)
+                    if original_index == nearest_original_index
+                )
+            session.active_index = retained_active_index
+        else:
+            session.active_index = 0
         session.history = cls._grouped_history_from_snapshot(
             data.get("history"),
             source_dir=source_dir,
             keep_dir=keep_dir,
             nah_dir=nah_dir,
         )
+        if {group.stem for group in session.pending_groups} & {
+            record.group.stem for record in session.history
+        }:
+            return None
         return session
 
     @classmethod
@@ -497,6 +527,7 @@ class PhotoSession:
         session.keep_dir = keep_dir
         session.nah_dir = nah_dir
         session.action_mode = mode
+        session.pending_groups = queue
         session.queue = queue
         session.active_index = active_index
         session.total_loaded = total_loaded
@@ -808,17 +839,23 @@ class PhotoSession:
 
     @property
     def remaining_count(self) -> int:
+        return len(self.pending_groups)
+
+    @property
+    def pending_count(self) -> int:
+        return len(self.pending_groups)
+
+    @property
+    def visible_count(self) -> int:
         return len(self.queue)
 
     @property
     def processed_count(self) -> int:
-        if not self.total_loaded:
-            return 0
-        return self.total_loaded - self.remaining_count
+        return self.keep_count + self.nah_count
 
     @property
     def current_position(self) -> int:
-        if not self.remaining_count:
+        if not self.queue:
             return 0
         return self.active_index + 1
 
@@ -842,6 +879,7 @@ class PhotoSession:
 
     def reset_queue(self) -> None:
         self.queue = []
+        self.pending_groups = []
         self.active_index = 0
         self.history = []
         self.total_loaded = 0
@@ -860,11 +898,12 @@ class PhotoSession:
 
         self.available_extensions = available
         self._extensions_source = source_identity
-        self.queue = build_photo_groups(
+        self.pending_groups = build_photo_groups(
             source_dir,
-            self.enabled_extensions,
+            set(available),
             SUPPORTED_IMAGE_EXTENSIONS,
         )
+        self.queue = self._project_pending_groups()
         self.active_index = 0
         self.history = []
         self.total_loaded = len(self.queue)
@@ -877,29 +916,26 @@ class PhotoSession:
         source_dir = self._validated_source_dir()
         previous_group = self.active_group
         previous_stem = previous_group.stem if previous_group is not None else None
+        previous_position = next(
+            (
+                index
+                for index, group in enumerate(self.pending_groups)
+                if group.stem == previous_stem
+            ),
+            self.active_index,
+        )
         available = discover_extensions(source_dir)
-        self.available_extensions = available
-        self.enabled_extensions = {
+        effective_enabled = {
             extension.lower()
             for extension in enabled
             if extension.lower() in set(available)
         }
+        if not effective_enabled:
+            raise PhotoSessionError(EMPTY_EXTENSION_SELECTION_MESSAGE)
+        self.available_extensions = available
+        self.enabled_extensions = effective_enabled
 
-        all_groups = build_photo_groups(
-            source_dir,
-            set(available),
-            SUPPORTED_IMAGE_EXTENSIONS,
-        )
-        processed_stems = {record.group.stem for record in self.history}
-        rebuilt = [
-            group
-            for group in build_photo_groups(
-                source_dir,
-                self.enabled_extensions,
-                SUPPORTED_IMAGE_EXTENSIONS,
-            )
-            if group.stem not in processed_stems
-        ]
+        rebuilt = self._project_pending_groups()
         self.queue = rebuilt
 
         if not rebuilt:
@@ -917,9 +953,9 @@ class PhotoSession:
                 self.active_index = retained_index
             else:
                 all_positions = {
-                    group.stem: index for index, group in enumerate(all_groups)
+                    group.stem: index
+                    for index, group in enumerate(self.pending_groups)
                 }
-                previous_position = all_positions.get(previous_stem, self.active_index)
                 self.active_index = min(
                     range(len(rebuilt)),
                     key=lambda index: (
@@ -928,8 +964,23 @@ class PhotoSession:
                     ),
                 )
 
-        self.total_loaded = self.keep_count + self.nah_count + len(self.queue)
+        self.total_loaded = self.keep_count + self.nah_count + len(self.pending_groups)
         return len(self.queue)
+
+    def _project_pending_groups(self) -> list[PhotoGroup]:
+        projected: list[PhotoGroup] = []
+        for group in self.pending_groups:
+            eligible = tuple(
+                member
+                for member in group.members
+                if member.suffix.lower() in self.enabled_extensions
+            )
+            if not eligible:
+                continue
+            projected.append(
+                PhotoGroup(group.stem, group.members, self._representative_for(eligible))
+            )
+        return projected
 
     def _validated_source_dir(self) -> Path:
         if self.source_dir is None:
@@ -962,7 +1013,7 @@ class PhotoSession:
         remaining_members = tuple(path for path in group.members if path.is_file())
         if not remaining_members:
             self._remove_queue_item(current_index)
-            self.total_loaded = self.keep_count + self.nah_count + len(self.queue)
+            self.total_loaded = self.keep_count + self.nah_count + len(self.pending_groups)
             raise PhotoSessionError(
                 "The current photo group's files are missing, so it was removed from the queue."
             )
@@ -1029,7 +1080,10 @@ class PhotoSession:
         )
 
     def _remove_queue_item(self, index: int) -> None:
-        self.queue.pop(index)
+        removed = self._as_group(self.queue.pop(index))
+        self.pending_groups = [
+            group for group in self.pending_groups if group.stem != removed.stem
+        ]
         if self.queue:
             self.active_index = min(index, len(self.queue) - 1)
         else:
@@ -1776,9 +1830,17 @@ class PhotoSession:
 
         self.history.pop()
         self._partial_copy_undo.difference_update(record.files)
-        restore_index = min(max(record.index, 0), len(self.queue))
-        self.queue.insert(restore_index, record.group)
-        self.active_index = restore_index
+        self.pending_groups.append(record.group)
+        self.pending_groups.sort(key=lambda group: (group.stem.lower(), group.stem))
+        self.queue = self._project_pending_groups()
+        self.active_index = next(
+            (
+                index
+                for index, group in enumerate(self.queue)
+                if group.stem == record.group.stem
+            ),
+            0,
+        )
         if record.decision == "keep":
             self.keep_count -= 1
         else:

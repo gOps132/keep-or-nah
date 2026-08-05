@@ -17,13 +17,16 @@ from session_startup import (
     choose_source_directory,
     initialize_gui_session,
     preview_paths_for,
+    session_has_pending_photos,
     show_session_warning,
 )
 from view_filter import (
     EMPTY_SELECTION_MESSAGE,
     ExtensionFilterModel,
     apply_extension_filter,
+    empty_preview_message,
     selected_extensions,
+    save_view_filter_settings,
     unavailable_preview_message,
     validate_extension_selection,
 )
@@ -58,7 +61,7 @@ class App(DnDCTk):
             error_handler=lambda message: show_session_warning(self, message)
         )
         self.session = self.session_lifecycle.restore() or PhotoSession()
-        self.restored_startup_session = bool(self.session.queue)
+        self.restored_startup_session = session_has_pending_photos(self.session)
         self.preview_pipeline = PreviewPipeline(cache_budget_mb=self.settings.preview_cache_budget_mb)
         self.preview_photo = None
         self.preview_source_image = None
@@ -436,15 +439,17 @@ class App(DnDCTk):
                 )
                 return
 
-            self.apply_preview_settings(
-                AppSettings(
-                    progressive_preview=progressive_var.get(),
-                    loading_indicator=loading_var.get(),
-                    preview_cache_budget_mb=budget,
-                )
+            settings = AppSettings(
+                progressive_preview=progressive_var.get(),
+                loading_indicator=loading_var.get(),
+                preview_cache_budget_mb=budget,
             )
-            if filter_model.options:
-                self.apply_view_filter(set(selected))
+            if not self.save_settings_changes(
+                settings,
+                set(selected) if filter_model.options else None,
+                messagebox.showerror,
+            ):
+                return
             close_dialog()
 
         ctk.CTkButton(button_row, text="Cancel", command=close_dialog).grid(row=0, column=0, padx=(0, 6), sticky="ew")
@@ -478,6 +483,19 @@ class App(DnDCTk):
 
     def apply_view_filter(self, enabled_extensions: set[str]) -> int:
         return apply_extension_filter(self, enabled_extensions)
+
+    def save_settings_changes(
+        self,
+        settings: AppSettings,
+        enabled_extensions: set[str] | None,
+        show_error=messagebox.showerror,
+    ) -> bool:
+        return save_view_filter_settings(
+            self,
+            settings,
+            enabled_extensions,
+            show_error,
+        )
 
     def initialize_drag_and_drop(self):
         if TkinterDnD is None:
@@ -752,10 +770,7 @@ class App(DnDCTk):
 
         if current is None:
             self.reset_preview_request_state()
-            if self.session.total_loaded:
-                self.clear_preview("Done")
-            else:
-                self.clear_preview("No Photo")
+            self.clear_preview(empty_preview_message(self.session))
 
         self.focus_set()
 
@@ -768,10 +783,7 @@ class App(DnDCTk):
         current = self.session.active_photo
         if current is None:
             self.reset_preview_request_state()
-            if self.session.total_loaded:
-                self.clear_preview("Done")
-            else:
-                self.clear_preview("No Photo")
+            self.clear_preview(empty_preview_message(self.session))
             self.preview_refresh_job = None
             return
         self.refresh_preview()

@@ -85,7 +85,10 @@ class SessionLifecycle:
 
     def persist(self, session: PhotoSession) -> bool:
         try:
-            if session.remaining_count == 0:
+            pending_count = getattr(session, "pending_count", None)
+            if pending_count is None:
+                pending_count = session.remaining_count
+            if pending_count == 0:
                 self.persistence.clear()
             else:
                 self.persistence.save(session.to_snapshot())
