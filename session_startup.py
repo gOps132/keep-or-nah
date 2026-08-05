@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Protocol
 from tkinter import filedialog
 import sys
@@ -18,9 +19,18 @@ def initialize_gui_session(app: StartupSessionApp) -> None:
         return
 
     app.last_browsed_dir = app.session.source_dir
-    app.preview_pipeline.reset(app.session.queue)
+    app.preview_pipeline.reset(preview_paths_for(app.session))
     app.refresh_ui()
     app.refresh_preview()
+
+
+def preview_paths_for(session):
+    """Project a session queue to paths, including legacy test/session objects."""
+    if hasattr(session, "preview_paths"):
+        return session.preview_paths
+    if all(isinstance(item, Path) for item in session.queue):
+        return session.queue
+    return tuple(getattr(item, "representative", item) for item in session.queue)
 
 
 def choose_source_directory(app, dialog=None) -> bool:

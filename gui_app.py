@@ -13,7 +13,12 @@ from app_settings import AppSettings, MAX_PREVIEW_CACHE_BUDGET_MB, MIN_PREVIEW_C
 from photo_session import PhotoSession, PhotoSessionError
 from preview_pipeline import PreviewPipeline
 from session_persistence import SessionLifecycle
-from session_startup import choose_source_directory, initialize_gui_session, show_session_warning
+from session_startup import (
+    choose_source_directory,
+    initialize_gui_session,
+    preview_paths_for,
+    show_session_warning,
+)
 
 try:
     from tkinterdnd2 import TkinterDnD
@@ -409,7 +414,7 @@ class App(DnDCTk):
         self.settings = settings.normalized()
         self.settings.save()
         self.preview_pipeline.configure_cache_budget(self.settings.preview_cache_budget_mb)
-        self.prune_preview_texture_cache(set(self.session.queue))
+        self.prune_preview_texture_cache(set(preview_paths_for(self.session)))
         self.preview_source_path = None
         self.preview_source_image = None
         self.reset_preview_request_state()
@@ -511,7 +516,7 @@ class App(DnDCTk):
         self.rendered_active_index = None
         self.session.reset_queue()
         self.session_lifecycle.clear()
-        self.preview_pipeline.reset(self.session.queue)
+        self.preview_pipeline.reset(preview_paths_for(self.session))
         self.reset_zoom_state()
         self.clear_preview()
         self.refresh_ui()
@@ -583,8 +588,8 @@ class App(DnDCTk):
         except PhotoSessionError as error:
             messagebox.showerror("Keep or Nah", str(error))
             return
-        self.preview_pipeline.reset(self.session.queue)
-        self.prune_preview_texture_cache(set(self.session.queue))
+        self.preview_pipeline.reset(preview_paths_for(self.session))
+        self.prune_preview_texture_cache(set(preview_paths_for(self.session)))
         self.reset_preview_request_state()
         self.persist_session()
 
@@ -611,8 +616,8 @@ class App(DnDCTk):
             messagebox.showerror("Keep or Nah", f"Could not process the file.\n\n{error}")
             return
 
-        self.preview_pipeline.reset(self.session.queue)
-        self.prune_preview_texture_cache(set(self.session.queue))
+        self.preview_pipeline.reset(preview_paths_for(self.session))
+        self.prune_preview_texture_cache(set(preview_paths_for(self.session)))
         self.reset_zoom_state()
         self.preview_source_path = None
         self.preview_source_image = None
@@ -633,8 +638,8 @@ class App(DnDCTk):
             messagebox.showerror("Keep or Nah", f"Could not undo the last action.\n\n{error}")
             return
 
-        self.preview_pipeline.reset(self.session.queue)
-        self.prune_preview_texture_cache(set(self.session.queue))
+        self.preview_pipeline.reset(preview_paths_for(self.session))
+        self.prune_preview_texture_cache(set(preview_paths_for(self.session)))
         self.reset_zoom_state()
         self.preview_source_path = None
         self.preview_source_image = None
@@ -914,7 +919,7 @@ class App(DnDCTk):
     def refresh_thumbnail_strip(self, force_rebuild: bool = False):
         canvas_width = max(self.thumbnail_canvas.winfo_width(), 1)
         canvas_height = max(self.thumbnail_canvas.winfo_height(), 108)
-        paths = tuple(self.session.queue)
+        paths = preview_paths_for(self.session)
         if not paths:
             self.thumbnail_canvas.delete("all")
             self.thumbnail_refs = []
