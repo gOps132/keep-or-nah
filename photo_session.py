@@ -150,6 +150,17 @@ class ActionRecord:
             self.files[0].destination,
         )
 
+    @property
+    def destination_identity(self) -> tuple[int, int] | None:
+        return next(
+            (
+                item.destination_identity
+                for item in self.files
+                if item.source == self.group.representative
+            ),
+            self.files[0].destination_identity,
+        )
+
 
 class PhotoSession:
     def __init__(self) -> None:
@@ -187,6 +198,11 @@ class PhotoSession:
                     "action_mode": record.action_mode,
                     "source": str(record.source),
                     "destination": str(record.destination),
+                    "destination_identity": (
+                        list(record.destination_identity)
+                        if record.destination_identity is not None
+                        else None
+                    ),
                     "index": record.index,
                 }
                 for record in self.history
@@ -299,6 +315,9 @@ class PhotoSession:
                     continue
                 source = Path(item["source"]).expanduser()
                 destination = Path(item["destination"]).expanduser()
+                destination_identity = PhotoSession._snapshot_identity(
+                    item["destination_identity"]
+                )
                 destination_root = keep_dir if decision == "keep" else nah_dir
                 if destination_root is None:
                     continue
@@ -306,7 +325,8 @@ class PhotoSession:
                     continue
                 if not PhotoSession._is_direct_child(destination, destination_root):
                     continue
-                destination_identity = PhotoSession._path_identity(destination)
+                if PhotoSession._path_identity(destination) != destination_identity:
+                    continue
                 group = PhotoGroup(source.stem, (source,), source)
                 history.append(
                     ActionRecord(
@@ -326,6 +346,16 @@ class PhotoSession:
             except (KeyError, OSError, OverflowError, TypeError, ValueError):
                 continue
         return history
+
+    @staticmethod
+    def _snapshot_identity(value: object) -> tuple[int, int]:
+        if (
+            not isinstance(value, (list, tuple))
+            or len(value) != 2
+            or any(type(part) is not int or part < 0 for part in value)
+        ):
+            raise ValueError("Snapshot destination identity must contain two integers")
+        return value[0], value[1]
 
     @staticmethod
     def _is_direct_child(path: Path, root: Path) -> bool:

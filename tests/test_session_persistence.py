@@ -5,7 +5,8 @@ import unittest
 from unittest.mock import Mock, patch
 import warnings
 
-from photo_session import ActionRecord, PhotoSession
+from photo_groups import PhotoGroup
+from photo_session import ActionRecord, FileOperation, PhotoSession
 from app_settings import resolve_settings_path
 from session_persistence import SessionLifecycle, SessionPersistence, resolve_session_path
 from session_startup import choose_source_directory, initialize_gui_session, show_session_warning
@@ -36,7 +37,24 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             session.total_loaded = 5
             session.keep_count = 2
             session.nah_count = 1
-            session.history = [ActionRecord("keep", "copy", source / "done.jpg", keep / "done.jpg", 0)]
+            done_source = source / "done.jpg"
+            done_destination = keep / "done.jpg"
+            done_stat = done_destination.stat()
+            session.history = [
+                ActionRecord(
+                    "keep",
+                    "copy",
+                    PhotoGroup("done", (done_source,), done_source),
+                    (
+                        FileOperation(
+                            done_source,
+                            done_destination,
+                            (done_stat.st_dev, done_stat.st_ino),
+                        ),
+                    ),
+                    0,
+                )
+            ]
 
             restored = PhotoSession.from_snapshot(session.to_snapshot())
 
@@ -186,12 +204,95 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             session.load_queue()
             result = session.decide("keep")
 
-            restored = PhotoSession.from_snapshot(session.to_snapshot())
+            snapshot = session.to_snapshot()
+            self.assertIn("destination_identity", snapshot["history"][0])
+            self.assertEqual(
+                snapshot["history"][0]["destination_identity"],
+                list(result.files[0].destination_identity),
+            )
+
+            restored = PhotoSession.from_snapshot(snapshot)
             restored.undo()
 
             self.assertEqual(restored.active_photo, first)
             self.assertFalse(result.destination.exists())
             self.assertEqual(restored.keep_count, 0)
+
+    def test_legacy_history_without_identity_cannot_claim_unrelated_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            keep = root / "keep"
+            source.mkdir()
+            keep.mkdir()
+            remaining = source / "remaining.jpg"
+            remaining.touch()
+            unrelated = keep / "processed.jpg"
+            unrelated.write_bytes(b"unrelated")
+            snapshot = {
+                "source_dir": str(source),
+                "keep_dir": str(keep),
+                "queue": [str(remaining)],
+                "history": [
+                    {
+                        "decision": "keep",
+                        "action_mode": "copy",
+                        "source": str(source / "processed.jpg"),
+                        "destination": str(unrelated),
+                        "index": 0,
+                    }
+                ],
+            }
+
+            restored = PhotoSession.from_snapshot(snapshot)
+
+            self.assertFalse(restored.can_undo)
+            self.assertEqual(unrelated.read_bytes(), b"unrelated")
+
+    def test_history_identity_must_be_two_plain_ints_matching_destination(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            keep = root / "keep"
+            source.mkdir()
+            keep.mkdir()
+            remaining = source / "remaining.jpg"
+            remaining.touch()
+            destination = keep / "processed.jpg"
+            destination.touch()
+            destination_stat = destination.stat()
+            base_record = {
+                "decision": "keep",
+                "action_mode": "copy",
+                "source": str(source / "processed.jpg"),
+                "destination": str(destination),
+                "index": 0,
+            }
+            invalid_identities = (
+                [destination_stat.st_dev],
+                [True, destination_stat.st_ino],
+                ["device", destination_stat.st_ino],
+                [destination_stat.st_dev, destination_stat.st_ino, 3],
+                [destination_stat.st_dev, destination_stat.st_ino + 1],
+            )
+
+            for identity in invalid_identities:
+                with self.subTest(identity=identity):
+                    snapshot = {
+                        "source_dir": str(source),
+                        "keep_dir": str(keep),
+                        "queue": [str(remaining)],
+                        "history": [
+                            {
+                                **base_record,
+                                "destination_identity": identity,
+                            }
+                        ],
+                    }
+
+                    restored = PhotoSession.from_snapshot(snapshot)
+
+                    self.assertFalse(restored.can_undo)
 
     def test_restore_discards_history_with_destination_outside_decision_folder(self):
         with tempfile.TemporaryDirectory() as temp:
