@@ -19,6 +19,14 @@ from session_startup import (
     preview_paths_for,
     show_session_warning,
 )
+from view_filter import (
+    EMPTY_SELECTION_MESSAGE,
+    ExtensionFilterModel,
+    apply_extension_filter,
+    selected_extensions,
+    unavailable_preview_message,
+    validate_extension_selection,
+)
 
 try:
     from tkinterdnd2 import TkinterDnD
@@ -325,7 +333,7 @@ class App(DnDCTk):
 
         dialog = ctk.CTkToplevel(self)
         dialog.title("Preview Settings")
-        dialog.geometry("440x320")
+        dialog.geometry("460x510")
         dialog.resizable(False, False)
         dialog.transient(self)
         dialog.configure(fg_color=self.main_frame.cget("fg_color"))
@@ -335,6 +343,11 @@ class App(DnDCTk):
         progressive_var = tk.BooleanVar(value=self.settings.progressive_preview)
         loading_var = tk.BooleanVar(value=self.settings.loading_indicator)
         budget_var = tk.StringVar(value=str(self.settings.preview_cache_budget_mb))
+        filter_model = self.extension_filter_model()
+        extension_vars = {
+            extension: tk.BooleanVar(value=extension in filter_model.selected)
+            for extension in filter_model.options
+        }
 
         container = ctk.CTkFrame(dialog, fg_color="transparent")
         container.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
@@ -369,10 +382,31 @@ class App(DnDCTk):
             text_color=self._apply_appearance_mode(("gray45", "gray65")),
             justify="left",
             wraplength=360,
-        ).grid(row=5, column=0, sticky="w", pady=(8, 22))
+        ).grid(row=5, column=0, sticky="w", pady=(8, 14))
+
+        filter_frame = ctk.CTkScrollableFrame(
+            container,
+            label_text="Extension View Filter",
+            height=110,
+        )
+        filter_frame.grid(row=6, column=0, sticky="ew", pady=(0, 16))
+        filter_frame.grid_columnconfigure((0, 1, 2), weight=1)
+        if extension_vars:
+            for index, (extension, variable) in enumerate(extension_vars.items()):
+                ctk.CTkCheckBox(
+                    filter_frame,
+                    text=extension,
+                    variable=variable,
+                ).grid(row=index // 3, column=index % 3, sticky="w", padx=6, pady=4)
+        else:
+            ctk.CTkLabel(
+                filter_frame,
+                text="Choose a source folder to discover extensions.",
+                text_color=self._apply_appearance_mode(("gray45", "gray65")),
+            ).grid(row=0, column=0, columnspan=3, sticky="w", padx=6, pady=4)
 
         button_row = ctk.CTkFrame(container, fg_color="transparent")
-        button_row.grid(row=6, column=0, sticky="ew")
+        button_row.grid(row=7, column=0, sticky="ew")
         button_row.grid_columnconfigure((0, 1), weight=1)
 
         def close_dialog():
@@ -381,6 +415,14 @@ class App(DnDCTk):
             self.preview_settings_dialog = None
 
         def save_settings():
+            selected = selected_extensions(extension_vars)
+            if filter_model.options:
+                try:
+                    validate_extension_selection(selected)
+                except ValueError:
+                    messagebox.showerror("Keep or Nah", EMPTY_SELECTION_MESSAGE)
+                    return
+
             try:
                 budget = int(budget_var.get().strip())
             except ValueError:
@@ -401,10 +443,21 @@ class App(DnDCTk):
                     preview_cache_budget_mb=budget,
                 )
             )
+            if filter_model.options:
+                self.apply_view_filter(set(selected))
             close_dialog()
 
         ctk.CTkButton(button_row, text="Cancel", command=close_dialog).grid(row=0, column=0, padx=(0, 6), sticky="ew")
-        ctk.CTkButton(button_row, text="Save", command=save_settings).grid(row=0, column=1, padx=(6, 0), sticky="ew")
+        save_button = ctk.CTkButton(button_row, text="Save", command=save_settings)
+        save_button.grid(row=0, column=1, padx=(6, 0), sticky="ew")
+
+        def update_save_state(*_args):
+            disabled = bool(filter_model.options) and not selected_extensions(extension_vars)
+            save_button.configure(state="disabled" if disabled else "normal")
+
+        for variable in extension_vars.values():
+            variable.trace_add("write", update_save_state)
+        update_save_state()
 
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
         dialog.after(0, dialog.grab_set)
@@ -419,6 +472,12 @@ class App(DnDCTk):
         self.preview_source_image = None
         self.reset_preview_request_state()
         self.refresh_preview(reload_image=True)
+
+    def extension_filter_model(self) -> ExtensionFilterModel:
+        return ExtensionFilterModel.from_session(self.session)
+
+    def apply_view_filter(self, enabled_extensions: set[str]) -> int:
+        return apply_extension_filter(self, enabled_extensions)
 
     def initialize_drag_and_drop(self):
         if TkinterDnD is None:
@@ -1119,7 +1178,7 @@ class App(DnDCTk):
         lookup = self.preview_pipeline.get_best_preview(current)
         if lookup.unavailable:
             self.hide_loading_overlay()
-            self.clear_preview(f"Preview not available\n{current.name} ({current.suffix})")
+            self.clear_preview(unavailable_preview_message(current))
             return
 
         if mode == "fit":

@@ -108,7 +108,7 @@ class UnavailablePreviewFrontendTests(unittest.TestCase):
 
                     fake.hide_loading_overlay.assert_called_once_with()
                     fake.clear_preview.assert_called_once_with(
-                        "Preview not available\nA.cr3 (.cr3)"
+                        "Preview not available\nA.cr3\n.cr3"
                     )
                     fake.schedule_preview_poll.assert_not_called()
                     fake.schedule_loading_overlay_delay.assert_not_called()

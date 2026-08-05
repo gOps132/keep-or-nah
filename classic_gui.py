@@ -18,6 +18,14 @@ from session_startup import (
     preview_paths_for,
     show_session_warning,
 )
+from view_filter import (
+    EMPTY_SELECTION_MESSAGE,
+    ExtensionFilterModel,
+    apply_extension_filter,
+    selected_extensions,
+    unavailable_preview_message,
+    validate_extension_selection,
+)
 
 
 class ClassicApp(tk.Tk):
@@ -303,7 +311,7 @@ class ClassicApp(tk.Tk):
 
         dialog = tk.Toplevel(self)
         dialog.title("Preview Settings")
-        dialog.geometry("420x290")
+        dialog.geometry("460x460")
         dialog.resizable(False, False)
         dialog.transient(self)
         dialog.configure(background=self.cget("background"))
@@ -313,6 +321,11 @@ class ClassicApp(tk.Tk):
         progressive_var = tk.BooleanVar(value=self.settings.progressive_preview)
         loading_var = tk.BooleanVar(value=self.settings.loading_indicator)
         budget_var = tk.StringVar(value=str(self.settings.preview_cache_budget_mb))
+        filter_model = self.extension_filter_model()
+        extension_vars = {
+            extension: tk.BooleanVar(value=extension in filter_model.selected)
+            for extension in filter_model.options
+        }
 
         container = ttk.Frame(dialog, padding=16)
         container.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
@@ -345,10 +358,44 @@ class ClassicApp(tk.Tk):
             foreground="#6b7280",
             justify="left",
             wraplength=340,
-        ).grid(row=5, column=0, sticky="w", pady=(8, 20))
+        ).grid(row=5, column=0, sticky="w", pady=(8, 12))
+
+        filter_frame = ttk.LabelFrame(container, text="Extension View Filter", padding=8)
+        filter_frame.grid(row=6, column=0, sticky="nsew", pady=(0, 14))
+        filter_frame.columnconfigure(0, weight=1)
+        filter_canvas = tk.Canvas(filter_frame, height=100, highlightthickness=0)
+        filter_canvas.grid(row=0, column=0, sticky="nsew")
+        filter_scrollbar = ttk.Scrollbar(filter_frame, orient="vertical", command=filter_canvas.yview)
+        filter_scrollbar.grid(row=0, column=1, sticky="ns")
+        filter_canvas.configure(yscrollcommand=filter_scrollbar.set)
+        filter_options = ttk.Frame(filter_canvas)
+        filter_window = filter_canvas.create_window((0, 0), window=filter_options, anchor="nw")
+        filter_options.bind(
+            "<Configure>",
+            lambda _event: filter_canvas.configure(scrollregion=filter_canvas.bbox("all")),
+        )
+        filter_canvas.bind(
+            "<Configure>",
+            lambda event: filter_canvas.itemconfigure(filter_window, width=event.width),
+        )
+        for column in range(3):
+            filter_options.columnconfigure(column, weight=1)
+        if extension_vars:
+            for index, (extension, variable) in enumerate(extension_vars.items()):
+                ttk.Checkbutton(
+                    filter_options,
+                    text=extension,
+                    variable=variable,
+                ).grid(row=index // 3, column=index % 3, sticky="w", padx=6, pady=3)
+        else:
+            ttk.Label(
+                filter_options,
+                text="Choose a source folder to discover extensions.",
+                foreground="#6b7280",
+            ).grid(row=0, column=0, columnspan=3, sticky="w", padx=6, pady=3)
 
         button_row = ttk.Frame(container)
-        button_row.grid(row=6, column=0, sticky="ew")
+        button_row.grid(row=7, column=0, sticky="ew")
         button_row.columnconfigure((0, 1), weight=1)
 
         def close_dialog():
@@ -357,6 +404,14 @@ class ClassicApp(tk.Tk):
             self.preview_settings_dialog = None
 
         def save_settings():
+            selected = selected_extensions(extension_vars)
+            if filter_model.options:
+                try:
+                    validate_extension_selection(selected)
+                except ValueError:
+                    messagebox.showerror("Keep or Nah", EMPTY_SELECTION_MESSAGE)
+                    return
+
             try:
                 budget = int(budget_var.get().strip())
             except ValueError:
@@ -377,10 +432,21 @@ class ClassicApp(tk.Tk):
                     preview_cache_budget_mb=budget,
                 )
             )
+            if filter_model.options:
+                self.apply_view_filter(set(selected))
             close_dialog()
 
         ttk.Button(button_row, text="Cancel", command=close_dialog).grid(row=0, column=0, padx=(0, 6), sticky="ew")
-        ttk.Button(button_row, text="Save", command=save_settings).grid(row=0, column=1, padx=(6, 0), sticky="ew")
+        save_button = ttk.Button(button_row, text="Save", command=save_settings)
+        save_button.grid(row=0, column=1, padx=(6, 0), sticky="ew")
+
+        def update_save_state(*_args):
+            disabled = bool(filter_model.options) and not selected_extensions(extension_vars)
+            save_button.state(["disabled"] if disabled else ["!disabled"])
+
+        for variable in extension_vars.values():
+            variable.trace_add("write", update_save_state)
+        update_save_state()
 
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
         dialog.after(0, dialog.grab_set)
@@ -395,6 +461,12 @@ class ClassicApp(tk.Tk):
         self.preview_source_image = None
         self.reset_preview_request_state()
         self.refresh_preview(reload_image=True)
+
+    def extension_filter_model(self) -> ExtensionFilterModel:
+        return ExtensionFilterModel.from_session(self.session)
+
+    def apply_view_filter(self, enabled_extensions: set[str]) -> int:
+        return apply_extension_filter(self, enabled_extensions)
 
     def bind_shortcuts(self):
         self.bind_all("<Left>", self.handle_previous_shortcut)
@@ -1089,7 +1161,7 @@ class ClassicApp(tk.Tk):
         lookup = self.preview_pipeline.get_best_preview(current)
         if lookup.unavailable:
             self.hide_loading_overlay()
-            self.clear_preview(f"Preview not available\n{current.name} ({current.suffix})")
+            self.clear_preview(unavailable_preview_message(current))
             return
 
         if mode == "fit":
