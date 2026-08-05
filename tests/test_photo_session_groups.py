@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from photo_groups import PhotoGroup
-from photo_session import PhotoSession, PhotoSessionError
+from photo_session import ActionRecord, FileOperation, PhotoSession, PhotoSessionError
 from session_startup import initialize_gui_session
 
 
@@ -38,6 +38,123 @@ class PhotoSessionGroupTests(unittest.TestCase):
         path = self.source / name
         path.write_bytes(contents)
         return path
+
+    def assert_undo_uses_recorded_destination(
+        self, *, action_mode, decision, force_fallback
+    ):
+        case = self.root / f"{decision}-{action_mode}-{'fallback' if force_fallback else 'posix'}"
+        source = case / "source"
+        recorded_destination = case / "recorded-destination"
+        current_destination = case / "current-destination"
+        other_destination = case / "other-destination"
+        source.mkdir(parents=True)
+        current_destination.mkdir()
+        (source / "IMG.cr3").write_bytes(b"raw")
+        (source / "IMG.jpg").write_bytes(b"jpg")
+        session = PhotoSession()
+        session.set_source_dir(source)
+        session.set_keep_dir(
+            recorded_destination if decision == "keep" else other_destination
+        )
+        session.set_nah_dir(
+            recorded_destination if decision == "nah" else other_destination
+        )
+        session.set_action_mode(action_mode)
+        if force_fallback:
+            self.force_fallback(session)
+        elif not session._supports_rooted_dir_fd():
+            self.skipTest("rooted directory descriptors unavailable")
+        session.load_queue()
+        result = session.decide(decision)
+        if decision == "keep":
+            session.set_keep_dir(current_destination)
+        else:
+            session.set_nah_dir(current_destination)
+
+        session.undo()
+
+        self.assertEqual((source / "IMG.cr3").read_bytes(), b"raw")
+        self.assertEqual((source / "IMG.jpg").read_bytes(), b"jpg")
+        self.assertFalse(any(item.destination.exists() for item in result.files))
+        self.assertEqual(list(current_destination.iterdir()), [])
+
+    def test_posix_move_undo_uses_recorded_keep_and_nah_destination(self):
+        for decision in ("keep", "nah"):
+            with self.subTest(decision=decision):
+                self.assert_undo_uses_recorded_destination(
+                    action_mode="move", decision=decision, force_fallback=False
+                )
+
+    def test_posix_copy_undo_uses_recorded_keep_and_nah_destination(self):
+        for decision in ("keep", "nah"):
+            with self.subTest(decision=decision):
+                self.assert_undo_uses_recorded_destination(
+                    action_mode="copy", decision=decision, force_fallback=False
+                )
+
+    def test_fallback_move_undo_uses_recorded_keep_and_nah_destination(self):
+        for decision in ("keep", "nah"):
+            with self.subTest(decision=decision):
+                self.assert_undo_uses_recorded_destination(
+                    action_mode="move", decision=decision, force_fallback=True
+                )
+
+    def test_fallback_copy_undo_uses_recorded_keep_and_nah_destination(self):
+        for decision in ("keep", "nah"):
+            with self.subTest(decision=decision):
+                self.assert_undo_uses_recorded_destination(
+                    action_mode="copy", decision=decision, force_fallback=True
+                )
+
+    def test_undo_rejects_compound_record_with_mixed_destination_parents(self):
+        for action_mode in ("move", "copy"):
+            for force_fallback in (False, True):
+                with self.subTest(
+                    action_mode=action_mode, force_fallback=force_fallback
+                ):
+                    case = self.root / f"mixed-{action_mode}-{force_fallback}"
+                    source = case / "source"
+                    destination = case / "destination"
+                    outside = case / "outside"
+                    source.mkdir(parents=True)
+                    outside.mkdir()
+                    (source / "IMG.cr3").write_bytes(b"raw")
+                    (source / "IMG.jpg").write_bytes(b"jpg")
+                    session = PhotoSession()
+                    session.set_source_dir(source)
+                    session.set_keep_dir(destination)
+                    session.set_action_mode(action_mode)
+                    if force_fallback:
+                        self.force_fallback(session)
+                    elif not session._supports_rooted_dir_fd():
+                        self.skipTest("rooted directory descriptors unavailable")
+                    session.load_queue()
+                    result = session.decide("keep")
+                    record = session.history[-1]
+                    mixed_files = (
+                        record.files[0],
+                        FileOperation(
+                            record.files[1].source,
+                            outside / record.files[1].destination.name,
+                        ),
+                    )
+                    session.history[-1] = ActionRecord(
+                        record.decision,
+                        record.action_mode,
+                        record.group,
+                        mixed_files,
+                        record.index,
+                    )
+
+                    with self.assertRaisesRegex(
+                        PhotoSessionError, "same recorded destination folder"
+                    ):
+                        session.undo()
+
+                    self.assertTrue(
+                        all(operation.destination.exists() for operation in result.files)
+                    )
+                    self.assertEqual(list(outside.iterdir()), [])
 
     def test_load_groups_same_stem_and_enables_every_discovered_extension(self):
         raw = self.write("IMG.cr3", b"raw")

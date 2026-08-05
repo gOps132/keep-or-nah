@@ -1142,10 +1142,11 @@ class PhotoSession:
             raise PhotoSessionError("There is nothing to undo.")
 
         record = self.history[-1]
+        destination_root = self._recorded_destination_root(record)
         if record.action_mode == "move":
-            self._undo_move_record(record)
+            self._undo_move_record(record, destination_root)
         else:
-            self._undo_copy_record(record)
+            self._undo_copy_record(record, destination_root)
 
         self.history.pop()
         self._partial_copy_undo.difference_update(record.files)
@@ -1165,18 +1166,51 @@ class PhotoSession:
             self.remaining_count,
         )
 
-    def _undo_move_record(self, record: ActionRecord) -> None:
+    @classmethod
+    def _recorded_destination_root(cls, record: ActionRecord) -> Path:
+        if not record.files:
+            raise PhotoSessionError(
+                "The recorded action has no destination files, so it cannot be undone."
+            )
+        recorded_parent = record.files[0].destination.parent
+        for operation in record.files:
+            if operation.destination.parent != recorded_parent:
+                raise PhotoSessionError(
+                    "All files in an action must share the same recorded destination folder."
+                )
+            try:
+                cls._validate_basename(operation.destination.name)
+            except OSError as error:
+                raise PhotoSessionError(
+                    f"A recorded undo destination is unsafe: {error}",
+                    primary_error=error,
+                ) from error
+        try:
+            destination_root = recorded_parent.resolve(strict=True)
+            cls._directory_identity(destination_root)
+            for operation in record.files:
+                cls._validate_destination_parent(
+                    operation.destination, destination_root
+                )
+        except OSError as error:
+            raise PhotoSessionError(
+                f"Could not validate the recorded undo destination folder: {error}",
+                primary_error=error,
+            ) from error
+        return destination_root
+
+    def _undo_move_record(
+        self, record: ActionRecord, destination_root: Path
+    ) -> None:
         if not self._supports_rooted_dir_fd():
-            self._undo_move_record_fallback(record)
+            self._undo_move_record_fallback(record, destination_root)
             return
         if self.source_dir is None:
             raise PhotoSessionError("The source folder is unavailable, so undo cannot restore files.")
-        destination_dir = self._destination_dir_for(record.decision)
         try:
             source_root = self.source_dir.resolve(strict=True)
-            destination_root = destination_dir.resolve(strict=True)
             with self._open_directory_fd(self.source_dir) as source_fd, self._open_directory_fd(
-                destination_dir
+                destination_root
             ) as destination_fd:
                 pending: list[FileOperation] = []
                 for operation in reversed(record.files):
@@ -1217,7 +1251,7 @@ class PhotoSession:
                             self._move_at_exclusive(
                                 operation.source.name,
                                 source_fd,
-                                operation.destination,
+                                destination_root / operation.destination.name,
                                 destination_fd,
                                 destination_root,
                             )
@@ -1237,21 +1271,22 @@ class PhotoSession:
                 primary_error=error,
             ) from error
 
-    def _undo_move_record_fallback(self, record: ActionRecord) -> None:
+    def _undo_move_record_fallback(
+        self, record: ActionRecord, destination_root: Path
+    ) -> None:
         if self.source_dir is None:
             raise PhotoSessionError("The source folder is unavailable, so undo cannot restore files.")
-        destination_dir = self._destination_dir_for(record.decision)
         source_root = self.source_dir.resolve(strict=True)
-        destination_root = record.files[0].destination.parent.resolve(strict=True)
         source_root_identity = self._directory_identity(source_root)
         destination_root_identity = self._directory_identity(destination_root)
         pending: list[tuple[FileOperation, tuple[int, int]]] = []
         for operation in reversed(record.files):
+            recorded_destination = destination_root / operation.destination.name
             source_occupied = self._path_occupied(operation.source)
-            destination_occupied = self._path_occupied(operation.destination)
+            destination_occupied = self._path_occupied(recorded_destination)
             if destination_occupied and not source_occupied:
                 pending.append(
-                    (operation, self._path_identity(operation.destination))
+                    (operation, self._path_identity(recorded_destination))
                 )
             elif source_occupied and not destination_occupied:
                 continue
@@ -1268,7 +1303,7 @@ class PhotoSession:
         try:
             for operation, destination_identity in pending:
                 restored_identity = self._move_path_exclusive_fallback(
-                    operation.destination,
+                    destination_root / operation.destination.name,
                     operation.source,
                     source_root,
                     expected_source_identity=destination_identity,
@@ -1281,7 +1316,7 @@ class PhotoSession:
                 try:
                     self._move_path_exclusive_fallback(
                         operation.source,
-                        operation.destination,
+                        destination_root / operation.destination.name,
                         destination_root,
                         expected_source_identity=restored_identity,
                         expected_destination_root_identity=destination_root_identity,
@@ -1295,17 +1330,17 @@ class PhotoSession:
                 [operation for operation, _identity in completed],
             )
 
-    def _undo_copy_record(self, record: ActionRecord) -> None:
+    def _undo_copy_record(
+        self, record: ActionRecord, destination_root: Path
+    ) -> None:
         if not self._supports_rooted_dir_fd():
-            self._undo_copy_record_fallback(record)
+            self._undo_copy_record_fallback(record, destination_root)
             return
         if self.source_dir is None:
             raise PhotoSessionError("The source folder is unavailable, so undo cannot restore files.")
-        destination_dir = self._destination_dir_for(record.decision)
         try:
-            destination_root = destination_dir.resolve(strict=True)
             with self._open_directory_fd(self.source_dir) as source_fd, self._open_directory_fd(
-                destination_dir
+                destination_root
             ) as destination_fd:
                 pending: list[FileOperation] = []
                 for operation in reversed(record.files):
@@ -1331,7 +1366,7 @@ class PhotoSession:
                             self._copy_at_exclusive(
                                 operation.source.name,
                                 source_fd,
-                                operation.destination,
+                                destination_root / operation.destination.name,
                                 destination_fd,
                                 destination_root,
                             )
@@ -1352,17 +1387,18 @@ class PhotoSession:
                 primary_error=error,
             ) from error
 
-    def _undo_copy_record_fallback(self, record: ActionRecord) -> None:
+    def _undo_copy_record_fallback(
+        self, record: ActionRecord, destination_root: Path
+    ) -> None:
         if self.source_dir is None:
             raise PhotoSessionError("The source folder is unavailable, so undo cannot restore files.")
-        destination_dir = self._destination_dir_for(record.decision)
-        destination_root = record.files[0].destination.parent.resolve(strict=True)
         destination_root_identity = self._directory_identity(destination_root)
         pending: list[tuple[FileOperation, tuple[int, int]]] = []
         for operation in reversed(record.files):
-            if self._path_occupied(operation.destination):
+            recorded_destination = destination_root / operation.destination.name
+            if self._path_occupied(recorded_destination):
                 pending.append(
-                    (operation, self._path_identity(operation.destination))
+                    (operation, self._path_identity(recorded_destination))
                 )
             elif operation not in self._partial_copy_undo:
                 raise PhotoSessionError(
@@ -1373,7 +1409,8 @@ class PhotoSession:
         try:
             for operation, destination_identity in pending:
                 self._remove_owned_path(
-                    operation.destination, destination_identity
+                    destination_root / operation.destination.name,
+                    destination_identity,
                 )
                 completed.append(operation)
                 self._partial_copy_undo.add(operation)
@@ -1383,7 +1420,7 @@ class PhotoSession:
                 try:
                     self._copy_path_exclusive_fallback(
                         operation.source,
-                        operation.destination,
+                        destination_root / operation.destination.name,
                         destination_root,
                         expected_destination_root_identity=destination_root_identity,
                     )
