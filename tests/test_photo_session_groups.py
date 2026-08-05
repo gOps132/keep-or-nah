@@ -1,3 +1,4 @@
+import errno
 import os
 import stat
 import tempfile
@@ -136,6 +137,7 @@ class PhotoSessionGroupTests(unittest.TestCase):
                         FileOperation(
                             record.files[1].source,
                             outside / record.files[1].destination.name,
+                            record.files[1].destination_identity,
                         ),
                     )
                     session.history[-1] = ActionRecord(
@@ -155,6 +157,200 @@ class PhotoSessionGroupTests(unittest.TestCase):
                         all(operation.destination.exists() for operation in result.files)
                     )
                     self.assertEqual(list(outside.iterdir()), [])
+
+    def test_undo_does_not_touch_unrelated_files_in_recreated_destination_root(self):
+        for action_mode in ("move", "copy"):
+            for force_fallback in (False, True):
+                with self.subTest(
+                    action_mode=action_mode, force_fallback=force_fallback
+                ):
+                    case = self.root / f"recreated-{action_mode}-{force_fallback}"
+                    source = case / "source"
+                    destination = case / "keep"
+                    archived_destination = case / "archived-keep"
+                    source.mkdir(parents=True)
+                    (source / "IMG.cr3").write_bytes(b"raw")
+                    (source / "IMG.jpg").write_bytes(b"jpg")
+                    session = PhotoSession()
+                    session.set_source_dir(source)
+                    session.set_keep_dir(destination)
+                    session.set_action_mode(action_mode)
+                    if force_fallback:
+                        self.force_fallback(session)
+                    elif not session._supports_rooted_dir_fd():
+                        self.skipTest("rooted directory descriptors unavailable")
+                    session.load_queue()
+                    result = session.decide("keep")
+                    self.assertTrue(
+                        all(
+                            getattr(operation, "destination_identity", None)
+                            is not None
+                            for operation in result.files
+                        )
+                    )
+                    destination.rename(archived_destination)
+                    destination.mkdir()
+                    for operation in result.files:
+                        (destination / operation.destination.name).write_bytes(
+                            b"unrelated"
+                        )
+
+                    with self.assertRaisesRegex(PhotoSessionError, "identity|owned"):
+                        session.undo()
+
+                    self.assertTrue(session.can_undo)
+                    for operation in result.files:
+                        self.assertEqual(
+                            (destination / operation.destination.name).read_bytes(),
+                            b"unrelated",
+                        )
+                        self.assertTrue(
+                            (archived_destination / operation.destination.name).exists()
+                        )
+
+    def test_posix_copy_rollback_does_not_delete_replacement_created_before_failure(self):
+        self.write("IMG.cr3", b"raw")
+        self.write("IMG.jpg", b"jpg")
+        session = self.make_session(action_mode="copy")
+        if not session._supports_rooted_dir_fd():
+            self.skipTest("rooted directory descriptors unavailable")
+        session.load_queue()
+        real_copy = session._copy_at_exclusive
+        calls = 0
+
+        def replace_first_before_second_fails(*args):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                first_destination = self.keep / "IMG.cr3"
+                first_destination.unlink()
+                first_destination.write_bytes(b"replacement")
+                raise OSError("second copy failed")
+            return real_copy(*args)
+
+        with patch.object(
+            session,
+            "_copy_at_exclusive",
+            side_effect=replace_first_before_second_fails,
+        ):
+            with self.assertRaisesRegex(PhotoSessionError, "second copy failed"):
+                session.decide("keep")
+
+        self.assertTrue((self.keep / "IMG.cr3").exists())
+        self.assertEqual((self.keep / "IMG.cr3").read_bytes(), b"replacement")
+        self.assertEqual(session.remaining_count, 1)
+
+    def test_posix_copy_stages_complete_file_before_final_path_is_visible(self):
+        self.write("IMG.jpg", b"jpg")
+        session = self.make_session(action_mode="copy")
+        if not session._supports_rooted_dir_fd():
+            self.skipTest("rooted directory descriptors unavailable")
+        session.load_queue()
+        real_copy = session._copy_fd_data_and_metadata
+        observed_temporary_names = []
+
+        def inspect_staging(*args, **kwargs):
+            self.assertFalse((self.keep / "IMG.jpg").exists())
+            observed_temporary_names.extend(
+                path.name
+                for path in self.keep.iterdir()
+                if path.name.startswith(".keep-or-nah-")
+            )
+            return real_copy(*args, **kwargs)
+
+        with patch.object(
+            session,
+            "_copy_fd_data_and_metadata",
+            side_effect=inspect_staging,
+        ):
+            try:
+                session.decide("keep")
+            except PhotoSessionError as error:
+                self.fail(str(error))
+
+        self.assertEqual(len(observed_temporary_names), 1)
+        self.assertEqual(
+            [path.name for path in self.keep.iterdir()], ["IMG.jpg"]
+        )
+
+    def test_windows_fallback_renames_when_hard_links_are_unsupported(self):
+        for action_mode in ("move", "copy"):
+            with self.subTest(action_mode=action_mode):
+                case = self.root / f"windows-{action_mode}"
+                source = case / "source"
+                keep = case / "keep"
+                source.mkdir(parents=True)
+                keep.mkdir()
+                (source / "IMG.cr3").write_bytes(b"raw")
+                (source / "IMG.jpg").write_bytes(b"jpg")
+                (keep / "IMG.jpg").write_bytes(b"occupied")
+                session = PhotoSession()
+                session.set_source_dir(source)
+                session.set_keep_dir(keep)
+                session.set_action_mode(action_mode)
+                self.force_fallback(session)
+                session.load_queue()
+
+                with patch.object(
+                    session,
+                    "_publish_hard_link",
+                    side_effect=OSError(errno.EOPNOTSUPP, "unsupported"),
+                ), patch.object(
+                    session,
+                    "_is_windows_fallback",
+                    return_value=True,
+                    create=True,
+                ):
+                    try:
+                        result = session.decide("keep")
+                    except PhotoSessionError as error:
+                        self.fail(str(error))
+
+                self.assertEqual(
+                    [operation.destination.name for operation in result.files],
+                    ["IMG (1).cr3", "IMG (1).jpg"],
+                )
+                self.assertEqual(
+                    all(operation.source.exists() for operation in result.files),
+                    action_mode == "copy",
+                )
+                self.assertTrue(
+                    all(operation.destination.exists() for operation in result.files)
+                )
+                self.assertEqual((keep / "IMG.jpg").read_bytes(), b"occupied")
+                self.assertFalse(
+                    any(path.name.startswith(".keep-or-nah-") for path in keep.iterdir())
+                )
+
+    def test_windows_fallback_collision_keeps_racer_and_cleans_temporary(self):
+        self.write("IMG.jpg", b"jpg")
+        session = self.force_fallback(self.make_session(action_mode="copy"))
+        session.load_queue()
+
+        def collide(_source, destination):
+            destination.write_bytes(b"racer")
+            raise FileExistsError("rename collision")
+
+        with patch.object(
+            session,
+            "_publish_hard_link",
+            side_effect=OSError(errno.EOPNOTSUPP, "unsupported"),
+        ), patch.object(
+            session,
+            "_is_windows_fallback",
+            return_value=True,
+            create=True,
+        ), patch("photo_session.os.rename", side_effect=collide):
+            with self.assertRaisesRegex(PhotoSessionError, "rename collision"):
+                session.decide("keep")
+
+        self.assertEqual((self.keep / "IMG.jpg").read_bytes(), b"racer")
+        self.assertFalse(
+            any(
+                path.name.startswith(".keep-or-nah-")
+                for path in self.keep.iterdir()
+            )
+        )
 
     def test_load_groups_same_stem_and_enables_every_discovered_extension(self):
         raw = self.write("IMG.cr3", b"raw")
@@ -785,10 +981,19 @@ class PhotoSessionGroupTests(unittest.TestCase):
                 raise OSError("primary failure")
             return real_copy(*args)
 
+        real_remove = session._remove_owned_at
+
+        def fail_final_destination_cleanup(name, *args):
+            if not name.startswith(".keep-or-nah-"):
+                raise OSError("rollback failure")
+            return real_remove(name, *args)
+
         with patch.object(
             session, "_copy_at_exclusive", side_effect=fail_second
         ), patch.object(
-            session, "_unlink_at", side_effect=OSError("rollback failure")
+            session,
+            "_remove_owned_at",
+            side_effect=fail_final_destination_cleanup,
         ):
             with self.assertRaises(PhotoSessionError) as raised:
                 session.decide("keep")

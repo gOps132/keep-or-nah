@@ -23,6 +23,8 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             other = source / "other.png"
             active.touch()
             other.touch()
+            keep.mkdir()
+            (keep / "done.jpg").touch()
 
             session = PhotoSession()
             session.source_dir = source
