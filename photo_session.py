@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import math
-import shutil
+import os
+import stat
+import tempfile
 from typing import Literal
 
 from photo_groups import PhotoGroup, build_photo_groups, discover_extensions
@@ -534,9 +537,9 @@ class PhotoSession:
                     "Move mode requires destination folders different from the current photo folder."
                 )
 
-        destination_root = destination_dir.resolve()
-        operations = self._group_destinations(group, destination_dir)
-        self._execute_operations(operations, destination_root)
+        operations = self._execute_group_operations(
+            group, group.members[0].parent, destination_dir
+        )
 
         self._remove_queue_item(current_index)
         self.history.append(
@@ -580,6 +583,132 @@ class PhotoSession:
         )
 
     def _group_destinations(
+        self,
+        group: PhotoGroup,
+        destination_dir: Path,
+        destination_fd: int,
+    ) -> tuple[FileOperation, ...]:
+        collision_number = 0
+        while True:
+            operations = tuple(
+                FileOperation(
+                    member,
+                    destination_dir
+                    / (
+                        member.name
+                        if collision_number == 0
+                        else f"{member.stem} ({collision_number}){member.suffix}"
+                    ),
+                )
+                for member in group.members
+            )
+            if not any(
+                self._entry_occupied(destination_fd, item.destination.name)
+                for item in operations
+            ):
+                return operations
+            collision_number += 1
+
+    def _execute_group_operations(
+        self,
+        group: PhotoGroup,
+        source_root: Path,
+        destination_root: Path,
+    ) -> tuple[FileOperation, ...]:
+        if not self._supports_rooted_dir_fd():
+            return self._execute_group_operations_fallback(
+                group, source_root, destination_root
+            )
+        try:
+            resolved_source_root = source_root.resolve(strict=True)
+            resolved_destination_root = destination_root.resolve(strict=True)
+            with self._open_directory_fd(source_root) as source_fd, self._open_directory_fd(
+                destination_root
+            ) as destination_fd:
+                operations = self._group_destinations(
+                    group, destination_root, destination_fd
+                )
+                self._execute_operations(
+                    operations,
+                    source_fd,
+                    destination_fd,
+                    resolved_source_root,
+                    resolved_destination_root,
+                )
+                return operations
+        except PhotoSessionError:
+            raise
+        except Exception as error:
+            raise PhotoSessionError(
+                f"Could not open a photo group folder safely: {error}",
+                primary_error=error,
+            ) from error
+
+    @staticmethod
+    def _supports_rooted_dir_fd() -> bool:
+        return (
+            hasattr(os, "O_DIRECTORY")
+            and hasattr(os, "O_NOFOLLOW")
+            and os.open in os.supports_dir_fd
+            and os.stat in os.supports_dir_fd
+            and os.unlink in os.supports_dir_fd
+            and os.chmod in os.supports_fd
+            and os.utime in os.supports_fd
+        )
+
+    def _execute_group_operations_fallback(
+        self,
+        group: PhotoGroup,
+        source_root: Path,
+        destination_root: Path,
+    ) -> tuple[FileOperation, ...]:
+        resolved_destination_root = destination_root.resolve(strict=True)
+        operations = self._group_destinations_fallback(group, destination_root)
+        completed: list[tuple[FileOperation, tuple[int, int]]] = []
+        try:
+            for operation in operations:
+                if self.action_mode == "move":
+                    identity = self._move_path_exclusive_fallback(
+                        operation.source,
+                        operation.destination,
+                        resolved_destination_root,
+                    )
+                else:
+                    identity = self._copy_path_exclusive_fallback(
+                        operation.source,
+                        operation.destination,
+                        resolved_destination_root,
+                    )
+                completed.append((operation, identity))
+        except Exception as primary_error:
+            rollback_errors: list[BaseException] = []
+            resolved_source_root = source_root.resolve(strict=True)
+            for operation, identity in reversed(completed):
+                try:
+                    if self.action_mode == "move":
+                        self._move_path_exclusive_fallback(
+                            operation.destination,
+                            operation.source,
+                            resolved_source_root,
+                            expected_source_identity=identity,
+                        )
+                    else:
+                        self._remove_owned_path(operation.destination, identity)
+                except Exception as rollback_error:
+                    rollback_errors.append(rollback_error)
+            message = f"Could not {self.action_mode} the photo group: {primary_error}"
+            if rollback_errors:
+                details = "; ".join(str(error) for error in rollback_errors)
+                message += f". Rollback also failed: {details}"
+            raise PhotoSessionError(
+                message,
+                primary_error=primary_error,
+                rollback_errors=tuple(rollback_errors),
+                completed_operations=tuple(item for item, _identity in completed),
+            ) from primary_error
+        return operations
+
+    def _group_destinations_fallback(
         self, group: PhotoGroup, destination_dir: Path
     ) -> tuple[FileOperation, ...]:
         collision_number = 0
@@ -603,33 +732,49 @@ class PhotoSession:
     def _execute_operations(
         self,
         operations: tuple[FileOperation, ...],
-        destination_root: Path,
+        source_fd: int,
+        destination_fd: int,
+        resolved_source_root: Path,
+        resolved_destination_root: Path,
     ) -> None:
         completed: list[FileOperation] = []
         try:
             for operation in operations:
-                self._validate_destination(operation.destination, destination_root)
                 if self.action_mode == "move":
-                    shutil.move(str(operation.source), str(operation.destination))
+                    self._move_at_exclusive(
+                        operation.source.name,
+                        source_fd,
+                        operation.destination,
+                        destination_fd,
+                        resolved_destination_root,
+                    )
                 else:
-                    shutil.copy2(operation.source, operation.destination)
+                    self._copy_at_exclusive(
+                        operation.source.name,
+                        source_fd,
+                        operation.destination,
+                        destination_fd,
+                        resolved_destination_root,
+                    )
                 completed.append(operation)
         except Exception as primary_error:
             rollback_errors: list[BaseException] = []
             for operation in reversed(completed):
                 try:
                     if self.action_mode == "move":
-                        shutil.move(
-                            str(operation.destination), str(operation.source)
+                        self._move_at_exclusive(
+                            operation.destination.name,
+                            destination_fd,
+                            operation.source,
+                            source_fd,
+                            resolved_source_root,
                         )
                     else:
-                        operation.destination.unlink()
+                        self._unlink_at(operation.destination.name, destination_fd)
                 except Exception as rollback_error:
                     rollback_errors.append(rollback_error)
 
-            message = (
-                f"Could not {self.action_mode} the photo group: {primary_error}"
-            )
+            message = f"Could not {self.action_mode} the photo group: {primary_error}"
             if rollback_errors:
                 details = "; ".join(str(error) for error in rollback_errors)
                 message += f". Rollback also failed: {details}"
@@ -639,6 +784,275 @@ class PhotoSession:
                 rollback_errors=tuple(rollback_errors),
                 completed_operations=tuple(completed),
             ) from primary_error
+
+    @staticmethod
+    @contextmanager
+    def _open_directory_fd(path: Path):
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        directory_fd = os.open(path, flags)
+        try:
+            yield directory_fd
+        finally:
+            os.close(directory_fd)
+
+    @staticmethod
+    def _entry_occupied(directory_fd: int, name: str) -> bool:
+        try:
+            os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        return True
+
+    def _copy_at_exclusive(
+        self,
+        source_name: str,
+        source_root_fd: int,
+        destination: Path,
+        destination_root_fd: int,
+        destination_root: Path,
+    ) -> None:
+        self._validate_basename(source_name)
+        self._validate_basename(destination.name)
+        source_flags = os.O_RDONLY | os.O_NOFOLLOW
+        source_fd = os.open(source_name, source_flags, dir_fd=source_root_fd)
+        try:
+            self._copy_open_source_exclusive(
+                source_fd,
+                destination,
+                destination_root_fd,
+                destination_root,
+            )
+        finally:
+            os.close(source_fd)
+
+    def _copy_open_source_exclusive(
+        self,
+        source_fd: int,
+        destination: Path,
+        destination_root_fd: int,
+        destination_root: Path,
+    ) -> None:
+        # The validation is advisory; O_EXCL|O_NOFOLLOW on the opened directory
+        # descriptor is the actual write boundary and closes the TOCTOU window.
+        self._validate_destination(destination, destination_root)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        destination_fd = os.open(
+            destination.name,
+            flags,
+            0o600,
+            dir_fd=destination_root_fd,
+        )
+        try:
+            self._copy_fd_data_and_metadata(source_fd, destination_fd)
+        except Exception as primary_error:
+            try:
+                self._unlink_at(destination.name, destination_root_fd)
+            except Exception as cleanup_error:
+                raise OSError(
+                    f"{primary_error}; partial destination cleanup failed: {cleanup_error}"
+                ) from primary_error
+            raise
+        finally:
+            os.close(destination_fd)
+
+    def _move_at_exclusive(
+        self,
+        source_name: str,
+        source_root_fd: int,
+        destination: Path,
+        destination_root_fd: int,
+        destination_root: Path,
+    ) -> None:
+        self._copy_at_exclusive(
+            source_name,
+            source_root_fd,
+            destination,
+            destination_root_fd,
+            destination_root,
+        )
+        try:
+            self._unlink_at(source_name, source_root_fd)
+        except Exception as primary_error:
+            try:
+                self._unlink_at(destination.name, destination_root_fd)
+            except Exception as cleanup_error:
+                raise OSError(
+                    f"{primary_error}; copied destination cleanup failed: {cleanup_error}"
+                ) from primary_error
+            raise
+
+    @staticmethod
+    def _unlink_at(name: str, directory_fd: int) -> None:
+        PhotoSession._validate_basename(name)
+        os.unlink(name, dir_fd=directory_fd)
+
+    @staticmethod
+    def _validate_basename(name: str) -> None:
+        if not name or Path(name).name != name or name in {".", ".."}:
+            raise OSError(f"Unsafe direct-child filename: {name!r}")
+
+    @staticmethod
+    def _copy_fd_data_and_metadata(
+        source_fd: int,
+        destination_fd: int,
+        owned_destination_path: Path | None = None,
+    ) -> None:
+        source_stat = os.fstat(source_fd)
+        while True:
+            chunk = os.read(source_fd, 1024 * 1024)
+            if not chunk:
+                break
+            view = memoryview(chunk)
+            while view:
+                written = os.write(destination_fd, view)
+                if written == 0:
+                    raise OSError("Destination write made no progress")
+                view = view[written:]
+        mode = stat.S_IMODE(source_stat.st_mode)
+        timestamps = (source_stat.st_atime_ns, source_stat.st_mtime_ns)
+        if hasattr(os, "fchmod") and os.chmod in os.supports_fd:
+            os.fchmod(destination_fd, mode)
+        elif owned_destination_path is not None:
+            os.chmod(owned_destination_path, mode)
+        else:
+            raise OSError("This platform cannot apply destination permissions safely")
+        if os.utime in os.supports_fd:
+            os.utime(destination_fd, ns=timestamps)
+        elif owned_destination_path is not None:
+            os.utime(owned_destination_path, ns=timestamps)
+        else:
+            raise OSError("This platform cannot apply destination timestamps safely")
+
+    def _copy_path_exclusive_fallback(
+        self,
+        source: Path,
+        destination: Path,
+        destination_root: Path,
+        *,
+        expected_source_identity: tuple[int, int] | None = None,
+    ) -> tuple[int, int]:
+        self._validate_destination(destination, destination_root)
+        temporary_fd, temporary_name = tempfile.mkstemp(
+            prefix=".keep-or-nah-", dir=destination_root
+        )
+        temporary_path = Path(temporary_name)
+        temporary_identity = self._fd_identity(temporary_fd)
+        published_identity: tuple[int, int] | None = None
+        source_fd: int | None = None
+        try:
+            source_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            source_fd = os.open(source, source_flags)
+            if (
+                expected_source_identity is not None
+                and self._fd_identity(source_fd) != expected_source_identity
+            ):
+                raise OSError(f"Source path identity changed unexpectedly: {source}")
+            self._copy_fd_data_and_metadata(
+                source_fd, temporary_fd, temporary_path
+            )
+            self._require_owned_path(temporary_path, temporary_identity)
+            self._validate_destination(destination, destination_root)
+            self._publish_hard_link(temporary_path, destination)
+            published_identity = self._path_identity(destination)
+            self._validate_destination_parent(destination, destination_root)
+            if published_identity != temporary_identity:
+                raise OSError("Published destination identity changed unexpectedly")
+        except Exception as primary_error:
+            cleanup_errors: list[BaseException] = []
+            if published_identity is not None:
+                try:
+                    self._remove_owned_path(destination, published_identity)
+                except Exception as cleanup_error:
+                    cleanup_errors.append(cleanup_error)
+            try:
+                os.close(temporary_fd)
+            except OSError as cleanup_error:
+                cleanup_errors.append(cleanup_error)
+            if source_fd is not None:
+                try:
+                    os.close(source_fd)
+                except OSError as cleanup_error:
+                    cleanup_errors.append(cleanup_error)
+            try:
+                self._remove_owned_path(temporary_path, temporary_identity)
+            except Exception as cleanup_error:
+                cleanup_errors.append(cleanup_error)
+            if cleanup_errors:
+                details = "; ".join(str(error) for error in cleanup_errors)
+                raise OSError(
+                    f"{primary_error}; fallback cleanup failed: {details}"
+                ) from primary_error
+            raise
+        else:
+            os.close(temporary_fd)
+            if source_fd is not None:
+                os.close(source_fd)
+            self._remove_owned_path(temporary_path, temporary_identity)
+            return published_identity
+
+    def _move_path_exclusive_fallback(
+        self,
+        source: Path,
+        destination: Path,
+        destination_root: Path,
+        *,
+        expected_source_identity: tuple[int, int] | None = None,
+    ) -> tuple[int, int]:
+        if expected_source_identity is not None:
+            self._require_owned_path(source, expected_source_identity)
+        published_identity = self._copy_path_exclusive_fallback(
+            source,
+            destination,
+            destination_root,
+            expected_source_identity=expected_source_identity,
+        )
+        try:
+            if expected_source_identity is None:
+                source.unlink()
+            else:
+                self._remove_owned_path(source, expected_source_identity)
+        except Exception as primary_error:
+            try:
+                self._remove_owned_path(destination, published_identity)
+            except Exception as cleanup_error:
+                raise OSError(
+                    f"{primary_error}; published destination cleanup failed: {cleanup_error}"
+                ) from primary_error
+            raise
+        return published_identity
+
+    @staticmethod
+    def _publish_hard_link(source: Path, destination: Path) -> None:
+        if os.link in os.supports_follow_symlinks:
+            os.link(source, destination, follow_symlinks=False)
+        else:
+            os.link(source, destination)
+
+    @staticmethod
+    def _fd_identity(file_descriptor: int) -> tuple[int, int]:
+        file_stat = os.fstat(file_descriptor)
+        return file_stat.st_dev, file_stat.st_ino
+
+    @staticmethod
+    def _path_identity(path: Path) -> tuple[int, int]:
+        path_stat = path.lstat()
+        if path.is_symlink() or not stat.S_ISREG(path_stat.st_mode):
+            raise OSError(f"Owned path is no longer a regular file: {path}")
+        return path_stat.st_dev, path_stat.st_ino
+
+    @classmethod
+    def _require_owned_path(
+        cls, path: Path, expected_identity: tuple[int, int]
+    ) -> None:
+        if cls._path_identity(path) != expected_identity:
+            raise OSError(f"Refusing to remove a replaced path: {path}")
+
+    @classmethod
+    def _remove_owned_path(
+        cls, path: Path, expected_identity: tuple[int, int]
+    ) -> None:
+        cls._require_owned_path(path, expected_identity)
+        path.unlink()
 
     @staticmethod
     def _path_occupied(path: Path) -> bool:
@@ -651,6 +1065,12 @@ class PhotoSession:
 
     @classmethod
     def _validate_destination(cls, path: Path, destination_root: Path) -> None:
+        cls._validate_destination_parent(path, destination_root)
+        if cls._path_occupied(path):
+            raise FileExistsError(f"Destination became occupied: {path}")
+
+    @staticmethod
+    def _validate_destination_parent(path: Path, destination_root: Path) -> None:
         try:
             resolved_parent = path.parent.resolve(strict=True)
         except OSError as error:
@@ -661,8 +1081,6 @@ class PhotoSession:
             raise OSError(
                 f"Destination parent escapes the selected folder: {path.parent}"
             )
-        if cls._path_occupied(path):
-            raise FileExistsError(f"Destination became occupied: {path}")
 
     def undo(self) -> UndoResult:
         if not self.history:
@@ -693,17 +1111,92 @@ class PhotoSession:
         )
 
     def _undo_move_record(self, record: ActionRecord) -> None:
+        if not self._supports_rooted_dir_fd():
+            self._undo_move_record_fallback(record)
+            return
         if self.source_dir is None:
             raise PhotoSessionError("The source folder is unavailable, so undo cannot restore files.")
+        destination_dir = self._destination_dir_for(record.decision)
+        try:
+            source_root = self.source_dir.resolve(strict=True)
+            destination_root = destination_dir.resolve(strict=True)
+            with self._open_directory_fd(self.source_dir) as source_fd, self._open_directory_fd(
+                destination_dir
+            ) as destination_fd:
+                pending: list[FileOperation] = []
+                for operation in reversed(record.files):
+                    source_occupied = self._entry_occupied(
+                        source_fd, operation.source.name
+                    )
+                    destination_occupied = self._entry_occupied(
+                        destination_fd, operation.destination.name
+                    )
+                    if destination_occupied and not source_occupied:
+                        pending.append(operation)
+                    elif source_occupied and not destination_occupied:
+                        continue
+                    elif source_occupied:
+                        raise PhotoSessionError(
+                            "An original group file path is already occupied, so undo cannot restore it."
+                        )
+                    else:
+                        raise PhotoSessionError(
+                            "A moved group file is missing, so the last action cannot be undone."
+                        )
+
+                completed: list[FileOperation] = []
+                try:
+                    for operation in pending:
+                        self._move_at_exclusive(
+                            operation.destination.name,
+                            destination_fd,
+                            operation.source,
+                            source_fd,
+                            source_root,
+                        )
+                        completed.append(operation)
+                except Exception as primary_error:
+                    rollback_errors: list[BaseException] = []
+                    for operation in reversed(completed):
+                        try:
+                            self._move_at_exclusive(
+                                operation.source.name,
+                                source_fd,
+                                operation.destination,
+                                destination_fd,
+                                destination_root,
+                            )
+                        except Exception as rollback_error:
+                            rollback_errors.append(rollback_error)
+                    self._raise_undo_failure(
+                        "moved",
+                        primary_error,
+                        tuple(rollback_errors),
+                        completed,
+                    )
+        except PhotoSessionError:
+            raise
+        except Exception as error:
+            raise PhotoSessionError(
+                f"Could not open an undo folder safely: {error}",
+                primary_error=error,
+            ) from error
+
+    def _undo_move_record_fallback(self, record: ActionRecord) -> None:
+        if self.source_dir is None:
+            raise PhotoSessionError("The source folder is unavailable, so undo cannot restore files.")
+        destination_dir = self._destination_dir_for(record.decision)
         source_root = self.source_dir.resolve(strict=True)
-        pending: list[FileOperation] = []
+        destination_root = destination_dir.resolve(strict=True)
+        pending: list[tuple[FileOperation, tuple[int, int]]] = []
         for operation in reversed(record.files):
             source_occupied = self._path_occupied(operation.source)
             destination_occupied = self._path_occupied(operation.destination)
             if destination_occupied and not source_occupied:
-                pending.append(operation)
+                pending.append(
+                    (operation, self._path_identity(operation.destination))
+                )
             elif source_occupied and not destination_occupied:
-                # A previous rollback failure left this member already undone.
                 continue
             elif source_occupied:
                 raise PhotoSessionError(
@@ -714,39 +1207,103 @@ class PhotoSession:
                     "A moved group file is missing, so the last action cannot be undone."
                 )
 
-        completed: list[FileOperation] = []
+        completed: list[tuple[FileOperation, tuple[int, int]]] = []
         try:
-            for operation in pending:
-                operation.source.parent.mkdir(parents=True, exist_ok=True)
-                self._validate_destination(operation.source, source_root)
-                shutil.move(str(operation.destination), str(operation.source))
-                completed.append(operation)
+            for operation, destination_identity in pending:
+                restored_identity = self._move_path_exclusive_fallback(
+                    operation.destination,
+                    operation.source,
+                    source_root,
+                    expected_source_identity=destination_identity,
+                )
+                completed.append((operation, restored_identity))
         except Exception as primary_error:
-            rollback_errors = self._roll_forward_move_undo(record, completed)
+            rollback_errors: list[BaseException] = []
+            for operation, restored_identity in reversed(completed):
+                try:
+                    self._move_path_exclusive_fallback(
+                        operation.source,
+                        operation.destination,
+                        destination_root,
+                        expected_source_identity=restored_identity,
+                    )
+                except Exception as rollback_error:
+                    rollback_errors.append(rollback_error)
             self._raise_undo_failure(
-                "moved", primary_error, rollback_errors, completed
+                "moved",
+                primary_error,
+                tuple(rollback_errors),
+                [operation for operation, _identity in completed],
             )
 
-    def _roll_forward_move_undo(
-        self, record: ActionRecord, completed: list[FileOperation]
-    ) -> tuple[BaseException, ...]:
-        rollback_errors: list[BaseException] = []
-        for operation in reversed(completed):
-            try:
-                destination_root = self._destination_root_for(record.decision)
-                self._validate_destination(
-                    operation.destination, destination_root
-                )
-                shutil.move(str(operation.source), str(operation.destination))
-            except Exception as rollback_error:
-                rollback_errors.append(rollback_error)
-        return tuple(rollback_errors)
-
     def _undo_copy_record(self, record: ActionRecord) -> None:
-        pending: list[FileOperation] = []
+        if not self._supports_rooted_dir_fd():
+            self._undo_copy_record_fallback(record)
+            return
+        if self.source_dir is None:
+            raise PhotoSessionError("The source folder is unavailable, so undo cannot restore files.")
+        destination_dir = self._destination_dir_for(record.decision)
+        try:
+            destination_root = destination_dir.resolve(strict=True)
+            with self._open_directory_fd(self.source_dir) as source_fd, self._open_directory_fd(
+                destination_dir
+            ) as destination_fd:
+                pending: list[FileOperation] = []
+                for operation in reversed(record.files):
+                    if self._entry_occupied(
+                        destination_fd, operation.destination.name
+                    ):
+                        pending.append(operation)
+                    elif operation not in self._partial_copy_undo:
+                        raise PhotoSessionError(
+                            "A copied group file is missing, so the last action cannot be undone."
+                        )
+
+                completed: list[FileOperation] = []
+                try:
+                    for operation in pending:
+                        self._unlink_at(operation.destination.name, destination_fd)
+                        completed.append(operation)
+                        self._partial_copy_undo.add(operation)
+                except Exception as primary_error:
+                    rollback_errors: list[BaseException] = []
+                    for operation in reversed(completed):
+                        try:
+                            self._copy_at_exclusive(
+                                operation.source.name,
+                                source_fd,
+                                operation.destination,
+                                destination_fd,
+                                destination_root,
+                            )
+                            self._partial_copy_undo.discard(operation)
+                        except Exception as rollback_error:
+                            rollback_errors.append(rollback_error)
+                    self._raise_undo_failure(
+                        "copied",
+                        primary_error,
+                        tuple(rollback_errors),
+                        completed,
+                    )
+        except PhotoSessionError:
+            raise
+        except Exception as error:
+            raise PhotoSessionError(
+                f"Could not open an undo folder safely: {error}",
+                primary_error=error,
+            ) from error
+
+    def _undo_copy_record_fallback(self, record: ActionRecord) -> None:
+        if self.source_dir is None:
+            raise PhotoSessionError("The source folder is unavailable, so undo cannot restore files.")
+        destination_dir = self._destination_dir_for(record.decision)
+        destination_root = destination_dir.resolve(strict=True)
+        pending: list[tuple[FileOperation, tuple[int, int]]] = []
         for operation in reversed(record.files):
             if self._path_occupied(operation.destination):
-                pending.append(operation)
+                pending.append(
+                    (operation, self._path_identity(operation.destination))
+                )
             elif operation not in self._partial_copy_undo:
                 raise PhotoSessionError(
                     "A copied group file is missing, so the last action cannot be undone."
@@ -754,19 +1311,21 @@ class PhotoSession:
 
         completed: list[FileOperation] = []
         try:
-            for operation in pending:
-                operation.destination.unlink()
+            for operation, destination_identity in pending:
+                self._remove_owned_path(
+                    operation.destination, destination_identity
+                )
                 completed.append(operation)
                 self._partial_copy_undo.add(operation)
         except Exception as primary_error:
             rollback_errors: list[BaseException] = []
             for operation in reversed(completed):
                 try:
-                    destination_root = self._destination_root_for(record.decision)
-                    self._validate_destination(
-                        operation.destination, destination_root
+                    self._copy_path_exclusive_fallback(
+                        operation.source,
+                        operation.destination,
+                        destination_root,
                     )
-                    shutil.copy2(operation.source, operation.destination)
                     self._partial_copy_undo.discard(operation)
                 except Exception as rollback_error:
                     rollback_errors.append(rollback_error)
@@ -774,11 +1333,11 @@ class PhotoSession:
                 "copied", primary_error, tuple(rollback_errors), completed
             )
 
-    def _destination_root_for(self, decision: Decision) -> Path:
+    def _destination_dir_for(self, decision: Decision) -> Path:
         destination_dir = self.keep_dir if decision == "keep" else self.nah_dir
         if destination_dir is None:
             raise OSError("The action destination folder is unavailable")
-        return destination_dir.resolve(strict=True)
+        return destination_dir
 
     @staticmethod
     def _raise_undo_failure(
