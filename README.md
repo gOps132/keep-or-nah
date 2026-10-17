@@ -25,7 +25,7 @@ The app works like a Tinder-style triage flow for images:
 
 ```bash
 uv sync
-uv run maturin develop -m crates/keep_or_nah_core/Cargo.toml
+uv run maturin develop
 ```
 
 ## Run The App
