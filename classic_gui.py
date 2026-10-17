@@ -53,6 +53,9 @@ class ClassicApp(tk.Tk):
         self.preview_source_path = None
         self.preview_refresh_job = None
         self.preview_poll_job = None
+        self.thumbnail_rebuild_job = None
+        self.rendered_preview_size: tuple[int, int] | None = None
+        self.rendered_preview_scrollregion: tuple[int, int, int, int] | None = None
         self.preview_request_id = 0
         self.preview_request_key: tuple[Path, int, int, str, bool] | None = None
         self.loading_overlay_delay_job = None
@@ -117,6 +120,9 @@ class ClassicApp(tk.Tk):
         super().destroy()
 
     def cancel_preview_jobs(self):
+        if self.thumbnail_rebuild_job is not None:
+            self.after_cancel(self.thumbnail_rebuild_job)
+            self.thumbnail_rebuild_job = None
         if self.preview_refresh_job is not None:
             self.after_cancel(self.preview_refresh_job)
             self.preview_refresh_job = None
@@ -216,7 +222,7 @@ class ClassicApp(tk.Tk):
             yscrollincrement=1,
         )
         self.preview_canvas.grid(row=0, column=0, sticky="nsew")
-        self.preview_canvas.bind("<Configure>", self.schedule_preview_refresh)
+        self.preview_canvas.bind("<Configure>", self.handle_preview_configure)
         self.preview_canvas.bind("<MouseWheel>", self.handle_mousewheel)
         self.preview_canvas.bind("<Shift-MouseWheel>", self.handle_shift_mousewheel)
         self.preview_canvas.bind("<Button-4>", self.handle_linux_wheel)
@@ -247,7 +253,7 @@ class ClassicApp(tk.Tk):
             xscrollincrement=1,
         )
         self.thumbnail_canvas.grid(row=0, column=0, sticky="ew")
-        self.thumbnail_canvas.bind("<Configure>", lambda _event: self.refresh_thumbnail_strip(force_rebuild=True))
+        self.thumbnail_canvas.bind("<Configure>", self.schedule_thumbnail_strip_rebuild)
         self.thumbnail_canvas.bind("<MouseWheel>", self.handle_thumbnail_wheel)
         self.thumbnail_canvas.bind("<Button-4>", self.handle_thumbnail_linux_wheel)
         self.thumbnail_canvas.bind("<Button-5>", self.handle_thumbnail_linux_wheel)
@@ -768,6 +774,43 @@ class ClassicApp(tk.Tk):
             self.after_cancel(self.preview_refresh_job)
         self.preview_refresh_job = self.after(80, self.refresh_preview_or_placeholder)
 
+    def schedule_thumbnail_strip_rebuild(self, _event=None):
+        if self.destroyed:
+            return
+        if self.thumbnail_rebuild_job is not None:
+            self.after_cancel(self.thumbnail_rebuild_job)
+        self.thumbnail_rebuild_job = self.after(60, self._flush_thumbnail_strip_rebuild)
+
+    def _flush_thumbnail_strip_rebuild(self):
+        self.thumbnail_rebuild_job = None
+        self.refresh_thumbnail_strip(force_rebuild=True)
+
+    def handle_preview_configure(self, _event=None):
+        if self.destroyed:
+            return
+        self.scale_preview_display_to_current_canvas()
+        self.schedule_preview_refresh()
+
+    def scale_preview_display_to_current_canvas(self):
+        rendered = self.rendered_preview_size
+        if not rendered:
+            return
+        canvas = self.preview_canvas
+        new_size = (max(canvas.winfo_width(), 1), max(canvas.winfo_height(), 1))
+        if new_size == rendered:
+            return
+        scale_x = new_size[0] / rendered[0]
+        scale_y = new_size[1] / rendered[1]
+        canvas.scale("all", 0, 0, scale_x, scale_y)
+        old_region = self.rendered_preview_scrollregion
+        new_region = None
+        if old_region:
+            x1, y1, x2, y2 = old_region
+            new_region = (x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y)
+            canvas.configure(scrollregion=new_region)
+        self.rendered_preview_scrollregion = new_region
+        self.rendered_preview_size = new_size
+
     def refresh_preview_or_placeholder(self):
         current = self.session.active_photo
         if current is None:
@@ -785,6 +828,8 @@ class ClassicApp(tk.Tk):
         width = max(self.preview_canvas.winfo_width(), 320)
         height = max(self.preview_canvas.winfo_height(), 240)
         self.preview_canvas.configure(scrollregion=(0, 0, width, height))
+        self.rendered_preview_size = (width, height)
+        self.rendered_preview_scrollregion = (0, 0, width, height)
         if message:
             self.preview_canvas.create_text(
                 width / 2,
@@ -951,6 +996,8 @@ class ClassicApp(tk.Tk):
         self.preview_canvas.delete("all")
         self.preview_canvas.configure(scrollregion=(0, 0, region_width, region_height))
         self.preview_canvas.create_image(origin_x, origin_y, anchor="nw", image=self.preview_photo)
+        self.rendered_preview_size = (canvas_width, canvas_height)
+        self.rendered_preview_scrollregion = (0, 0, region_width, region_height)
         self.restore_view_center(rel_x, rel_y)
         if self.loading_overlay_visible:
             self.render_loading_overlay()
