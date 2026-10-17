@@ -239,6 +239,100 @@ class RustGroupingParityTests(unittest.TestCase):
         )
 
 
+class RustFileOpsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.stage = self.root / "stage"
+        self.stage.mkdir()
+
+    def write_source(self, name: str, contents: bytes) -> Path:
+        path = self.root / name
+        path.write_bytes(contents)
+        return path
+
+    def test_stage_regular_file_copies_content_permissions_and_timestamps(self) -> None:
+        import os
+        import stat
+
+        source = self.write_source("IMG.jpg", b"raw-content")
+        os.chmod(source, 0o640)
+        timestamp_ns = 1_700_000_000_123_456_000
+        os.utime(source, ns=(timestamp_ns, timestamp_ns))
+
+        staged = keep_or_nah_core.stage_regular_file(str(source), str(self.stage))
+
+        staged_path = Path(staged.path)
+        self.assertEqual(staged_path.parent, self.stage)
+        self.assertTrue(staged_path.name.startswith(".keep-or-nah-"))
+        self.assertEqual(staged_path.read_bytes(), b"raw-content")
+        staged_stat = staged_path.stat()
+        self.assertEqual(
+            stat.S_IMODE(staged_stat.st_mode), stat.S_IMODE(source.stat().st_mode)
+        )
+        self.assertEqual(staged_stat.st_mtime_ns, source.stat().st_mtime_ns)
+        self.assertEqual((staged.dev, staged.ino),
+                         (staged_stat.st_dev, staged_stat.st_ino))
+
+    def test_stage_regular_file_refuses_symlink_and_directory_sources(self) -> None:
+        real = self.write_source("IMG.jpg", b"raw")
+        link = self.root / "IMG-link.jpg"
+        try:
+            link.symlink_to(real)
+        except OSError:
+            self.skipTest("symlinks unavailable")
+        with self.assertRaises(OSError):
+            keep_or_nah_core.stage_regular_file(str(link), str(self.stage))
+        with self.assertRaises(OSError):
+            keep_or_nah_core.stage_regular_file(str(self.root), str(self.stage))
+        self.assertEqual(list(self.stage.iterdir()), [])
+
+    def test_stage_regular_file_never_overwrites_existing_entry(self) -> None:
+        source = self.write_source("IMG.jpg", b"raw")
+        staged = keep_or_nah_core.stage_regular_file(str(source), str(self.stage))
+        import os
+
+        (self.stage / "occupied").write_bytes(b"o")
+        with self.assertRaises(OSError):
+            keep_or_nah_core.stage_regular_file(str(source), str(Path(os.devnull).parent / "nonexist"))
+        self.assertTrue(Path(staged.path).exists())
+
+    def test_remove_verified_file_deletes_matching_identity_only(self) -> None:
+        path = self.write_source("IMG.jpg", b"raw")
+        identity = keep_or_nah_core.file_identity(str(path))
+        self.assertEqual(len(identity), 2)
+
+        keep_or_nah_core.remove_verified_file(str(path), identity[0], identity[1])
+        self.assertFalse(path.exists())
+
+        replacement = self.root / "IMG.jpg"
+        replacement.write_bytes(b"replacement")
+        with self.assertRaises(OSError):
+            keep_or_nah_core.remove_verified_file(
+                str(replacement), identity[0], identity[1]
+            )
+        self.assertTrue(replacement.exists())
+
+    def test_file_identity_refuses_symlinks_and_directories(self) -> None:
+        import os
+
+        real = self.write_source("IMG.jpg", b"raw")
+        link = self.root / "IMG-link.jpg"
+        try:
+            link.symlink_to(real)
+        except OSError:
+            self.skipTest("symlinks unavailable")
+        with self.assertRaises(OSError):
+            keep_or_nah_core.file_identity(str(link))
+        with self.assertRaises(OSError):
+            keep_or_nah_core.file_identity(str(self.root))
+        self.assertEqual(
+            tuple(keep_or_nah_core.file_identity(str(real))),
+            (os.stat(real).st_dev, os.stat(real).st_ino),
+        )
+
+
 class RustGroupingSessionIntegrationTests(unittest.TestCase):
     def test_photo_session_consumes_rust_grouped_entries(self) -> None:
         temp = tempfile.TemporaryDirectory()

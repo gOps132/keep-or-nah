@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from photo_groups import PhotoGroup
+import photo_session
 from photo_session import ActionRecord, FileOperation, PhotoSession, PhotoSessionError
 from session_startup import initialize_gui_session
 
@@ -32,7 +33,7 @@ class PhotoSessionGroupTests(unittest.TestCase):
         return session
 
     def force_fallback(self, session):
-        session._supports_rooted_dir_fd = lambda: False
+        # Both variants now exercise the same universal path-based engine.
         return session
 
     def write(self, name, contents=b"data"):
@@ -63,8 +64,6 @@ class PhotoSessionGroupTests(unittest.TestCase):
         session.set_action_mode(action_mode)
         if force_fallback:
             self.force_fallback(session)
-        elif not session._supports_rooted_dir_fd():
-            self.skipTest("rooted directory descriptors unavailable")
         session.load_queue()
         result = session.decide(decision)
         if decision == "keep":
@@ -127,8 +126,6 @@ class PhotoSessionGroupTests(unittest.TestCase):
                     session.set_action_mode(action_mode)
                     if force_fallback:
                         self.force_fallback(session)
-                    elif not session._supports_rooted_dir_fd():
-                        self.skipTest("rooted directory descriptors unavailable")
                     session.load_queue()
                     result = session.decide("keep")
                     record = session.history[-1]
@@ -177,8 +174,6 @@ class PhotoSessionGroupTests(unittest.TestCase):
                     session.set_action_mode(action_mode)
                     if force_fallback:
                         self.force_fallback(session)
-                    elif not session._supports_rooted_dir_fd():
-                        self.skipTest("rooted directory descriptors unavailable")
                     session.load_queue()
                     result = session.decide("keep")
                     self.assertTrue(
@@ -212,13 +207,11 @@ class PhotoSessionGroupTests(unittest.TestCase):
         self.write("IMG.cr3", b"raw")
         self.write("IMG.jpg", b"jpg")
         session = self.make_session(action_mode="copy")
-        if not session._supports_rooted_dir_fd():
-            self.skipTest("rooted directory descriptors unavailable")
         session.load_queue()
-        real_copy = session._copy_at_exclusive
+        real_copy = session._copy_path_exclusive
         calls = 0
 
-        def replace_first_before_second_fails(*args):
+        def replace_first_before_second_fails(*args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 2:
@@ -230,7 +223,7 @@ class PhotoSessionGroupTests(unittest.TestCase):
 
         with patch.object(
             session,
-            "_copy_at_exclusive",
+            "_copy_path_exclusive",
             side_effect=replace_first_before_second_fails,
         ):
             with self.assertRaisesRegex(PhotoSessionError, "second copy failed"):
@@ -243,24 +236,23 @@ class PhotoSessionGroupTests(unittest.TestCase):
     def test_posix_copy_stages_complete_file_before_final_path_is_visible(self):
         self.write("IMG.jpg", b"jpg")
         session = self.make_session(action_mode="copy")
-        if not session._supports_rooted_dir_fd():
-            self.skipTest("rooted directory descriptors unavailable")
         session.load_queue()
-        real_copy = session._copy_fd_data_and_metadata
+        real_stage = photo_session.stage_regular_file
         observed_temporary_names = []
 
         def inspect_staging(*args, **kwargs):
+            staged = real_stage(*args, **kwargs)
             self.assertFalse((self.keep / "IMG.jpg").exists())
             observed_temporary_names.extend(
                 path.name
                 for path in self.keep.iterdir()
                 if path.name.startswith(".keep-or-nah-")
             )
-            return real_copy(*args, **kwargs)
+            return staged
 
         with patch.object(
-            session,
-            "_copy_fd_data_and_metadata",
+            photo_session,
+            "stage_regular_file",
             side_effect=inspect_staging,
         ):
             try:
@@ -534,10 +526,10 @@ class PhotoSessionGroupTests(unittest.TestCase):
         outside_target.write_bytes(b"outside")
         session = self.make_session(action_mode="copy")
         session.load_queue()
-        real_copy = session._copy_at_exclusive
+        real_copy = session._copy_path_exclusive
         calls = 0
 
-        def create_racing_symlink(*args):
+        def create_racing_symlink(*args, **kwargs):
             nonlocal calls
             calls += 1
             result = real_copy(*args)
@@ -546,7 +538,7 @@ class PhotoSessionGroupTests(unittest.TestCase):
             return result
 
         with patch.object(
-            session, "_copy_at_exclusive", side_effect=create_racing_symlink
+            session, "_copy_path_exclusive", side_effect=create_racing_symlink
         ):
             with self.assertRaisesRegex(PhotoSessionError, "occupied"):
                 session.decide("keep")
@@ -649,12 +641,7 @@ class PhotoSessionGroupTests(unittest.TestCase):
         session = self.force_fallback(self.make_session(action_mode="copy"))
         session.load_queue()
 
-        with patch("photo_session.os.supports_fd", set()), patch.object(
-            session,
-            "_open_directory_fd",
-            side_effect=AssertionError("POSIX adapter used"),
-        ):
-            result = session.decide("keep")
+        result = session.decide("keep")
 
         self.assertEqual(
             [item.destination.name for item in result.files],
@@ -678,13 +665,8 @@ class PhotoSessionGroupTests(unittest.TestCase):
         session = self.force_fallback(self.make_session())
         session.load_queue()
 
-        with patch.object(
-            session,
-            "_open_directory_fd",
-            side_effect=AssertionError("POSIX adapter used"),
-        ):
-            result = session.decide("keep")
-            session.undo()
+        result = session.decide("keep")
+        session.undo()
 
         self.assertTrue(raw.exists())
         self.assertTrue(jpg.exists())
@@ -703,12 +685,7 @@ class PhotoSessionGroupTests(unittest.TestCase):
         session = self.force_fallback(self.make_session(action_mode="copy"))
         session.load_queue()
 
-        with patch.object(
-            session,
-            "_open_directory_fd",
-            side_effect=AssertionError("POSIX adapter used"),
-        ):
-            result = session.decide("keep")
+        result = session.decide("keep")
 
         self.assertEqual(
             [item.destination.name for item in result.files],
@@ -770,10 +747,10 @@ class PhotoSessionGroupTests(unittest.TestCase):
         self.write("IMG.jpg", b"jpg")
         session = self.make_session()
         session.load_queue()
-        real_copy = session._copy_open_source_exclusive
+        real_copy = session._copy_path_exclusive
         replaced = False
 
-        def replace_source_after_copy(*args):
+        def replace_source_after_copy(*args, **kwargs):
             nonlocal replaced
             result = real_copy(*args)
             if not replaced:
@@ -784,7 +761,7 @@ class PhotoSessionGroupTests(unittest.TestCase):
 
         with patch.object(
             session,
-            "_copy_open_source_exclusive",
+            "_copy_path_exclusive",
             side_effect=replace_source_after_copy,
         ):
             with self.assertRaisesRegex(PhotoSessionError, "identity|replaced"):
@@ -799,7 +776,7 @@ class PhotoSessionGroupTests(unittest.TestCase):
         self.write("IMG.jpg", b"jpg")
         session = self.force_fallback(self.make_session())
         session.load_queue()
-        real_copy = session._copy_path_exclusive_fallback
+        real_copy = session._copy_path_exclusive
         replaced = False
 
         def replace_source_after_copy(source, *args, **kwargs):
@@ -813,7 +790,7 @@ class PhotoSessionGroupTests(unittest.TestCase):
 
         with patch.object(
             session,
-            "_copy_path_exclusive_fallback",
+            "_copy_path_exclusive",
             side_effect=replace_source_after_copy,
         ):
             with self.assertRaisesRegex(PhotoSessionError, "identity|replaced"):
@@ -830,10 +807,10 @@ class PhotoSessionGroupTests(unittest.TestCase):
         session.load_queue()
         result = session.decide("keep")
         first_reverse = result.files[-1]
-        real_copy = session._copy_open_source_exclusive
+        real_copy = session._copy_path_exclusive
         replaced = False
 
-        def replace_action_destination_after_copy(*args):
+        def replace_action_destination_after_copy(*args, **kwargs):
             nonlocal replaced
             copied = real_copy(*args)
             if not replaced:
@@ -844,7 +821,7 @@ class PhotoSessionGroupTests(unittest.TestCase):
 
         with patch.object(
             session,
-            "_copy_open_source_exclusive",
+            "_copy_path_exclusive",
             side_effect=replace_action_destination_after_copy,
         ):
             with self.assertRaisesRegex(PhotoSessionError, "identity|replaced"):
@@ -862,7 +839,7 @@ class PhotoSessionGroupTests(unittest.TestCase):
         session.load_queue()
         result = session.decide("keep")
         first_reverse = result.files[-1]
-        real_copy = session._copy_path_exclusive_fallback
+        real_copy = session._copy_path_exclusive
         replaced = False
 
         def replace_action_destination_after_copy(source, *args, **kwargs):
@@ -876,7 +853,7 @@ class PhotoSessionGroupTests(unittest.TestCase):
 
         with patch.object(
             session,
-            "_copy_path_exclusive_fallback",
+            "_copy_path_exclusive",
             side_effect=replace_action_destination_after_copy,
         ):
             with self.assertRaisesRegex(PhotoSessionError, "identity|replaced"):
@@ -892,19 +869,19 @@ class PhotoSessionGroupTests(unittest.TestCase):
         self.write("IMG.jpg", b"jpg")
         session = self.make_session()
         session.load_queue()
-        real_move = session._move_at_exclusive
-        real_copy = session._copy_open_source_exclusive
+        real_move = session._move_path_exclusive
+        real_copy = session._copy_path_exclusive
         move_calls = 0
         replaced = False
 
-        def fail_second_move(*args):
+        def fail_second_move(*args, **kwargs):
             nonlocal move_calls
             move_calls += 1
             if move_calls == 2:
                 raise OSError("primary move failure")
             return real_move(*args)
 
-        def replace_during_rollback(*args):
+        def replace_during_rollback(*args, **kwargs):
             nonlocal replaced
             destination = args[1]
             copied = real_copy(*args)
@@ -916,17 +893,17 @@ class PhotoSessionGroupTests(unittest.TestCase):
             return copied
 
         with patch.object(
-            session, "_move_at_exclusive", side_effect=fail_second_move
+            session, "_move_path_exclusive", side_effect=fail_second_move
         ), patch.object(
             session,
-            "_copy_open_source_exclusive",
+            "_copy_path_exclusive",
             side_effect=replace_during_rollback,
         ):
             with self.assertRaises(PhotoSessionError) as raised:
                 session.decide("keep")
 
         self.assertIn("primary move failure", str(raised.exception))
-        self.assertIn("identity", str(raised.exception))
+        self.assertIn("replaced", str(raised.exception))
         self.assertEqual((self.keep / raw.name).read_bytes(), b"replacement")
         self.assertFalse(raw.exists())
         self.assertEqual(session.remaining_count, 1)
@@ -936,8 +913,8 @@ class PhotoSessionGroupTests(unittest.TestCase):
         self.write("IMG.jpg", b"jpg")
         session = self.force_fallback(self.make_session())
         session.load_queue()
-        real_move = session._move_path_exclusive_fallback
-        real_copy = session._copy_path_exclusive_fallback
+        real_move = session._move_path_exclusive
+        real_copy = session._copy_path_exclusive
         move_calls = 0
         replaced = False
 
@@ -959,11 +936,11 @@ class PhotoSessionGroupTests(unittest.TestCase):
 
         with patch.object(
             session,
-            "_move_path_exclusive_fallback",
+            "_move_path_exclusive",
             side_effect=fail_second_move,
         ), patch.object(
             session,
-            "_copy_path_exclusive_fallback",
+            "_copy_path_exclusive",
             side_effect=replace_during_rollback,
         ):
             with self.assertRaises(PhotoSessionError) as raised:
@@ -980,17 +957,17 @@ class PhotoSessionGroupTests(unittest.TestCase):
         self.write("IMG.jpg", b"jpg")
         session = self.make_session(action_mode="copy")
         session.load_queue()
-        real_copy = session._copy_at_exclusive
+        real_copy = session._copy_path_exclusive
         calls = 0
 
-        def fail_second(*args):
+        def fail_second(*args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 2:
                 raise OSError("disk full")
             return real_copy(*args)
 
-        with patch.object(session, "_copy_at_exclusive", side_effect=fail_second):
+        with patch.object(session, "_copy_path_exclusive", side_effect=fail_second):
             with self.assertRaisesRegex(PhotoSessionError, "disk full"):
                 session.decide("keep")
 
@@ -1004,17 +981,17 @@ class PhotoSessionGroupTests(unittest.TestCase):
         jpg = self.write("IMG.jpg", b"jpg")
         session = self.make_session()
         session.load_queue()
-        real_move = session._move_at_exclusive
+        real_move = session._move_path_exclusive
         calls = 0
 
-        def fail_second(*args):
+        def fail_second(*args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 2:
                 raise OSError("device error")
             return real_move(*args)
 
-        with patch.object(session, "_move_at_exclusive", side_effect=fail_second):
+        with patch.object(session, "_move_path_exclusive", side_effect=fail_second):
             with self.assertRaisesRegex(PhotoSessionError, "device error"):
                 session.decide("keep")
 
@@ -1028,28 +1005,28 @@ class PhotoSessionGroupTests(unittest.TestCase):
         self.write("IMG.jpg")
         session = self.make_session(action_mode="copy")
         session.load_queue()
-        real_copy = session._copy_at_exclusive
+        real_copy = session._copy_path_exclusive
         calls = 0
 
-        def fail_second(*args):
+        def fail_second(*args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 2:
                 raise OSError("primary failure")
             return real_copy(*args)
 
-        real_remove = session._remove_owned_at
+        real_remove = session._remove_owned_path
 
-        def fail_final_destination_cleanup(name, *args):
-            if not name.startswith(".keep-or-nah-"):
+        def fail_final_destination_cleanup(path, *args):
+            if not Path(path).name.startswith(".keep-or-nah-"):
                 raise OSError("rollback failure")
-            return real_remove(name, *args)
+            return real_remove(path, *args)
 
         with patch.object(
-            session, "_copy_at_exclusive", side_effect=fail_second
+            session, "_copy_path_exclusive", side_effect=fail_second
         ), patch.object(
             session,
-            "_remove_owned_at",
+            "_remove_owned_path",
             side_effect=fail_final_destination_cleanup,
         ):
             with self.assertRaises(PhotoSessionError) as raised:
@@ -1064,10 +1041,10 @@ class PhotoSessionGroupTests(unittest.TestCase):
         session = self.make_session()
         session.load_queue()
         result = session.decide("keep")
-        real_move = session._move_at_exclusive
+        real_move = session._move_path_exclusive
         calls = 0
 
-        def fail_second_reverse(*args):
+        def fail_second_reverse(*args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 2:
@@ -1075,7 +1052,7 @@ class PhotoSessionGroupTests(unittest.TestCase):
             return real_move(*args)
 
         with patch.object(
-            session, "_move_at_exclusive", side_effect=fail_second_reverse
+            session, "_move_path_exclusive", side_effect=fail_second_reverse
         ):
             with self.assertRaisesRegex(PhotoSessionError, "transient undo failure"):
                 session.undo()
@@ -1101,10 +1078,10 @@ class PhotoSessionGroupTests(unittest.TestCase):
         session = self.make_session()
         session.load_queue()
         session.decide("keep")
-        real_move = session._move_at_exclusive
+        real_move = session._move_path_exclusive
         calls = 0
 
-        def fail_reverse_and_rollback(*args):
+        def fail_reverse_and_rollback(*args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 2:
@@ -1115,7 +1092,7 @@ class PhotoSessionGroupTests(unittest.TestCase):
 
         with patch.object(
             session,
-            "_move_at_exclusive",
+            "_move_path_exclusive",
             side_effect=fail_reverse_and_rollback,
         ):
             with self.assertRaises(PhotoSessionError) as raised:
@@ -1139,21 +1116,21 @@ class PhotoSessionGroupTests(unittest.TestCase):
         session = self.make_session(action_mode="copy")
         session.load_queue()
         result = session.decide("keep")
-        real_unlink = session._unlink_at
+        real_remove = session._remove_owned_path
         calls = 0
 
-        def fail_second_unlink(*args):
+        def fail_second_unlink(*args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 2:
                 raise OSError("copy undo failure")
-            return real_unlink(*args)
+            return real_remove(*args, **kwargs)
 
         with patch.object(
-            session, "_unlink_at", side_effect=fail_second_unlink
+            session, "_remove_owned_path", side_effect=fail_second_unlink
         ), patch.object(
             session,
-            "_copy_at_exclusive",
+            "_copy_path_exclusive",
             side_effect=OSError("copy rollback failure"),
         ):
             with self.assertRaises(PhotoSessionError) as raised:

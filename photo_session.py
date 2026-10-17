@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import errno
 import os
-import secrets
 import stat
-import tempfile
 from typing import Literal
 
 from PIL import Image
 
+from keep_or_nah_core import remove_verified_file, stage_regular_file
 from photo_groups import PhotoGroup, build_photo_groups, discover_extensions
 
 
@@ -1216,7 +1214,6 @@ class PhotoSession:
         self,
         group: PhotoGroup,
         destination_dir: Path,
-        destination_fd: int,
     ) -> tuple[FileOperation, ...]:
         collision_number = 0
         while True:
@@ -1232,10 +1229,7 @@ class PhotoSession:
                 )
                 for member in group.members
             )
-            if not any(
-                self._entry_occupied(destination_fd, item.destination.name)
-                for item in operations
-            ):
+            if not any(self._path_occupied(item.destination) for item in operations):
                 return operations
             collision_number += 1
 
@@ -1245,93 +1239,39 @@ class PhotoSession:
         source_root: Path,
         destination_root: Path,
     ) -> tuple[FileOperation, ...]:
-        if not self._supports_rooted_dir_fd():
-            return self._execute_group_operations_fallback(
-                group, source_root, destination_root
-            )
-        try:
-            resolved_source_root = source_root.resolve(strict=True)
-            resolved_destination_root = destination_root.resolve(strict=True)
-            with self._open_directory_fd(source_root) as source_fd, self._open_directory_fd(
-                destination_root
-            ) as destination_fd:
-                operations = self._group_destinations(
-                    group, destination_root, destination_fd
-                )
-                return self._execute_operations(
-                    operations,
-                    source_fd,
-                    destination_fd,
-                    resolved_source_root,
-                    resolved_destination_root,
-                )
-        except PhotoSessionError:
-            raise
-        except Exception as error:
-            raise PhotoSessionError(
-                f"Could not open a photo group folder safely: {error}",
-                primary_error=error,
-            ) from error
-
-    @staticmethod
-    def _supports_rooted_dir_fd() -> bool:
-        return (
-            hasattr(os, "O_DIRECTORY")
-            and hasattr(os, "O_NOFOLLOW")
-            and os.open in os.supports_dir_fd
-            and os.stat in os.supports_dir_fd
-            and os.unlink in os.supports_dir_fd
-            and os.link in os.supports_dir_fd
-            and os.link in os.supports_follow_symlinks
-            and os.chmod in os.supports_fd
-            and os.utime in os.supports_fd
-        )
-
-    def _execute_group_operations_fallback(
-        self,
-        group: PhotoGroup,
-        source_root: Path,
-        destination_root: Path,
-    ) -> tuple[FileOperation, ...]:
+        resolved_source_root = source_root.resolve(strict=True)
         resolved_destination_root = destination_root.resolve(strict=True)
         destination_root_identity = self._directory_identity(
             resolved_destination_root
         )
-        operations = self._group_destinations_fallback(
-            group, resolved_destination_root
-        )
-        completed: list[FileOperation] = []
-        resolved_source_root = source_root.resolve(strict=True)
         source_root_identity = self._directory_identity(resolved_source_root)
+        operations = self._group_destinations(group, resolved_destination_root)
+        completed: list[FileOperation] = []
         try:
             for operation in operations:
                 if self.action_mode == "move":
-                    identity = self._move_path_exclusive_fallback(
+                    identity = self._move_path_exclusive(
                         operation.source,
                         operation.destination,
                         resolved_destination_root,
                         expected_destination_root_identity=destination_root_identity,
                     )
                 else:
-                    identity = self._copy_path_exclusive_fallback(
+                    identity = self._copy_path_exclusive(
                         operation.source,
                         operation.destination,
                         resolved_destination_root,
                         expected_destination_root_identity=destination_root_identity,
                     )
                 completed.append(
-                    FileOperation(
-                        operation.source,
-                        operation.destination,
-                        identity,
-                    )
+                    FileOperation(operation.source, operation.destination, identity)
                 )
         except Exception as primary_error:
             rollback_errors: list[BaseException] = []
             for operation in reversed(completed):
                 try:
                     if self.action_mode == "move":
-                        self._move_path_exclusive_fallback(
+                        self._move_path_exclusive(
                             operation.destination,
                             operation.source,
                             resolved_source_root,
@@ -1356,355 +1296,12 @@ class PhotoSession:
                 completed_operations=tuple(completed),
             ) from primary_error
         return tuple(completed)
-
-    def _group_destinations_fallback(
-        self, group: PhotoGroup, destination_dir: Path
-    ) -> tuple[FileOperation, ...]:
-        collision_number = 0
-        while True:
-            operations = tuple(
-                FileOperation(
-                    member,
-                    destination_dir
-                    / (
-                        member.name
-                        if collision_number == 0
-                        else f"{member.stem} ({collision_number}){member.suffix}"
-                    ),
-                )
-                for member in group.members
-            )
-            if not any(self._path_occupied(item.destination) for item in operations):
-                return operations
-            collision_number += 1
-
-    def _execute_operations(
-        self,
-        operations: tuple[FileOperation, ...],
-        source_fd: int,
-        destination_fd: int,
-        resolved_source_root: Path,
-        resolved_destination_root: Path,
-    ) -> tuple[FileOperation, ...]:
-        completed: list[FileOperation] = []
-        try:
-            for operation in operations:
-                if self.action_mode == "move":
-                    identity = self._move_at_exclusive(
-                        operation.source.name,
-                        source_fd,
-                        operation.destination,
-                        destination_fd,
-                        resolved_destination_root,
-                    )
-                else:
-                    identity = self._copy_at_exclusive(
-                        operation.source.name,
-                        source_fd,
-                        operation.destination,
-                        destination_fd,
-                        resolved_destination_root,
-                    )
-                completed.append(
-                    FileOperation(
-                        operation.source,
-                        operation.destination,
-                        identity,
-                    )
-                )
-        except Exception as primary_error:
-            rollback_errors: list[BaseException] = []
-            for operation in reversed(completed):
-                try:
-                    if self.action_mode == "move":
-                        self._move_at_exclusive(
-                            operation.destination.name,
-                            destination_fd,
-                            operation.source,
-                            source_fd,
-                            resolved_source_root,
-                            operation.destination_identity,
-                        )
-                    else:
-                        self._remove_owned_at(
-                            operation.destination.name,
-                            destination_fd,
-                            operation.destination_identity,
-                        )
-                except Exception as rollback_error:
-                    rollback_errors.append(rollback_error)
-
-            message = f"Could not {self.action_mode} the photo group: {primary_error}"
-            if rollback_errors:
-                details = "; ".join(str(error) for error in rollback_errors)
-                message += f". Rollback also failed: {details}"
-            raise PhotoSessionError(
-                message,
-                primary_error=primary_error,
-                rollback_errors=tuple(rollback_errors),
-                completed_operations=tuple(completed),
-            ) from primary_error
-        return tuple(completed)
-
-    @staticmethod
-    @contextmanager
-    def _open_directory_fd(path: Path):
-        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-        directory_fd = os.open(path, flags)
-        try:
-            yield directory_fd
-        finally:
-            os.close(directory_fd)
-
-    @staticmethod
-    def _entry_occupied(directory_fd: int, name: str) -> bool:
-        try:
-            os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            return False
-        return True
-
-    def _copy_at_exclusive(
-        self,
-        source_name: str,
-        source_root_fd: int,
-        destination: Path,
-        destination_root_fd: int,
-        destination_root: Path,
-    ) -> tuple[int, int]:
-        self._validate_basename(source_name)
-        self._validate_basename(destination.name)
-        source_flags = os.O_RDONLY | os.O_NOFOLLOW
-        source_fd = os.open(source_name, source_flags, dir_fd=source_root_fd)
-        try:
-            return self._copy_open_source_exclusive(
-                source_fd,
-                destination,
-                destination_root_fd,
-                destination_root,
-            )
-        finally:
-            os.close(source_fd)
-
-    def _copy_open_source_exclusive(
-        self,
-        source_fd: int,
-        destination: Path,
-        destination_root_fd: int,
-        destination_root: Path,
-    ) -> tuple[int, int]:
-        self._validate_destination(destination, destination_root)
-        temporary_fd, temporary_name = self._open_temporary_at(
-            destination_root_fd
-        )
-        temporary_identity = self._fd_identity(temporary_fd)
-        published_identity: tuple[int, int] | None = None
-        temporary_removed = False
-        try:
-            self._copy_fd_data_and_metadata(source_fd, temporary_fd)
-            os.close(temporary_fd)
-            temporary_fd = -1
-            self._validate_destination(destination, destination_root)
-            self._publish_hard_link_at(
-                temporary_name,
-                destination.name,
-                destination_root_fd,
-            )
-            published_identity = temporary_identity
-            self._require_owned_entry(
-                destination_root_fd,
-                destination.name,
-                published_identity,
-            )
-            self._remove_owned_at(
-                temporary_name,
-                destination_root_fd,
-                temporary_identity,
-            )
-            temporary_removed = True
-            self._require_owned_entry(
-                destination_root_fd,
-                destination.name,
-                published_identity,
-            )
-            return published_identity
-        except Exception as primary_error:
-            cleanup_errors: list[BaseException] = []
-            if published_identity is not None:
-                try:
-                    self._remove_owned_at(
-                        destination.name,
-                        destination_root_fd,
-                        published_identity,
-                    )
-                except Exception as cleanup_error:
-                    cleanup_errors.append(cleanup_error)
-            if temporary_fd >= 0:
-                try:
-                    os.close(temporary_fd)
-                except OSError as cleanup_error:
-                    cleanup_errors.append(cleanup_error)
-            if not temporary_removed:
-                try:
-                    self._remove_owned_at(
-                        temporary_name,
-                        destination_root_fd,
-                        temporary_identity,
-                    )
-                except Exception as cleanup_error:
-                    cleanup_errors.append(cleanup_error)
-            if cleanup_errors:
-                details = "; ".join(str(error) for error in cleanup_errors)
-                raise OSError(
-                    f"{primary_error}; staged destination cleanup failed: {details}"
-                ) from primary_error
-            raise
-
-    @staticmethod
-    def _open_temporary_at(directory_fd: int) -> tuple[int, str]:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-        for _attempt in range(100):
-            name = f".keep-or-nah-{secrets.token_hex(12)}.tmp"
-            try:
-                return os.open(name, flags, 0o600, dir_fd=directory_fd), name
-            except FileExistsError:
-                continue
-        raise FileExistsError("Could not allocate a unique staging file")
-
-    @staticmethod
-    def _publish_hard_link_at(
-        source_name: str,
-        destination_name: str,
-        directory_fd: int,
-    ) -> None:
-        PhotoSession._validate_basename(source_name)
-        PhotoSession._validate_basename(destination_name)
-        os.link(
-            source_name,
-            destination_name,
-            src_dir_fd=directory_fd,
-            dst_dir_fd=directory_fd,
-            follow_symlinks=False,
-        )
-
-    def _move_at_exclusive(
-        self,
-        source_name: str,
-        source_root_fd: int,
-        destination: Path,
-        destination_root_fd: int,
-        destination_root: Path,
-        expected_source_identity: tuple[int, int] | None = None,
-    ) -> tuple[int, int]:
-        self._validate_basename(source_name)
-        source_fd = os.open(
-            source_name,
-            os.O_RDONLY | os.O_NOFOLLOW,
-            dir_fd=source_root_fd,
-        )
-        source_identity = self._fd_identity(source_fd)
-        published_identity: tuple[int, int] | None = None
-        try:
-            if (
-                expected_source_identity is not None
-                and source_identity != expected_source_identity
-            ):
-                raise OSError(
-                    f"Source path identity changed unexpectedly: {source_name}"
-                )
-            published_identity = self._copy_open_source_exclusive(
-                source_fd,
-                destination,
-                destination_root_fd,
-                destination_root,
-            )
-            if self._entry_identity(source_root_fd, source_name) != source_identity:
-                raise OSError(f"Source path identity changed before unlink: {source_name}")
-            self._unlink_at(source_name, source_root_fd)
-        except Exception as primary_error:
-            if published_identity is not None:
-                try:
-                    self._remove_owned_at(
-                        destination.name,
-                        destination_root_fd,
-                        published_identity,
-                    )
-                except Exception as cleanup_error:
-                    raise OSError(
-                        f"{primary_error}; copied destination cleanup failed: {cleanup_error}"
-                    ) from primary_error
-            raise
-        finally:
-            os.close(source_fd)
-        return published_identity
-
-    @staticmethod
-    def _entry_identity(directory_fd: int, name: str) -> tuple[int, int]:
-        entry_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        return entry_stat.st_dev, entry_stat.st_ino
-
-    @classmethod
-    def _require_owned_entry(
-        cls,
-        directory_fd: int,
-        name: str,
-        expected_identity: tuple[int, int],
-    ) -> None:
-        if cls._entry_identity(directory_fd, name) != expected_identity:
-            raise OSError(f"Refusing to remove a replaced path: {name}")
-
-    def _remove_owned_at(
-        self,
-        name: str,
-        directory_fd: int,
-        expected_identity: tuple[int, int],
-    ) -> None:
-        self._require_owned_entry(directory_fd, name, expected_identity)
-        self._unlink_at(name, directory_fd)
-
-    @staticmethod
-    def _unlink_at(name: str, directory_fd: int) -> None:
-        PhotoSession._validate_basename(name)
-        os.unlink(name, dir_fd=directory_fd)
-
     @staticmethod
     def _validate_basename(name: str) -> None:
         if not name or Path(name).name != name or name in {".", ".."}:
             raise OSError(f"Unsafe direct-child filename: {name!r}")
 
-    @staticmethod
-    def _copy_fd_data_and_metadata(
-        source_fd: int,
-        destination_fd: int,
-        owned_destination_path: Path | None = None,
-    ) -> None:
-        source_stat = os.fstat(source_fd)
-        while True:
-            chunk = os.read(source_fd, 1024 * 1024)
-            if not chunk:
-                break
-            view = memoryview(chunk)
-            while view:
-                written = os.write(destination_fd, view)
-                if written == 0:
-                    raise OSError("Destination write made no progress")
-                view = view[written:]
-        mode = stat.S_IMODE(source_stat.st_mode)
-        timestamps = (source_stat.st_atime_ns, source_stat.st_mtime_ns)
-        if hasattr(os, "fchmod") and os.chmod in os.supports_fd:
-            os.fchmod(destination_fd, mode)
-        elif owned_destination_path is not None:
-            os.chmod(owned_destination_path, mode)
-        else:
-            raise OSError("This platform cannot apply destination permissions safely")
-        if os.utime in os.supports_fd:
-            os.utime(destination_fd, ns=timestamps)
-        elif owned_destination_path is not None:
-            os.utime(owned_destination_path, ns=timestamps)
-        else:
-            raise OSError("This platform cannot apply destination timestamps safely")
-
-    def _copy_path_exclusive_fallback(
+    def _copy_path_exclusive(
         self,
         source: Path,
         destination: Path,
@@ -1721,36 +1318,33 @@ class PhotoSession:
             destination_root, expected_destination_root_identity
         )
         self._validate_destination(destination, destination_root)
-        temporary_fd, temporary_name = tempfile.mkstemp(
-            prefix=".keep-or-nah-", dir=destination_root
+        if expected_source_identity is not None:
+            self._require_owned_path(source, expected_source_identity)
+        staged = stage_regular_file(
+            str(source),
+            str(destination_root),
+            expected_dev=(
+                expected_source_identity[0]
+                if expected_source_identity is not None
+                else None
+            ),
+            expected_ino=(
+                expected_source_identity[1]
+                if expected_source_identity is not None
+                else None
+            ),
         )
-        temporary_path = Path(temporary_name)
-        temporary_identity = self._fd_identity(temporary_fd)
+        temporary_path = Path(staged.path)
+        temporary_identity = (staged.dev, staged.ino)
         published_identity: tuple[int, int] | None = None
         temporary_consumed = False
-        source_fd: int | None = None
         try:
-            source_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-            source_fd = os.open(source, source_flags)
-            if (
-                expected_source_identity is not None
-                and self._fd_identity(source_fd) != expected_source_identity
-            ):
-                raise OSError(f"Source path identity changed unexpectedly: {source}")
-            self._copy_fd_data_and_metadata(
-                source_fd, temporary_fd, temporary_path
-            )
-            os.close(temporary_fd)
-            temporary_fd = -1
             self._require_owned_path(temporary_path, temporary_identity)
             self._require_directory_identity(
                 destination_root, expected_destination_root_identity
             )
             self._validate_destination(destination, destination_root)
-            temporary_consumed = self._publish_staged_fallback(
-                temporary_path,
-                destination,
-            )
+            temporary_consumed = self._publish_staged(temporary_path, destination)
             published_identity = temporary_identity
             self._require_owned_path(destination, published_identity)
             self._require_directory_identity(
@@ -1764,16 +1358,6 @@ class PhotoSession:
                     self._remove_owned_path(destination, published_identity)
                 except Exception as cleanup_error:
                     cleanup_errors.append(cleanup_error)
-            if temporary_fd >= 0:
-                try:
-                    os.close(temporary_fd)
-                except OSError as cleanup_error:
-                    cleanup_errors.append(cleanup_error)
-            if source_fd is not None:
-                try:
-                    os.close(source_fd)
-                except OSError as cleanup_error:
-                    cleanup_errors.append(cleanup_error)
             if not temporary_consumed:
                 try:
                     self._remove_owned_path(temporary_path, temporary_identity)
@@ -1782,17 +1366,14 @@ class PhotoSession:
             if cleanup_errors:
                 details = "; ".join(str(error) for error in cleanup_errors)
                 raise OSError(
-                    f"{primary_error}; fallback cleanup failed: {details}"
+                    f"{primary_error}; staged destination cleanup failed: {details}"
                 ) from primary_error
             raise
         else:
-            if source_fd is not None:
-                os.close(source_fd)
             if not temporary_consumed:
                 self._remove_owned_path(temporary_path, temporary_identity)
             return published_identity
-
-    def _publish_staged_fallback(
+    def _publish_staged(
         self,
         source: Path,
         destination: Path,
@@ -1823,7 +1404,7 @@ class PhotoSession:
     def _is_windows_fallback() -> bool:
         return os.name == "nt"
 
-    def _move_path_exclusive_fallback(
+    def _move_path_exclusive(
         self,
         source: Path,
         destination: Path,
@@ -1835,7 +1416,7 @@ class PhotoSession:
         if expected_source_identity is None:
             expected_source_identity = self._path_identity(source)
         self._require_owned_path(source, expected_source_identity)
-        published_identity = self._copy_path_exclusive_fallback(
+        published_identity = self._copy_path_exclusive(
             source,
             destination,
             destination_root,
@@ -1853,18 +1434,12 @@ class PhotoSession:
                 ) from primary_error
             raise
         return published_identity
-
     @staticmethod
     def _publish_hard_link(source: Path, destination: Path) -> None:
         if os.link in os.supports_follow_symlinks:
             os.link(source, destination, follow_symlinks=False)
         else:
             os.link(source, destination)
-
-    @staticmethod
-    def _fd_identity(file_descriptor: int) -> tuple[int, int]:
-        file_stat = os.fstat(file_descriptor)
-        return file_stat.st_dev, file_stat.st_ino
 
     @staticmethod
     def _path_identity(path: Path) -> tuple[int, int]:
@@ -1898,8 +1473,9 @@ class PhotoSession:
     def _remove_owned_path(
         cls, path: Path, expected_identity: tuple[int, int]
     ) -> None:
-        cls._require_owned_path(path, expected_identity)
-        path.unlink()
+        # Native Rust removal re-verifies the on-disk identity inside the same
+        # native call, so no racer can swap the entry between check and unlink.
+        remove_verified_file(str(path), expected_identity[0], expected_identity[1])
 
     @staticmethod
     def _path_occupied(path: Path) -> bool:
@@ -2020,90 +1596,10 @@ class PhotoSession:
     def _undo_move_record(
         self, record: ActionRecord, destination_root: Path
     ) -> None:
-        if not self._supports_rooted_dir_fd():
-            self._undo_move_record_fallback(record, destination_root)
-            return
         if self.source_dir is None:
-            raise PhotoSessionError("The source folder is unavailable, so undo cannot restore files.")
-        try:
-            source_root = self.source_dir.resolve(strict=True)
-            with self._open_directory_fd(self.source_dir) as source_fd, self._open_directory_fd(
-                destination_root
-            ) as destination_fd:
-                pending: list[FileOperation] = []
-                for operation in reversed(record.files):
-                    source_occupied = self._entry_occupied(
-                        source_fd, operation.source.name
-                    )
-                    destination_occupied = self._entry_occupied(
-                        destination_fd, operation.destination.name
-                    )
-                    if destination_occupied:
-                        self._require_owned_entry(
-                            destination_fd,
-                            operation.destination.name,
-                            operation.destination_identity,
-                        )
-                    if destination_occupied and not source_occupied:
-                        pending.append(operation)
-                    elif source_occupied and not destination_occupied:
-                        continue
-                    elif source_occupied:
-                        raise PhotoSessionError(
-                            "An original group file path is already occupied, so undo cannot restore it."
-                        )
-                    else:
-                        raise PhotoSessionError(
-                            "A moved group file is missing, so the last action cannot be undone."
-                        )
-
-                completed: list[tuple[FileOperation, tuple[int, int]]] = []
-                try:
-                    for operation in pending:
-                        restored_identity = self._move_at_exclusive(
-                            operation.destination.name,
-                            destination_fd,
-                            operation.source,
-                            source_fd,
-                            source_root,
-                            operation.destination_identity,
-                        )
-                        completed.append((operation, restored_identity))
-                except Exception as primary_error:
-                    rollback_errors: list[BaseException] = []
-                    identity_updates: dict[FileOperation, tuple[int, int]] = {}
-                    for operation, restored_identity in reversed(completed):
-                        try:
-                            identity_updates[operation] = self._move_at_exclusive(
-                                operation.source.name,
-                                source_fd,
-                                destination_root / operation.destination.name,
-                                destination_fd,
-                                destination_root,
-                                restored_identity,
-                            )
-                        except Exception as rollback_error:
-                            rollback_errors.append(rollback_error)
-                    self._refresh_record_identities(record, identity_updates)
-                    self._raise_undo_failure(
-                        "moved",
-                        primary_error,
-                        tuple(rollback_errors),
-                        [operation for operation, _identity in completed],
-                    )
-        except PhotoSessionError:
-            raise
-        except Exception as error:
             raise PhotoSessionError(
-                f"Could not open an undo folder safely: {error}",
-                primary_error=error,
-            ) from error
-
-    def _undo_move_record_fallback(
-        self, record: ActionRecord, destination_root: Path
-    ) -> None:
-        if self.source_dir is None:
-            raise PhotoSessionError("The source folder is unavailable, so undo cannot restore files.")
+                "The source folder is unavailable, so undo cannot restore files."
+            )
         source_root = self.source_dir.resolve(strict=True)
         source_root_identity = self._directory_identity(source_root)
         destination_root_identity = self._directory_identity(destination_root)
@@ -2135,7 +1631,7 @@ class PhotoSession:
         completed: list[tuple[FileOperation, tuple[int, int]]] = []
         try:
             for operation, destination_identity in pending:
-                restored_identity = self._move_path_exclusive_fallback(
+                restored_identity = self._move_path_exclusive(
                     destination_root / operation.destination.name,
                     operation.source,
                     source_root,
@@ -2148,7 +1644,7 @@ class PhotoSession:
             identity_updates: dict[FileOperation, tuple[int, int]] = {}
             for operation, restored_identity in reversed(completed):
                 try:
-                    identity_updates[operation] = self._move_path_exclusive_fallback(
+                    identity_updates[operation] = self._move_path_exclusive(
                         operation.source,
                         destination_root / operation.destination.name,
                         destination_root,
@@ -2168,77 +1664,6 @@ class PhotoSession:
     def _undo_copy_record(
         self, record: ActionRecord, destination_root: Path
     ) -> None:
-        if not self._supports_rooted_dir_fd():
-            self._undo_copy_record_fallback(record, destination_root)
-            return
-        if self.source_dir is None:
-            raise PhotoSessionError("The source folder is unavailable, so undo cannot restore files.")
-        try:
-            with self._open_directory_fd(self.source_dir) as source_fd, self._open_directory_fd(
-                destination_root
-            ) as destination_fd:
-                pending: list[FileOperation] = []
-                for operation in reversed(record.files):
-                    destination_occupied = self._entry_occupied(
-                        destination_fd, operation.destination.name
-                    )
-                    if destination_occupied:
-                        self._require_owned_entry(
-                            destination_fd,
-                            operation.destination.name,
-                            operation.destination_identity,
-                        )
-                        pending.append(operation)
-                    elif operation not in self._partial_copy_undo:
-                        raise PhotoSessionError(
-                            "A copied group file is missing, so the last action cannot be undone."
-                        )
-
-                completed: list[FileOperation] = []
-                try:
-                    for operation in pending:
-                        self._remove_owned_at(
-                            operation.destination.name,
-                            destination_fd,
-                            operation.destination_identity,
-                        )
-                        completed.append(operation)
-                        self._partial_copy_undo.add(operation)
-                except Exception as primary_error:
-                    rollback_errors: list[BaseException] = []
-                    identity_updates: dict[FileOperation, tuple[int, int]] = {}
-                    for operation in reversed(completed):
-                        try:
-                            identity_updates[operation] = self._copy_at_exclusive(
-                                operation.source.name,
-                                source_fd,
-                                destination_root / operation.destination.name,
-                                destination_fd,
-                                destination_root,
-                            )
-                            self._partial_copy_undo.discard(operation)
-                        except Exception as rollback_error:
-                            rollback_errors.append(rollback_error)
-                    self._refresh_record_identities(record, identity_updates)
-                    self._raise_undo_failure(
-                        "copied",
-                        primary_error,
-                        tuple(rollback_errors),
-                        completed,
-                    )
-        except PhotoSessionError:
-            raise
-        except Exception as error:
-            raise PhotoSessionError(
-                f"Could not open an undo folder safely: {error}",
-                primary_error=error,
-            ) from error
-
-    def _undo_copy_record_fallback(
-        self, record: ActionRecord, destination_root: Path
-    ) -> None:
-        if self.source_dir is None:
-            raise PhotoSessionError("The source folder is unavailable, so undo cannot restore files.")
         destination_root_identity = self._directory_identity(destination_root)
         pending: list[tuple[FileOperation, tuple[int, int]]] = []
         for operation in reversed(record.files):
@@ -2270,7 +1695,7 @@ class PhotoSession:
             identity_updates: dict[FileOperation, tuple[int, int]] = {}
             for operation in reversed(completed):
                 try:
-                    identity_updates[operation] = self._copy_path_exclusive_fallback(
+                    identity_updates[operation] = self._copy_path_exclusive(
                         operation.source,
                         destination_root / operation.destination.name,
                         destination_root,
@@ -2283,7 +1708,6 @@ class PhotoSession:
             self._raise_undo_failure(
                 "copied", primary_error, tuple(rollback_errors), completed
             )
-
     def _refresh_record_identities(
         self,
         record: ActionRecord,

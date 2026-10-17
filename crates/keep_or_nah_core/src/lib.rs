@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod fileops;
 pub mod image_loader;
 pub mod pipeline;
 pub mod scan;
@@ -250,10 +251,14 @@ fn keep_or_nah_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRawImage>()?;
     m.add_class::<PyCompletedPreview>()?;
     m.add_class::<PyPhotoGroup>()?;
+    m.add_class::<fileops::PyStagedFile>()?;
     m.add_function(wrap_pyfunction!(load_image_rgba, m)?)?;
     m.add_function(wrap_pyfunction!(resize_image_rgba, m)?)?;
     m.add_function(wrap_pyfunction!(discover_photo_extensions, m)?)?;
     m.add_function(wrap_pyfunction!(build_photo_groups, m)?)?;
+    m.add_function(wrap_pyfunction!(fileops::stage_regular_file, m)?)?;
+    m.add_function(wrap_pyfunction!(fileops::file_identity, m)?)?;
+    m.add_function(wrap_pyfunction!(fileops::remove_verified_file, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     Ok(())
 }
