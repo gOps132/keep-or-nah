@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod image_loader;
 pub mod pipeline;
+pub mod scan;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,6 +11,7 @@ use pyo3::types::PyBytes;
 
 use crate::image_loader::{load_and_orient, render_fit, LoadedImage, PreviewStage};
 use crate::pipeline::{CompletedPreview, Pipeline, PreviewLookup};
+use crate::scan::ScannedGroup;
 
 #[pyclass(get_all)]
 pub struct PyPreviewLookup {
@@ -44,6 +46,14 @@ impl From<CompletedPreview> for PyCompletedPreview {
             stage: c.stage,
         }
     }
+}
+
+#[pyclass(get_all)]
+#[derive(Clone)]
+pub struct PyPhotoGroup {
+    pub stem: String,
+    pub members: Vec<String>,
+    pub representative: String,
 }
 
 #[pyclass]
@@ -188,6 +198,47 @@ fn resize_image_rgba(
 }
 
 #[pyfunction]
+fn discover_photo_extensions(
+    py: Python<'_>,
+    source_dir: &str,
+) -> Vec<String> {
+    // GIL released for the whole filesystem scan.
+    py.allow_threads(|| scan::discover_extensions(Path::new(source_dir)))
+}
+
+#[pyfunction]
+#[pyo3(signature = (source_dir, enabled, previewable))]
+fn build_photo_groups(
+    py: Python<'_>,
+    source_dir: &str,
+    enabled: std::collections::HashSet<String>,
+    previewable: std::collections::HashSet<String>,
+) -> Vec<PyPhotoGroup> {
+    // GIL released for the whole traversal + grouping pass.
+    let enabled_list: Vec<String> = enabled.into_iter().collect();
+    let previewable_list: Vec<String> = previewable.into_iter().collect();
+    let scanned = py.allow_threads(|| {
+        scan::build_photo_groups(Path::new(source_dir), &enabled_list, &previewable_list)
+    });
+    scanned
+        .into_iter()
+        .map(|group: ScannedGroup| py_photo_group(group))
+        .collect()
+}
+
+fn py_photo_group(group: ScannedGroup) -> PyPhotoGroup {
+    PyPhotoGroup {
+        stem: group.stem,
+        members: group
+            .members
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
+        representative: group.representative.to_string_lossy().into_owned(),
+    }
+}
+
+#[pyfunction]
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
@@ -198,8 +249,11 @@ fn keep_or_nah_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPreviewLookup>()?;
     m.add_class::<PyRawImage>()?;
     m.add_class::<PyCompletedPreview>()?;
+    m.add_class::<PyPhotoGroup>()?;
     m.add_function(wrap_pyfunction!(load_image_rgba, m)?)?;
     m.add_function(wrap_pyfunction!(resize_image_rgba, m)?)?;
+    m.add_function(wrap_pyfunction!(discover_photo_extensions, m)?)?;
+    m.add_function(wrap_pyfunction!(build_photo_groups, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     Ok(())
 }
