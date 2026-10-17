@@ -9,6 +9,7 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from PIL import Image, ImageOps, ImageTk
 
+from app_assets import apply_window_icon
 from app_settings import AppSettings, MAX_PREVIEW_CACHE_BUDGET_MB, MIN_PREVIEW_CACHE_BUDGET_MB
 from photo_session import PhotoSession, PhotoSessionError
 from preview_pipeline import PreviewPipeline
@@ -55,6 +56,7 @@ class App(DnDCTk):
         self.title("Keep or Nah")
         self.geometry("1180x820")
         self.minsize(960, 700)
+        apply_window_icon(self)
         self.dnd_enabled = False
         self.settings = AppSettings.load()
         self.session_lifecycle = SessionLifecycle(

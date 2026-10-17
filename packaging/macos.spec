@@ -1,12 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 app_name = "Keep or Nah"
+logo_datas = [("../public/logo.png", "public")]
 
 a = Analysis(
     ["../main.py"],
     pathex=[".."],
     binaries=[],
-    datas=[],
+    datas=logo_datas,
     hiddenimports=[],
     hookspath=[".."],
     hooksconfig={},
@@ -50,6 +51,6 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name=f"{app_name}.app",
-    icon=None,
+    icon="../build/assets/KeepOrNah.icns",
     bundle_identifier="com.keepornah.app",
 )

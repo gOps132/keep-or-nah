@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import os
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -421,7 +422,7 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             first_destination = result.files[0].destination
             second_destination = result.files[1].destination
             second_destination.unlink()
-            second_destination.hardlink_to(first_destination)
+            os.link(first_destination, second_destination)
             duplicate_identity = list(result.files[0].destination_identity)
             snapshot["history"][0]["files"][1][
                 "destination_identity"

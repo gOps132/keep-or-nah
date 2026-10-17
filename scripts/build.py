@@ -17,6 +17,8 @@ DEFAULT_CX_WINE_BIN = Path(
 PYINSTALLER_CONFIG_DIR = REPO_ROOT / ".pyinstaller"
 MACOS_SPEC = REPO_ROOT / "packaging" / "macos.spec"
 WINDOWS_SPEC = REPO_ROOT / "packaging" / "windows.spec"
+BUILD_ASSETS_DIR = REPO_ROOT / "build" / "assets"
+LOGO_SOURCE = REPO_ROOT / "public" / "logo.png"
 WINDOWS_BUILD_PACKAGES = [
     "customtkinter>=5.2.2",
     "Pillow>=11.3.0",
@@ -74,6 +76,11 @@ def candidate_pythons() -> list[str]:
     if py:
         candidates.append(py)
 
+    for version in ("3.12", "3.13"):
+        py_ver = shutil.which(f"python{version}")
+        if py_ver:
+            candidates.append(py_ver)
+
     deduped: list[str] = []
     for candidate in candidates:
         if candidate not in deduped:
@@ -82,17 +89,20 @@ def candidate_pythons() -> list[str]:
 
 
 def resolve_python(explicit_python: str | None) -> str:
+    version_check = "import sys; assert (3, 12) <= sys.version_info[:2] < (3, 14)"
     if explicit_python:
-        if not check([explicit_python, "-c", "import sys"]):
-            raise SystemExit(f"Python interpreter is not usable: {explicit_python}")
+        if not check([explicit_python, "-c", version_check]):
+            raise SystemExit(
+                f"Python interpreter is not usable or does not satisfy >=3.12,<3.14: {explicit_python}"
+            )
         return explicit_python
 
     for candidate in candidate_pythons():
-        if check([candidate, "-c", "import sys"]):
+        if check([candidate, "-c", version_check]):
             return candidate
 
     raise SystemExit(
-        "No usable Python interpreter found. "
+        "No usable Python interpreter (>=3.12,<3.14) found. "
         "Pass --python or set PYTHON_BIN to a working environment."
     )
 
@@ -113,6 +123,23 @@ def ensure_local_build_environment(python_bin: str) -> str:
         raise SystemExit(f"uv did not create the expected environment interpreter: {env_python}")
 
     return str(env_python)
+
+
+def prepare_build_icons(build_python: str, *, include_icns: bool) -> None:
+    if not LOGO_SOURCE.is_file():
+        raise SystemExit(f"App logo not found: {LOGO_SOURCE}")
+
+    cmd = [
+        build_python,
+        str(REPO_ROOT / "scripts" / "generate_app_icons.py"),
+        str(LOGO_SOURCE),
+        str(BUILD_ASSETS_DIR),
+    ]
+    if include_icns:
+        cmd.append("--icns")
+
+    print(f"Generating build icons from {LOGO_SOURCE}", flush=True)
+    run(cmd)
 
 
 def ensure_windows_build_dependencies(
@@ -185,6 +212,7 @@ def build_macos(python_bin: str) -> None:
     env["PYINSTALLER_CONFIG_DIR"] = str(PYINSTALLER_CONFIG_DIR)
 
     build_python = ensure_local_build_environment(python_bin)
+    prepare_build_icons(build_python, include_icns=True)
 
     print(f"Building macOS app with {build_python}", flush=True)
     run(
@@ -210,6 +238,7 @@ def build_windows_native(python_bin: str) -> None:
     env["PYINSTALLER_CONFIG_DIR"] = str(PYINSTALLER_CONFIG_DIR)
 
     build_python = ensure_local_build_environment(python_bin)
+    prepare_build_icons(build_python, include_icns=False)
 
     print(f"Building Windows executable with {build_python}", flush=True)
     run(
@@ -237,6 +266,8 @@ def build_windows_crossover(cx_wine_bin: str, cx_bottle: str, win_python: str) -
     pyinstaller_config_dir = repo_path_to_windows(PYINSTALLER_CONFIG_DIR)
     ensure_windows_python_available(cx_wine_bin, cx_bottle, win_python, pyinstaller_config_dir)
     ensure_windows_build_dependencies(cx_wine_bin, cx_bottle, win_python, pyinstaller_config_dir)
+    build_python = ensure_local_build_environment(resolve_python(None))
+    prepare_build_icons(build_python, include_icns=False)
 
     print(f"Building Windows executable from CrossOver bottle '{cx_bottle}'", flush=True)
     run(

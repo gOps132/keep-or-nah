@@ -1,12 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 app_name = "KeepOrNah"
+logo_datas = [("../public/logo.png", "public")]
 
 a = Analysis(
     ["../main.py"],
     pathex=[".."],
     binaries=[],
-    datas=[],
+    datas=logo_datas,
     hiddenimports=[],
     hookspath=[".."],
     hooksconfig={},
@@ -36,4 +37,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon="../build/assets/KeepOrNah.ico",
 )

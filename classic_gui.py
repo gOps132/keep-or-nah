@@ -8,6 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageOps, ImageTk
 
+from app_assets import apply_window_icon
 from app_settings import AppSettings, MAX_PREVIEW_CACHE_BUDGET_MB, MIN_PREVIEW_CACHE_BUDGET_MB
 from photo_session import PhotoSession, PhotoSessionError
 from preview_pipeline import PreviewPipeline
@@ -38,6 +39,7 @@ class ClassicApp(tk.Tk):
         self.title("Keep or Nah")
         self.geometry("1100x780")
         self.minsize(920, 660)
+        apply_window_icon(self)
         self.settings = AppSettings.load()
         self.session_lifecycle = SessionLifecycle(
             error_handler=lambda message: show_session_warning(self, message)
