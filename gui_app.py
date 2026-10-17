@@ -523,6 +523,8 @@ class App(DnDCTk):
         self.bind_all("<Right>", self.handle_next_shortcut)
         self.bind_all("<KeyPress-a>", self.handle_nah_shortcut)
         self.bind_all("<KeyPress-d>", self.handle_keep_shortcut)
+        self.bind_all("<space>", self.handle_space_shortcut)
+        self.bind_all("<Delete>", self.handle_delete_shortcut)
 
         modifier = "Command" if sys.platform == "darwin" else "Control"
         self.bind(f"<{modifier}-z>", self.handle_undo_shortcut)
@@ -564,6 +566,18 @@ class App(DnDCTk):
         if not self.shortcuts_enabled():
             return None
         self.sort_current_photo("keep")
+        return "break"
+
+    def handle_space_shortcut(self, _event=None):
+        if not self.shortcuts_enabled():
+            return None
+        self.sort_current_photo("keep")
+        return "break"
+
+    def handle_delete_shortcut(self, _event=None):
+        if not self.shortcuts_enabled():
+            return None
+        self.sort_current_photo("nah")
         return "break"
 
     def handle_zoom_in_shortcut(self, _event=None):

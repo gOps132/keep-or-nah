@@ -4,10 +4,9 @@ import os
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
-import warnings
 
 from photo_groups import PhotoGroup
-from photo_session import ActionRecord, FileOperation, PhotoSession
+from photo_session import PhotoSession
 from app_settings import resolve_settings_path
 from session_persistence import SessionLifecycle, SessionPersistence, resolve_session_path
 from session_startup import (
@@ -1184,14 +1183,11 @@ class StartupCoordinatorTests(unittest.TestCase):
         app.load_queue.assert_called_once_with()
 
 
+
 class FrontendIntegrationTests(unittest.TestCase):
     def test_both_frontends_delegate_source_picker_to_shared_coordinator(self):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            from classic_gui import ClassicApp
-            from gui_app import App
-
-        for module_name, app_class in (("classic_gui", ClassicApp), ("gui_app", App)):
+        from gui_app import App
+        for module_name, app_class in (("gui_app", App),):
             fake = object()
             with self.subTest(frontend=app_class.__name__), patch(
                 f"{module_name}.choose_source_directory"
@@ -1200,11 +1196,7 @@ class FrontendIntegrationTests(unittest.TestCase):
                 coordinator.assert_called_once_with(fake)
 
     def test_both_frontends_persist_after_successful_load(self):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            from classic_gui import ClassicApp
-            from gui_app import App
-
+        from gui_app import App
         class Session:
             queue = [Path("photo.jpg")]
             def load_queue(self): return 1
@@ -1212,7 +1204,7 @@ class FrontendIntegrationTests(unittest.TestCase):
         class Pipeline:
             def reset(self, queue): self.queue = queue
 
-        for app_class in (ClassicApp, App):
+        for app_class in (App,):
             fake = Mock()
             fake.session = Session()
             fake.preview_pipeline = Pipeline()
@@ -1223,9 +1215,7 @@ class FrontendIntegrationTests(unittest.TestCase):
                 fake.persist_session.assert_called_once_with()
 
     def test_both_frontends_persist_mode_navigation_decision_and_undo(self):
-        from classic_gui import ClassicApp
         from gui_app import App
-
         class Session:
             queue = [Path("photo.jpg")]
             can_undo = True
@@ -1238,7 +1228,7 @@ class FrontendIntegrationTests(unittest.TestCase):
         class Pipeline:
             def reset(self, queue): self.queue = queue
 
-        for app_class in (ClassicApp, App):
+        for app_class in (App,):
             fake = Mock()
             fake.session = Session()
             fake.preview_pipeline = Pipeline()
@@ -1251,9 +1241,7 @@ class FrontendIntegrationTests(unittest.TestCase):
             ]
             mutations.insert(
                 0,
-                (lambda: app_class.handle_action_mode_change(fake))
-                if app_class is ClassicApp
-                else (lambda: app_class.handle_action_mode_change(fake, "copy")),
+                lambda: app_class.handle_action_mode_change(fake, "copy"),
             )
             for mutation in mutations:
                 fake.persist_session.reset_mock()
@@ -1262,16 +1250,12 @@ class FrontendIntegrationTests(unittest.TestCase):
                     fake.persist_session.assert_called_once_with()
 
     def test_both_frontends_refresh_after_decision_when_persistence_fails(self):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            from classic_gui import ClassicApp
-            from gui_app import App
-
+        from gui_app import App
         class Session:
             queue = []
             def decide(self, _decision): return None
 
-        for app_class in (ClassicApp, App):
+        for app_class in (App,):
             fake = Mock()
             fake.session = Session()
             fake.persist_session.side_effect = lambda: False
@@ -1282,15 +1266,13 @@ class FrontendIntegrationTests(unittest.TestCase):
                 fake.refresh_preview.assert_called_once_with()
 
     def test_both_frontends_refresh_after_undo_when_persistence_fails(self):
-        from classic_gui import ClassicApp
         from gui_app import App
-
         class Session:
             queue = [Path("photo.jpg")]
             can_undo = True
             def undo(self): return None
 
-        for app_class in (ClassicApp, App):
+        for app_class in (App,):
             fake = Mock()
             fake.session = Session()
             fake.persist_session.return_value = False
@@ -1300,10 +1282,8 @@ class FrontendIntegrationTests(unittest.TestCase):
                 fake.refresh_preview.assert_called_once_with()
 
     def test_both_frontends_close_even_when_persistence_fails(self):
-        from classic_gui import ClassicApp
         from gui_app import App
-
-        for app_class in (ClassicApp, App):
+        for app_class in (App,):
             fake = Mock()
             fake.persist_session.return_value = False
             with self.subTest(frontend=app_class.__name__):

@@ -8,7 +8,6 @@ import unittest
 from unittest.mock import Mock
 
 from app_settings import AppSettings
-from classic_gui import ClassicApp
 from gui_app import App
 from photo_session import PhotoSession
 from view_filter import (
@@ -107,7 +106,7 @@ class ViewFilterApplicationTests(unittest.TestCase):
             self.assertEqual(session.queue, old_queue)
 
     def test_both_frontend_settings_saves_are_atomic_when_settings_write_fails(self) -> None:
-        for frontend in (App, ClassicApp):
+        for frontend in (App,):
             with tempfile.TemporaryDirectory() as directory:
                 source = Path(directory)
                 (source / "A.jpg").write_bytes(b"jpg")
@@ -252,7 +251,7 @@ class ViewFilterApplicationTests(unittest.TestCase):
         app.refresh_preview.assert_called_once_with()
 
     def test_both_frontends_delegate_filter_application_to_shared_coordinator(self) -> None:
-        for frontend in (App, ClassicApp):
+        for frontend in (App,):
             fake = SimpleNamespace()
             with self.subTest(frontend=frontend.__name__), unittest.mock.patch(
                 f"{frontend.__module__}.apply_extension_filter"
@@ -265,7 +264,7 @@ class ViewFilterApplicationTests(unittest.TestCase):
             available_extensions=(".cr3", ".jpg"),
             enabled_extensions={".jpg"},
         )
-        for frontend in (App, ClassicApp):
+        for frontend in (App,):
             with self.subTest(frontend=frontend.__name__):
                 model = frontend.extension_filter_model(SimpleNamespace(session=session))
                 self.assertEqual(model.options, (".cr3", ".jpg"))
@@ -277,7 +276,7 @@ class ViewFilterApplicationTests(unittest.TestCase):
             (source / "IMG_1.jpg").write_bytes(b"jpg")
             (source / "IMG_1.cr3").write_bytes(b"raw")
 
-            for frontend in (App, ClassicApp):
+            for frontend in (App,):
                 session = PhotoSession()
                 session.set_source_dir(source)
                 session.load_queue()
@@ -314,7 +313,7 @@ class ViewFilterApplicationTests(unittest.TestCase):
                     )
 
     def test_both_frontend_settings_saves_catch_filter_drift_before_preview_mutation(self) -> None:
-        for frontend in (App, ClassicApp):
+        for frontend in (App,):
             with tempfile.TemporaryDirectory() as directory:
                 source = Path(directory)
                 jpg = source / "IMG.jpg"
@@ -345,7 +344,7 @@ class ViewFilterApplicationTests(unittest.TestCase):
                     fake.apply_preview_settings.assert_not_called()
 
     def test_both_frontend_settings_saves_catch_missing_source(self) -> None:
-        for frontend in (App, ClassicApp):
+        for frontend in (App,):
             with tempfile.TemporaryDirectory() as directory:
                 source = Path(directory) / "source"
                 source.mkdir()
@@ -404,20 +403,6 @@ class UnsupportedPreviewControlTests(unittest.TestCase):
         custom.keep_button.configure.assert_called_with(state="normal")
         custom.nah_button.configure.assert_called_with(state="normal")
 
-        classic = SimpleNamespace(
-            **common,
-            load_button=Mock(),
-            undo_button=Mock(),
-            zoom_in_button=Mock(),
-            zoom_out_button=Mock(),
-            zoom_fit_button=Mock(),
-            keep_button=Mock(),
-            nah_button=Mock(),
-        )
-        ClassicApp.refresh_ui(classic)
-        classic.keep_button.state.assert_called_with(["!disabled"])
-        classic.nah_button.state.assert_called_with(["!disabled"])
-
     def test_both_frontends_show_filtered_empty_state_with_pending_groups(self) -> None:
         session = SimpleNamespace(
             active_photo=None,
@@ -426,7 +411,7 @@ class UnsupportedPreviewControlTests(unittest.TestCase):
             total_loaded=2,
             pending_count=1,
         )
-        for frontend in (App, ClassicApp):
+        for frontend in (App,):
             fake = SimpleNamespace(
                 session=session,
                 update_selector_buttons=Mock(),

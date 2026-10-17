@@ -6,10 +6,9 @@ from unittest.mock import Mock
 
 from PIL import Image
 
-from classic_gui import ClassicApp
 from gui_app import App
 
-FRONTENDS = (App, ClassicApp)
+FRONTENDS = (App,)
 
 
 def _make_fake_frontend(frontend: type) -> SimpleNamespace:

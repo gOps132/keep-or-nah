@@ -10,7 +10,6 @@ from unittest.mock import Mock, patch
 
 from PIL import Image
 
-from classic_gui import ClassicApp
 from gui_app import App
 from preview_pipeline import PreviewPipeline
 from preview_pipeline import PreviewLookup
@@ -171,7 +170,7 @@ class UnavailablePreviewFrontendTests(unittest.TestCase):
             has_source=lambda _path: False,
         )
 
-        for frontend in (App, ClassicApp):
+        for frontend in (App,):
             for zoom_factor in (1.0, 2.0):
                 with self.subTest(frontend=frontend.__name__, zoom_factor=zoom_factor):
                     fake = SimpleNamespace(zoom_factor=zoom_factor, preview_pipeline=pipeline)
@@ -179,7 +178,7 @@ class UnavailablePreviewFrontendTests(unittest.TestCase):
 
     def test_both_frontends_render_unavailable_message_in_fit_and_zoom_modes(self) -> None:
         path = Path("A.cr3")
-        for frontend in (App, ClassicApp):
+        for frontend in (App,):
             for preserve_view in (False, True):
                 with self.subTest(frontend=frontend.__name__, preserve_view=preserve_view):
                     fake = self._refresh_fake(path, preserve_view)
