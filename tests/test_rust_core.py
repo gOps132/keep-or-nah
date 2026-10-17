@@ -239,6 +239,37 @@ class RustGroupingParityTests(unittest.TestCase):
         )
 
 
+class RustThumbnailTests(unittest.TestCase):
+    def test_thumbnail_rgba_fits_within_size_box(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "photo.png"
+            Image.new("RGBA", (4000, 2000), (10, 20, 30, 255)).save(str(path))
+
+            raw = keep_or_nah_core.thumbnail_rgba(str(path), 72)
+
+            self.assertLessEqual(max(raw.width, raw.height), 72)
+            self.assertEqual(raw.width, 72)
+            self.assertEqual(raw.height, 36)
+            self.assertEqual(len(raw.data), raw.width * raw.height * 4)
+
+    def test_thumbnail_rgba_applies_exif_orientation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "oriented.jpg"
+            exif = Image.Exif()
+            exif[274] = 6  # Rotate 90 CW: 20x30 becomes 30x20
+            Image.new("RGB", (2000, 3000), (0, 255, 0)).save(str(path), exif=exif)
+
+            raw = keep_or_nah_core.thumbnail_rgba(str(path), 72)
+
+            self.assertEqual((raw.width, raw.height), (72, 48))
+
+    def test_thumbnail_rgba_surfaces_file_errors_as_oserror(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            missing = Path(temp) / "missing.png"
+            with self.assertRaises(OSError):
+                keep_or_nah_core.thumbnail_rgba(str(missing), 72)
+
+
 class RustFileOpsTests(unittest.TestCase):
     def setUp(self) -> None:
         temp = tempfile.TemporaryDirectory()

@@ -163,6 +163,23 @@ fn load_image_rgba(py: Python<'_>, path: String) -> PyResult<PyRawImage> {
     }
 }
 
+/// Decode a photo natively, apply its EXIF orientation, and scale it to fit
+/// within `size x size` using the SIMD resizer (Lanczos3).
+#[pyfunction]
+fn thumbnail_rgba(py: Python<'_>, path: String, size: u32) -> PyResult<PyRawImage> {
+    let loaded = load_and_orient(Path::new(&path)).map_err(|e| {
+        pyo3::exceptions::PyIOError::new_err(format!("Failed to load image '{path}': {e}"))
+    })?;
+    let thumb = render_fit(&loaded, size, size, PreviewStage::Full)
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+    let py_bytes = PyBytes::new(py, &thumb.rgba).unbind();
+    Ok(PyRawImage {
+        width: thumb.width,
+        height: thumb.height,
+        data: py_bytes,
+    })
+}
+
 #[pyfunction]
 fn resize_image_rgba(
     py: Python<'_>,
@@ -253,6 +270,7 @@ fn keep_or_nah_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPhotoGroup>()?;
     m.add_class::<fileops::PyStagedFile>()?;
     m.add_function(wrap_pyfunction!(load_image_rgba, m)?)?;
+    m.add_function(wrap_pyfunction!(thumbnail_rgba, m)?)?;
     m.add_function(wrap_pyfunction!(resize_image_rgba, m)?)?;
     m.add_function(wrap_pyfunction!(discover_photo_extensions, m)?)?;
     m.add_function(wrap_pyfunction!(build_photo_groups, m)?)?;

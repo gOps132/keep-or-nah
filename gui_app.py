@@ -2,12 +2,21 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from pathlib import Path
+import queue
 import sys
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
-from PIL import Image, ImageOps, ImageTk
+from PIL import Image, ImageTk
+
+from keep_or_nah_core import thumbnail_rgba
+
+
+STRIP_THUMBNAIL_SIZE = 72
+
+_MISSING = object()
 
 from app_assets import apply_window_icon
 from app_settings import AppSettings, MAX_PREVIEW_CACHE_BUDGET_MB, MIN_PREVIEW_CACHE_BUDGET_MB
@@ -86,6 +95,12 @@ class App(DnDCTk):
         self.thumbnail_refs: list[ImageTk.PhotoImage] = []
         self.thumbnail_cache: OrderedDict[Path, ImageTk.PhotoImage | None] = OrderedDict()
         self.thumbnail_cache_limit = 192
+        self.thumbnail_raws: OrderedDict[Path, object] = OrderedDict()
+        self.thumbnail_pending_requests: set[Path] = set()
+        self.thumbnail_worker_thread: threading.Thread | None = None
+        self.thumbnail_work_queue: queue.Queue | None = None
+        self.thumbnail_result_queue: queue.Queue | None = None
+        self.thumbnail_poll_job = None
         self.thumbnail_signature: tuple[Path, ...] = ()
         self.thumbnail_canvas_width = 0
         self.thumbnail_canvas_height = 108
@@ -141,6 +156,12 @@ class App(DnDCTk):
             return
         self.destroyed = True
         self.cancel_preview_jobs()
+        if self.thumbnail_poll_job is not None:
+            self.after_cancel(self.thumbnail_poll_job)
+            self.thumbnail_poll_job = None
+        if self.thumbnail_work_queue is not None:
+            self.thumbnail_work_queue.put(None)
+        self.thumbnail_work_queue = None
         if self.preview_settings_dialog is not None and self.preview_settings_dialog.winfo_exists():
             self.preview_settings_dialog.destroy()
         self.preview_pipeline.shutdown()
@@ -609,6 +630,8 @@ class App(DnDCTk):
         self.last_browsed_dir = Path(path)
         self.preview_texture_cache = OrderedDict()
         self.thumbnail_cache = OrderedDict()
+        self.thumbnail_raws = OrderedDict()
+        self.thumbnail_pending_requests = set()
         self.thumbnail_refs = []
         self.thumbnail_signature = ()
         self.thumbnail_canvas_width = 0
@@ -1034,23 +1057,117 @@ class App(DnDCTk):
             self.render_loading_overlay()
 
     def get_thumbnail_photo(self, path: Path) -> ImageTk.PhotoImage | None:
-        if path in self.thumbnail_cache:
-            cached = self.thumbnail_cache[path]
+        raw = self.thumbnail_raws.get(path, _MISSING)
+        if raw is _MISSING:
+            # Nothing decoded yet: the native worker will fill it in and the
+            # strip redraws once the result lands on the main thread.
+            return None
+
+        cached = self.thumbnail_cache.get(path)
+        if cached is not None:
             self.thumbnail_cache.move_to_end(path)
             return cached
 
-        try:
-            with Image.open(path) as image:
-                prepared = ImageOps.exif_transpose(image).convert("RGBA")
-                prepared.thumbnail((72, 72), Image.Resampling.LANCZOS)
-                thumbnail = ImageTk.PhotoImage(prepared)
-        except OSError:
-            thumbnail = None
+        if raw is None:
+            return None
 
-        self.thumbnail_cache[path] = thumbnail
+        try:
+            photo = self.make_strip_photo_from_raw(path, raw)
+        except (OSError, ValueError):
+            photo = None
+        self.thumbnail_cache[path] = photo
         if len(self.thumbnail_cache) > self.thumbnail_cache_limit:
             self.thumbnail_cache.popitem(last=False)
-        return thumbnail
+        return photo
+
+    @staticmethod
+    def make_strip_photo_from_raw(path: Path, raw: object) -> ImageTk.PhotoImage:
+        image = Image.frombytes("RGBA", (raw.width, raw.height), raw.data)
+        return ImageTk.PhotoImage(image)
+
+    @staticmethod
+    def decode_strip_thumbnail(path: object) -> object:
+        """Run on the worker thread only; never on the Tk main thread."""
+        try:
+            return thumbnail_rgba(str(path), STRIP_THUMBNAIL_SIZE)
+        except (OSError, ValueError, RuntimeError):
+            return None
+
+    def request_missing_strip_thumbnails(
+        self, paths: tuple[Path, ...], visible_range: tuple[int, int]
+    ) -> None:
+        start, end = visible_range
+        for index in range(start, end):
+            path = paths[index]
+            if self.thumbnail_cache.get(path, _MISSING) is not _MISSING:
+                continue
+            self.request_strip_thumbnail(path)
+
+    def request_strip_thumbnail(self, path: Path) -> None:
+        if self.destroyed or path in self.thumbnail_pending_requests:
+            return
+        self.thumbnail_pending_requests.add(path)
+        self._ensure_thumbnail_worker()
+        self.thumbnail_work_queue.put(path)
+        self.schedule_thumbnail_result_poll()
+
+    def _ensure_thumbnail_worker(self) -> None:
+        if self.thumbnail_worker_thread is not None or self.destroyed:
+            return
+        self.thumbnail_work_queue = queue.Queue()
+        self.thumbnail_result_queue = queue.Queue()
+        worker = threading.Thread(
+            target=self._run_thumbnail_worker,
+            name="keep-or-nah-thumbnail-worker",
+            daemon=True,
+        )
+        self.thumbnail_worker_thread = worker
+        worker.start()
+
+    def _run_thumbnail_worker(self) -> None:
+        while True:
+            path = self.thumbnail_work_queue.get()
+            if path is None:
+                return
+            raw = self.decode_strip_thumbnail(path)
+            if not self.destroyed:
+                self.thumbnail_result_queue.put((path, raw))
+
+    def schedule_thumbnail_result_poll(self) -> None:
+        if self.thumbnail_poll_job is not None or self.destroyed:
+            return
+        self.thumbnail_poll_job = self.after(60, self.drain_thumbnail_results)
+
+    def drain_thumbnail_results(self) -> None:
+        self.thumbnail_poll_job = None
+        if self.destroyed:
+            return
+        updated = False
+        while True:
+            try:
+                path, raw = self.thumbnail_result_queue.get_nowait()
+            except queue.Empty:
+                break
+            self.thumbnail_pending_requests.discard(path)
+            self.thumbnail_raws[path] = raw
+            updated = True
+        if updated:
+            self.prune_strip_thumbnail_state(set(preview_paths_for(self.session)))
+            self.refresh_thumbnail_strip()
+        if self.thumbnail_pending_requests:
+            self.schedule_thumbnail_result_poll()
+
+    def prune_strip_thumbnail_state(self, allowed_paths: set[Path]) -> None:
+        evicted = False
+        for path in list(self.thumbnail_raws.keys()):
+            if path in allowed_paths or path in self.thumbnail_pending_requests:
+                continue
+            self.thumbnail_raws.pop(path, None)
+            self.thumbnail_cache.pop(path, None)
+            evicted = True
+        if evicted and len(self.thumbnail_raws) > self.thumbnail_cache_limit:
+            while len(self.thumbnail_raws) > self.thumbnail_cache_limit:
+                self.thumbnail_raws.popitem(last=False)
 
     def refresh_thumbnail_strip(self, force_rebuild: bool = False):
         canvas_width = max(self.thumbnail_canvas.winfo_width(), 1)
@@ -1109,6 +1226,8 @@ class App(DnDCTk):
         thumb_center_y = self.thumbnail_top_padding + (self.thumbnail_size / 2)
         marker_y = self.thumbnail_top_padding + self.thumbnail_size + 10
         start, end = visible_range
+
+        self.request_missing_strip_thumbnails(paths, visible_range)
 
         for index in range(start, end):
             path = paths[index]
