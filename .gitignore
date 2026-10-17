@@ -5,3 +5,8 @@
 __pycache__/
 build/
 dist/
+target/
+crates/**/target/
+*.so
+*.dylib
+*.pyd

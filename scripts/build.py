@@ -113,10 +113,20 @@ def uv_environment_python() -> Path:
     return REPO_ROOT / ".venv" / "bin" / "python"
 
 
+def ensure_rust_core_built(uv_bin: str) -> None:
+    cargo_toml = REPO_ROOT / "crates" / "keep_or_nah_core" / "Cargo.toml"
+    if not cargo_toml.is_file():
+        return
+    print("Building keep_or_nah_core Rust extension in release mode", flush=True)
+    run([uv_bin, "run", "maturin", "develop", "--release", "-m", str(cargo_toml)])
+
+
 def ensure_local_build_environment(python_bin: str) -> str:
     uv_bin = resolve_uv()
     print(f"Syncing local environment with uv using {python_bin}", flush=True)
     run([uv_bin, "sync", "--extra", "build", "--python", python_bin])
+
+    ensure_rust_core_built(uv_bin)
 
     env_python = uv_environment_python()
     if not env_python.is_file():

@@ -16,6 +16,7 @@ The app works like a Tinder-style triage flow for images:
 - Keyboard shortcuts: Left / `A` for Nah, Right / `D` for Keep.
 - Move or copy mode for each decision.
 - TkDnD-ready runtime base for future drag-and-drop support.
+- Native Rust preview and caching core (`keep_or_nah_core`) for high-throughput EXIF rotation and image prefetching.
 - `uv`-based dependency management.
 - PyInstaller packaging for macOS `.app` and Windows `.exe`.
 - A single build entrypoint at `scripts/build.py`.
@@ -24,6 +25,7 @@ The app works like a Tinder-style triage flow for images:
 
 ```bash
 uv sync
+uv run maturin develop
 ```
 
 ## Run The App
