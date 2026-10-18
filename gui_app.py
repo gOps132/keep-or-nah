@@ -24,6 +24,7 @@ from burst_clustering import BurstClusterer, PhotoBurstInfo
 from photo_session import PhotoSession, PhotoSessionError
 from preview_pipeline import PreviewPipeline
 from review_commit_modal import ReviewCommitModal
+from split_compare import CompareCandidate, ComparePairSelector, SynchronizedViewTracker
 from session_persistence import SessionLifecycle
 from session_startup import (
     choose_source_directory,
@@ -125,6 +126,13 @@ class App(DnDCTk):
         self.zoom_factor = 1.0
         self.min_zoom_factor = 0.25
         self.max_zoom_factor = 8.0
+        self.compare_mode = False
+        self.compare_pair_selector = ComparePairSelector()
+        self.compare_candidate_offset = 1
+        self.compare_pair: tuple[CompareCandidate, CompareCandidate] | None = None
+        self.compare_photo: ImageTk.PhotoImage | None = None
+        self.compare_source_image: Image.Image | None = None
+        self.compare_source_path: Path | None = None
         self.show_action_buttons = True
         self.action_mode_var = tk.StringVar(value=self.session.action_mode)
         self.last_browsed_dir: Path | None = None
@@ -203,7 +211,7 @@ class App(DnDCTk):
     def setup_body(self):
         self.control_bar = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         self.control_bar.grid(row=0, column=0, padx=18, pady=(18, 10), sticky="ew")
-        self.control_bar.grid_columnconfigure((0, 1, 2, 3, 4, 5, 6, 7, 8, 9), weight=1)
+        self.control_bar.grid_columnconfigure((0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10), weight=1)
 
         self.source_button = ctk.CTkButton(self.control_bar, text="Source", command=self.choose_source_folder)
         self.source_button.grid(row=0, column=0, padx=(0, 8), sticky="ew")
@@ -235,23 +243,31 @@ class App(DnDCTk):
         )
         self.toggle_actions_button.grid(row=0, column=6, padx=8, sticky="ew")
 
+        self.compare_mode_button = ctk.CTkButton(
+            self.control_bar,
+            text="2-Up (C)",
+            width=72,
+            command=self.toggle_compare_mode,
+        )
+        self.compare_mode_button.grid(row=0, column=7, padx=8, sticky="ew")
+
         self.zoom_out_button = ctk.CTkButton(self.control_bar, text="-", width=44, command=self.zoom_out)
-        self.zoom_out_button.grid(row=0, column=7, padx=(8, 4), sticky="ew")
+        self.zoom_out_button.grid(row=0, column=8, padx=(8, 4), sticky="ew")
 
         self.zoom_fit_button = ctk.CTkButton(self.control_bar, text="Fit", width=60, command=self.reset_zoom)
-        self.zoom_fit_button.grid(row=0, column=8, padx=4, sticky="ew")
+        self.zoom_fit_button.grid(row=0, column=9, padx=4, sticky="ew")
 
         self.zoom_in_button = ctk.CTkButton(self.control_bar, text="+", width=44, command=self.zoom_in)
-        self.zoom_in_button.grid(row=0, column=9, padx=(4, 0), sticky="ew")
+        self.zoom_in_button.grid(row=0, column=10, padx=(4, 0), sticky="ew")
 
-        preview_host = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        preview_host.grid(row=1, column=0, padx=18, pady=(0, 12), sticky="nsew")
-        preview_host.grid_columnconfigure(0, weight=1)
-        preview_host.grid_rowconfigure(0, weight=1)
+        self.preview_host = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.preview_host.grid(row=1, column=0, padx=18, pady=(0, 12), sticky="nsew")
+        self.preview_host.grid_columnconfigure(0, weight=1)
+        self.preview_host.grid_rowconfigure(0, weight=1)
 
         canvas_color = self.resolve_canvas_color()
         self.preview_canvas = tk.Canvas(
-            preview_host,
+            self.preview_host,
             bg=canvas_color,
             bd=0,
             highlightthickness=0,
@@ -276,6 +292,32 @@ class App(DnDCTk):
         self.bind_if_supported(self.preview_canvas, "<Command-Button-4>", self.handle_linux_zoom_wheel)
         self.bind_if_supported(self.preview_canvas, "<Command-Button-5>", self.handle_linux_zoom_wheel)
         self.bind_if_supported(self.preview_canvas, "<Magnify>", self.handle_magnify)
+
+        self.compare_canvas = tk.Canvas(
+            self.preview_host,
+            bg=canvas_color,
+            bd=0,
+            highlightthickness=0,
+            xscrollincrement=1,
+            yscrollincrement=1,
+        )
+        self.compare_canvas.bind("<Configure>", self.handle_preview_configure)
+        self.compare_canvas.bind("<MouseWheel>", self.handle_mousewheel)
+        self.compare_canvas.bind("<Shift-MouseWheel>", self.handle_shift_mousewheel)
+        self.compare_canvas.bind("<Button-4>", self.handle_linux_wheel)
+        self.compare_canvas.bind("<Button-5>", self.handle_linux_wheel)
+        self.compare_canvas.bind("<Shift-Button-4>", self.handle_linux_shift_wheel)
+        self.compare_canvas.bind("<Shift-Button-5>", self.handle_linux_shift_wheel)
+        self.compare_canvas.bind("<ButtonPress-1>", self.start_pan)
+        self.compare_canvas.bind("<B1-Motion>", self.drag_pan)
+
+        self.bind_if_supported(self.compare_canvas, "<Command-MouseWheel>", self.handle_zoom_mousewheel)
+        self.bind_if_supported(self.compare_canvas, "<Control-MouseWheel>", self.handle_zoom_mousewheel)
+        self.bind_if_supported(self.compare_canvas, "<Control-Button-4>", self.handle_linux_zoom_wheel)
+        self.bind_if_supported(self.compare_canvas, "<Control-Button-5>", self.handle_linux_zoom_wheel)
+        self.bind_if_supported(self.compare_canvas, "<Command-Button-4>", self.handle_linux_zoom_wheel)
+        self.bind_if_supported(self.compare_canvas, "<Command-Button-5>", self.handle_linux_zoom_wheel)
+        self.bind_if_supported(self.compare_canvas, "<Magnify>", self.handle_magnify)
 
         self.queue_host = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         self.queue_host.grid(row=2, column=0, padx=18, pady=(0, 8), sticky="ew")
@@ -351,6 +393,7 @@ class App(DnDCTk):
         view_menu = tk.Menu(menubar, tearoff=False)
         view_menu.add_command(label="Preview Settings...", accelerator=accelerator, command=self.open_preview_settings_dialog)
         view_menu.add_checkbutton(label="Staged Decisions Mode", variable=self.staged_mode_var, command=self.toggle_staged_mode)
+        view_menu.add_command(label="Toggle 2-Up Compare", accelerator="C", command=self.toggle_compare_mode)
         menubar.add_cascade(label="View", menu=view_menu)
 
         self.configure(menu=menubar)
@@ -380,6 +423,55 @@ class App(DnDCTk):
     def handle_batch_committed(self):
         self.persist_session()
         self.refresh_ui()
+
+    def toggle_compare_mode(self):
+        self.compare_mode = not self.compare_mode
+        if self.compare_mode:
+            if hasattr(self, "compare_mode_button") and self.compare_mode_button:
+                self.compare_mode_button.configure(text="1-Up (C)", fg_color="#3b82f6")
+            if hasattr(self, "preview_host") and hasattr(self, "compare_canvas"):
+                self.preview_host.grid_columnconfigure(0, weight=1)
+                self.preview_host.grid_columnconfigure(1, weight=1)
+                self.preview_canvas.grid_configure(padx=(0, 4))
+                self.compare_canvas.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+        else:
+            if hasattr(self, "compare_mode_button") and self.compare_mode_button:
+                self.compare_mode_button.configure(text="2-Up (C)", fg_color=["#3a7ebf", "#1f538d"])
+            if hasattr(self, "preview_host") and hasattr(self, "compare_canvas"):
+                self.compare_canvas.grid_remove()
+                self.preview_host.grid_columnconfigure(1, weight=0)
+                self.preview_canvas.grid_configure(padx=0)
+            self.compare_pair = None
+            self.compare_photo = None
+            self.compare_source_image = None
+            self.compare_source_path = None
+        self.refresh_preview()
+        self.refresh_ui()
+
+    def pick_compare_candidate(self, choice: int):
+        if not getattr(self, "compare_mode", False) or not getattr(self, "compare_pair", None):
+            return
+        pair = self.compare_pair
+        try:
+            self.compare_pair_selector.pick(pair, choice, self.session)
+        except PhotoSessionError as error:
+            messagebox.showerror("Keep or Nah", str(error))
+            return
+        except OSError as error:
+            messagebox.showerror("Keep or Nah", f"Could not process the file.\n\n{error}")
+            return
+
+        self.preview_pipeline.reset(preview_paths_for(self.session))
+        self.prune_preview_texture_cache(set(preview_paths_for(self.session)))
+        self.reset_zoom_state()
+        self.preview_source_path = None
+        self.preview_source_image = None
+        self.compare_source_path = None
+        self.compare_source_image = None
+        self.reset_preview_request_state()
+        self.persist_session()
+        self.refresh_ui()
+        self.refresh_preview()
 
     def toggle_action_buttons(self):
         self.show_action_buttons = not self.show_action_buttons
@@ -618,6 +710,10 @@ class App(DnDCTk):
         self.bind_all("<KeyPress-F>", self.handle_flag_shortcut)
         self.bind_all("<space>", self.handle_space_shortcut)
         self.bind_all("<Delete>", self.handle_delete_shortcut)
+        self.bind_all("<KeyPress-c>", self.handle_compare_shortcut)
+        self.bind_all("<KeyPress-C>", self.handle_compare_shortcut)
+        self.bind_all("<KeyPress-1>", self.handle_compare_pick_1_shortcut)
+        self.bind_all("<KeyPress-2>", self.handle_compare_pick_2_shortcut)
 
         modifier = "Command" if sys.platform == "darwin" else "Control"
         self.bind(f"<{modifier}-z>", self.handle_undo_shortcut)
@@ -678,6 +774,28 @@ class App(DnDCTk):
             return None
         self.sort_current_photo("nah")
         return "break"
+
+    def handle_compare_shortcut(self, _event=None):
+        if not self.shortcuts_enabled():
+            return None
+        self.toggle_compare_mode()
+        return "break"
+
+    def handle_compare_pick_1_shortcut(self, _event=None):
+        if not self.shortcuts_enabled():
+            return None
+        if getattr(self, "compare_mode", False):
+            self.pick_compare_candidate(1)
+            return "break"
+        return None
+
+    def handle_compare_pick_2_shortcut(self, _event=None):
+        if not self.shortcuts_enabled():
+            return None
+        if getattr(self, "compare_mode", False):
+            self.pick_compare_candidate(2)
+            return "break"
+        return None
 
     def handle_zoom_in_shortcut(self, _event=None):
         self.zoom_in()
@@ -902,6 +1020,13 @@ class App(DnDCTk):
             self.review_button.configure(
                 text=btn_text,
                 state="normal" if staged_count > 0 or self.session.staged_mode else "disabled",
+            )
+        if hasattr(self, "compare_mode_button"):
+            can_compare = len(getattr(self.session, "queue", ())) >= 2
+            self.compare_mode_button.configure(
+                state="normal" if can_compare else "disabled",
+                text="1-Up (C)" if getattr(self, "compare_mode", False) else "2-Up (C)",
+                fg_color="#3b82f6" if getattr(self, "compare_mode", False) else ["#3a7ebf", "#1f538d"],
             )
         self.refresh_thumbnail_strip()
 
@@ -1143,7 +1268,21 @@ class App(DnDCTk):
         session = getattr(self, "session", None)
         current = getattr(session, "active_photo", None) if session is not None else None
         best_shots = getattr(self, "best_shots", ())
-        if current and current in best_shots:
+        if getattr(self, "compare_mode", False) and getattr(self, "compare_pair", None):
+            c1 = self.compare_pair[0]
+            sharpness_str = f" ({c1.sharpness:.0f})" if c1.sharpness is not None else ""
+            best_str = " ★" if c1.is_best_shot else ""
+            badge_text = f"[ 1 ] Keep Left{best_str}{sharpness_str}"
+            self.preview_canvas.create_text(
+                24,
+                24,
+                text=badge_text,
+                fill="#22c55e",
+                font=("SF Pro Text", 14, "bold"),
+                anchor="nw",
+                tags=("compare-badge",),
+            )
+        elif current and current in best_shots:
             self.preview_canvas.create_text(
                 region_width - 24,
                 24,
@@ -1158,6 +1297,151 @@ class App(DnDCTk):
         self.restore_view_center(rel_x, rel_y)
         if self.loading_overlay_visible:
             self.render_loading_overlay()
+
+    def display_compare_image(
+        self,
+        image: Image.Image,
+        rel_x: float = 0.5,
+        rel_y: float = 0.5,
+        cache_key: tuple[object, ...] | None = None,
+        candidate: CompareCandidate | None = None,
+    ):
+        if not hasattr(self, "compare_canvas"):
+            return
+        canvas_width = max(self.compare_canvas.winfo_width(), 1)
+        canvas_height = max(self.compare_canvas.winfo_height(), 1)
+        display_width = image.width
+        display_height = image.height
+        self.compare_photo = self.get_preview_texture(cache_key, image)
+
+        region_width = max(canvas_width, display_width)
+        region_height = max(canvas_height, display_height)
+        origin_x = max((region_width - display_width) / 2, 0)
+        origin_y = max((region_height - display_height) / 2, 0)
+
+        self.compare_canvas.delete("all")
+        self.compare_canvas.configure(scrollregion=(0, 0, region_width, region_height))
+        self.compare_canvas.create_image(origin_x, origin_y, anchor="nw", image=self.compare_photo)
+        if candidate is not None:
+            sharpness_str = f" ({candidate.sharpness:.0f})" if candidate.sharpness is not None else ""
+            best_str = " ★" if candidate.is_best_shot else ""
+            badge_text = f"[ 2 ] Keep Right{best_str}{sharpness_str}"
+            self.compare_canvas.create_text(
+                24,
+                24,
+                text=badge_text,
+                fill="#3b82f6",
+                font=("SF Pro Text", 14, "bold"),
+                anchor="nw",
+                tags=("compare-badge",),
+            )
+        self.restore_compare_view_center(rel_x, rel_y)
+
+    def clear_compare_preview(self, message: str = ""):
+        if not hasattr(self, "compare_canvas"):
+            return
+        self.compare_canvas.delete("all")
+        self.compare_photo = None
+        if message:
+            width = max(self.compare_canvas.winfo_width(), 320)
+            height = max(self.compare_canvas.winfo_height(), 240)
+            self.compare_canvas.create_text(
+                self.compare_canvas.canvasx(width / 2),
+                self.compare_canvas.canvasy(height / 2),
+                text=message,
+                fill=self._apply_appearance_mode(("gray45", "gray65")),
+                font=("SF Pro Display", 22, "bold"),
+            )
+
+    def restore_compare_view_center(self, rel_x: float, rel_y: float):
+        if not hasattr(self, "compare_canvas") or not hasattr(self.compare_canvas, "bbox"):
+            return
+        bbox = self.compare_canvas.bbox("all")
+        if not bbox:
+            return
+
+        left, top, right, bottom = bbox
+        total_width = max(right - left, 1)
+        total_height = max(bottom - top, 1)
+        viewport_width = max(self.compare_canvas.winfo_width(), 1)
+        viewport_height = max(self.compare_canvas.winfo_height(), 1)
+
+        if total_width <= viewport_width:
+            if hasattr(self.compare_canvas, "xview_moveto"):
+                self.compare_canvas.xview_moveto(0)
+        else:
+            center_x = left + rel_x * total_width
+            left_target = center_x - (viewport_width / 2)
+            fraction = (left_target - left) / max(total_width - viewport_width, 1)
+            if hasattr(self.compare_canvas, "xview_moveto"):
+                self.compare_canvas.xview_moveto(min(max(fraction, 0.0), 1.0))
+
+        if total_height <= viewport_height:
+            if hasattr(self.compare_canvas, "yview_moveto"):
+                self.compare_canvas.yview_moveto(0)
+        else:
+            center_y = top + rel_y * total_height
+            top_target = center_y - (viewport_height / 2)
+            fraction = (top_target - top) / max(total_height - viewport_height, 1)
+            if hasattr(self.compare_canvas, "yview_moveto"):
+                self.compare_canvas.yview_moveto(min(max(fraction, 0.0), 1.0))
+
+    def refresh_compare_preview(self, preserve_view: bool = False):
+        if not hasattr(self, "compare_canvas") or not getattr(self, "compare_mode", False):
+            return
+        pair = self.compare_pair_selector.resolve_pair(
+            self.session,
+            getattr(self, "burst_info_map", None),
+            getattr(self, "best_shots", None),
+            candidate_offset=getattr(self, "compare_candidate_offset", 1),
+        )
+        self.compare_pair = pair
+        if pair is None:
+            self.clear_compare_preview("Need ≥2 photos to compare")
+            return
+
+        c2 = pair[1]
+        canvas_width = max(self.compare_canvas.winfo_width(), 1)
+        canvas_height = max(self.compare_canvas.winfo_height(), 1)
+        if canvas_width < 8 or canvas_height < 8:
+            return
+
+        rel_x, rel_y = self.get_view_center() if preserve_view else (0.5, 0.5)
+        mode = "fit" if self.zoom_factor == 1.0 and not preserve_view else "zoom"
+
+        lookup = self.preview_pipeline.get_best_preview(c2.preview_path)
+        if lookup.image is None or (mode != "fit" and not self.preview_pipeline.has_source(c2.preview_path)):
+            c2_idx = next((i for i, g in enumerate(self.session.queue) if g.stem == c2.stem), 0)
+            self.preview_pipeline.start_preview_request(
+                c2.preview_path,
+                c2_idx,
+                progressive_enabled=self.settings.progressive_preview,
+            )
+
+        if mode == "fit":
+            if lookup.image is not None and lookup.stage is not None:
+                texture_key = (c2.preview_path, lookup.stage, lookup.image.width, lookup.image.height)
+                self.display_compare_image(lookup.image, rel_x=rel_x, rel_y=rel_y, cache_key=texture_key, candidate=c2)
+            else:
+                self.clear_compare_preview("Loading...")
+        else:
+            if self.preview_pipeline.has_source(c2.preview_path):
+                source_img = self.preview_pipeline.get_cached_source_copy(c2.preview_path)
+                if source_img is not None:
+                    image_width = source_img.width
+                    image_height = source_img.height
+                    fit_scale = min(canvas_width / image_width, canvas_height / image_height)
+                    display_scale = max(fit_scale * self.zoom_factor, 0.01)
+                    display_width = max(int(round(image_width * display_scale)), 1)
+                    display_height = max(int(round(image_height * display_scale)), 1)
+                    resized = source_img.resize((display_width, display_height), Image.Resampling.LANCZOS)
+                    texture_key = (c2.preview_path, "zoom", display_width, display_height, round(self.zoom_factor, 3))
+                    self.display_compare_image(resized, rel_x=rel_x, rel_y=rel_y, cache_key=texture_key, candidate=c2)
+            elif lookup.image is not None and lookup.stage is not None and self.settings.progressive_preview:
+                texture_key = (c2.preview_path, lookup.stage, lookup.image.width, lookup.image.height)
+                self.display_compare_image(lookup.image, rel_x=rel_x, rel_y=rel_y, cache_key=texture_key, candidate=c2)
+            else:
+                self.clear_compare_preview("Loading...")
 
     def get_thumbnail_photo(self, path: Path) -> ImageTk.PhotoImage | None:
         raw = self.thumbnail_raws.get(path, _MISSING)
@@ -1497,6 +1781,15 @@ class App(DnDCTk):
             self.schedule_preview_refresh()
             return
 
+        if getattr(self, "compare_mode", False):
+            self.compare_pair = self.compare_pair_selector.resolve_pair(
+                self.session,
+                getattr(self, "burst_info_map", None),
+                getattr(self, "best_shots", None),
+                candidate_offset=getattr(self, "compare_candidate_offset", 1),
+            )
+            self.refresh_compare_preview(preserve_view=preserve_view)
+
         self.preview_pipeline.set_viewport(canvas_width, canvas_height)
         rel_x, rel_y = self.get_view_center() if preserve_view else (0.5, 0.5)
         mode = "fit" if self.zoom_factor == 1.0 and not preserve_view else "zoom"
@@ -1569,10 +1862,22 @@ class App(DnDCTk):
         self.hide_loading_overlay()
 
     def start_pan(self, event):
-        self.preview_canvas.scan_mark(event.x, event.y)
+        if hasattr(self, "preview_canvas") and hasattr(self.preview_canvas, "scan_mark"):
+            self.preview_canvas.scan_mark(event.x, event.y)
+        if getattr(self, "compare_mode", False) and hasattr(self, "compare_canvas") and hasattr(self.compare_canvas, "scan_mark"):
+            try:
+                self.compare_canvas.scan_mark(event.x, event.y)
+            except Exception:
+                pass
 
     def drag_pan(self, event):
-        self.preview_canvas.scan_dragto(event.x, event.y, gain=1)
+        if hasattr(self, "preview_canvas") and hasattr(self.preview_canvas, "scan_dragto"):
+            self.preview_canvas.scan_dragto(event.x, event.y, gain=1)
+        if getattr(self, "compare_mode", False) and hasattr(self, "compare_canvas") and hasattr(self.compare_canvas, "scan_dragto"):
+            try:
+                self.compare_canvas.scan_dragto(event.x, event.y, gain=1)
+            except Exception:
+                pass
 
     def handle_zoom_mousewheel(self, event):
         if event.delta > 0:
@@ -1599,23 +1904,47 @@ class App(DnDCTk):
     def handle_mousewheel(self, event):
         steps = max(1, int(abs(event.delta) / 120)) if event.delta else 1
         direction = -1 if event.delta > 0 else 1
-        self.preview_canvas.yview_scroll(direction * steps, "units")
+        if hasattr(self, "preview_canvas") and hasattr(self.preview_canvas, "yview_scroll"):
+            self.preview_canvas.yview_scroll(direction * steps, "units")
+        if getattr(self, "compare_mode", False) and hasattr(self, "compare_canvas") and hasattr(self.compare_canvas, "yview_scroll"):
+            try:
+                self.compare_canvas.yview_scroll(direction * steps, "units")
+            except Exception:
+                pass
         return "break"
 
     def handle_shift_mousewheel(self, event):
         steps = max(1, int(abs(event.delta) / 120)) if event.delta else 1
         direction = -1 if event.delta > 0 else 1
-        self.preview_canvas.xview_scroll(direction * steps, "units")
+        if hasattr(self, "preview_canvas") and hasattr(self.preview_canvas, "xview_scroll"):
+            self.preview_canvas.xview_scroll(direction * steps, "units")
+        if getattr(self, "compare_mode", False) and hasattr(self, "compare_canvas") and hasattr(self.compare_canvas, "xview_scroll"):
+            try:
+                self.compare_canvas.xview_scroll(direction * steps, "units")
+            except Exception:
+                pass
         return "break"
 
     def handle_linux_wheel(self, event):
         direction = -1 if getattr(event, "num", None) == 4 else 1
-        self.preview_canvas.yview_scroll(direction, "units")
+        if hasattr(self, "preview_canvas") and hasattr(self.preview_canvas, "yview_scroll"):
+            self.preview_canvas.yview_scroll(direction, "units")
+        if getattr(self, "compare_mode", False) and hasattr(self, "compare_canvas") and hasattr(self.compare_canvas, "yview_scroll"):
+            try:
+                self.compare_canvas.yview_scroll(direction, "units")
+            except Exception:
+                pass
         return "break"
 
     def handle_linux_shift_wheel(self, event):
         direction = -1 if getattr(event, "num", None) == 4 else 1
-        self.preview_canvas.xview_scroll(direction, "units")
+        if hasattr(self, "preview_canvas") and hasattr(self.preview_canvas, "xview_scroll"):
+            self.preview_canvas.xview_scroll(direction, "units")
+        if getattr(self, "compare_mode", False) and hasattr(self, "compare_canvas") and hasattr(self.compare_canvas, "xview_scroll"):
+            try:
+                self.compare_canvas.xview_scroll(direction, "units")
+            except Exception:
+                pass
         return "break"
 
     def handle_thumbnail_wheel(self, event):
