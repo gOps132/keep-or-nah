@@ -29,6 +29,7 @@ class AppSettings:
     progressive_preview: bool = True
     loading_indicator: bool = True
     preview_cache_budget_mb: int = DEFAULT_PREVIEW_CACHE_BUDGET_MB
+    staged_decisions: bool = False
 
     def normalized(self) -> "AppSettings":
         budget = min(max(int(self.preview_cache_budget_mb), MIN_PREVIEW_CACHE_BUDGET_MB), MAX_PREVIEW_CACHE_BUDGET_MB)
@@ -36,6 +37,7 @@ class AppSettings:
             progressive_preview=bool(self.progressive_preview),
             loading_indicator=bool(self.loading_indicator),
             preview_cache_budget_mb=budget,
+            staged_decisions=bool(self.staged_decisions),
         )
 
     def save(self) -> None:
@@ -57,6 +59,7 @@ class AppSettings:
                 progressive_preview=bool(data.get("progressive_preview", True)),
                 loading_indicator=bool(data.get("loading_indicator", True)),
                 preview_cache_budget_mb=int(data.get("preview_cache_budget_mb", DEFAULT_PREVIEW_CACHE_BUDGET_MB)),
+                staged_decisions=bool(data.get("staged_decisions", False)),
             )
         except (TypeError, ValueError):
             return cls()

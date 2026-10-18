@@ -23,6 +23,7 @@ from app_settings import AppSettings, MAX_PREVIEW_CACHE_BUDGET_MB, MIN_PREVIEW_C
 from burst_clustering import BurstClusterer, PhotoBurstInfo
 from photo_session import PhotoSession, PhotoSessionError
 from preview_pipeline import PreviewPipeline
+from review_commit_modal import ReviewCommitModal
 from session_persistence import SessionLifecycle
 from session_startup import (
     choose_source_directory,
@@ -73,6 +74,7 @@ class App(DnDCTk):
             error_handler=lambda message: show_session_warning(self, message)
         )
         self.session = self.session_lifecycle.restore() or PhotoSession()
+        self.session.staged_mode = self.settings.staged_decisions
         self.restored_startup_session = session_has_pending_photos(self.session)
         self.preview_pipeline = PreviewPipeline(cache_budget_mb=self.settings.preview_cache_budget_mb)
         self.preview_photo = None
@@ -90,6 +92,8 @@ class App(DnDCTk):
         self.loading_overlay_visible = False
         self.loading_overlay_angle = 0
         self.preview_settings_dialog = None
+        self.review_commit_modal = None
+        self.staged_mode_var = tk.BooleanVar(value=self.settings.staged_decisions)
         self.destroyed = False
         self.preview_texture_cache: OrderedDict[tuple[object, ...], ImageTk.PhotoImage] = OrderedDict()
         self.preview_texture_cache_limit = 12
@@ -135,7 +139,7 @@ class App(DnDCTk):
 
         self.footer_frame = ctk.CTkFrame(self)
         self.footer_frame.grid(row=1, column=0, padx=18, pady=(10, 18), sticky="ew")
-        self.footer_frame.grid_columnconfigure((0, 1), weight=1)
+        self.footer_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
         self.setup_body()
         self.setup_footer()
@@ -301,7 +305,17 @@ class App(DnDCTk):
             height=54,
             command=lambda: self.sort_current_photo("nah"),
         )
-        self.nah_button.grid(row=0, column=0, padx=(18, 8), pady=18, sticky="ew")
+        self.nah_button.grid(row=0, column=0, padx=(18, 6), pady=18, sticky="ew")
+
+        self.flag_button = ctk.CTkButton(
+            self.footer_frame,
+            text="Flag",
+            fg_color="#d97706",
+            hover_color="#b45309",
+            height=54,
+            command=lambda: self.sort_current_photo("flag"),
+        )
+        self.flag_button.grid(row=0, column=1, padx=6, pady=18, sticky="ew")
 
         self.keep_button = ctk.CTkButton(
             self.footer_frame,
@@ -311,7 +325,17 @@ class App(DnDCTk):
             height=54,
             command=lambda: self.sort_current_photo("keep"),
         )
-        self.keep_button.grid(row=0, column=1, padx=(8, 18), pady=18, sticky="ew")
+        self.keep_button.grid(row=0, column=2, padx=6, pady=18, sticky="ew")
+
+        self.review_button = ctk.CTkButton(
+            self.footer_frame,
+            text="Review Batch",
+            fg_color="#4f46e5",
+            hover_color="#4338ca",
+            height=54,
+            command=self.open_review_commit_modal,
+        )
+        self.review_button.grid(row=0, column=3, padx=(6, 18), pady=18, sticky="ew")
 
     def setup_menu(self):
         menubar = tk.Menu(self)
@@ -326,10 +350,36 @@ class App(DnDCTk):
 
         view_menu = tk.Menu(menubar, tearoff=False)
         view_menu.add_command(label="Preview Settings...", accelerator=accelerator, command=self.open_preview_settings_dialog)
+        view_menu.add_checkbutton(label="Staged Decisions Mode", variable=self.staged_mode_var, command=self.toggle_staged_mode)
         menubar.add_cascade(label="View", menu=view_menu)
 
         self.configure(menu=menubar)
         self.menubar = menubar
+
+    def toggle_staged_mode(self):
+        new_val = bool(self.staged_mode_var.get())
+        self.session.staged_mode = new_val
+        self.settings = AppSettings(
+            progressive_preview=self.settings.progressive_preview,
+            loading_indicator=self.settings.loading_indicator,
+            preview_cache_budget_mb=self.settings.preview_cache_budget_mb,
+            staged_decisions=new_val,
+        ).normalized()
+        self.settings.save()
+        self.refresh_ui()
+
+    def open_review_commit_modal(self):
+        if self.review_commit_modal is not None and self.review_commit_modal.winfo_exists():
+            self.review_commit_modal.focus()
+            self.review_commit_modal.lift()
+            return
+        self.review_commit_modal = ReviewCommitModal(
+            self, self.session, on_committed=self.handle_batch_committed
+        )
+
+    def handle_batch_committed(self):
+        self.persist_session()
+        self.refresh_ui()
 
     def toggle_action_buttons(self):
         self.show_action_buttons = not self.show_action_buttons
@@ -379,6 +429,7 @@ class App(DnDCTk):
 
         progressive_var = tk.BooleanVar(value=self.settings.progressive_preview)
         loading_var = tk.BooleanVar(value=self.settings.loading_indicator)
+        staged_decisions_var = tk.BooleanVar(value=self.settings.staged_decisions)
         budget_var = tk.StringVar(value=str(self.settings.preview_cache_budget_mb))
         filter_model = self.extension_filter_model()
         extension_vars = {
@@ -392,7 +443,7 @@ class App(DnDCTk):
 
         ctk.CTkLabel(
             container,
-            text="Preview Performance",
+            text="Settings",
             font=ctk.CTkFont(size=18, weight="bold"),
         ).grid(row=0, column=0, sticky="w", pady=(2, 14))
 
@@ -408,9 +459,15 @@ class App(DnDCTk):
             sticky="w",
             pady=6,
         )
+        ctk.CTkSwitch(container, text="Staged Decisions (Batch Commit)", variable=staged_decisions_var).grid(
+            row=3,
+            column=0,
+            sticky="w",
+            pady=6,
+        )
 
-        ctk.CTkLabel(container, text="Preview Cache Budget (MB)").grid(row=3, column=0, sticky="w", pady=(18, 6))
-        ctk.CTkEntry(container, textvariable=budget_var).grid(row=4, column=0, sticky="ew")
+        ctk.CTkLabel(container, text="Preview Cache Budget (MB)").grid(row=4, column=0, sticky="w", pady=(18, 6))
+        ctk.CTkEntry(container, textvariable=budget_var).grid(row=5, column=0, sticky="ew")
 
         helper_text = f"Allowed range: {MIN_PREVIEW_CACHE_BUDGET_MB}-{MAX_PREVIEW_CACHE_BUDGET_MB} MB."
         ctk.CTkLabel(
@@ -419,14 +476,14 @@ class App(DnDCTk):
             text_color=self._apply_appearance_mode(("gray45", "gray65")),
             justify="left",
             wraplength=360,
-        ).grid(row=5, column=0, sticky="w", pady=(8, 14))
+        ).grid(row=6, column=0, sticky="w", pady=(8, 14))
 
         filter_frame = ctk.CTkScrollableFrame(
             container,
             label_text="Extension View Filter",
             height=110,
         )
-        filter_frame.grid(row=6, column=0, sticky="ew", pady=(0, 16))
+        filter_frame.grid(row=7, column=0, sticky="ew", pady=(0, 16))
         filter_frame.grid_columnconfigure((0, 1, 2), weight=1)
         if extension_vars:
             for index, (extension, variable) in enumerate(extension_vars.items()):
@@ -443,7 +500,7 @@ class App(DnDCTk):
             ).grid(row=0, column=0, columnspan=3, sticky="w", padx=6, pady=4)
 
         button_row = ctk.CTkFrame(container, fg_color="transparent")
-        button_row.grid(row=7, column=0, sticky="ew")
+        button_row.grid(row=8, column=0, sticky="ew")
         button_row.grid_columnconfigure((0, 1), weight=1)
 
         def close_dialog():
@@ -477,7 +534,10 @@ class App(DnDCTk):
                 progressive_preview=progressive_var.get(),
                 loading_indicator=loading_var.get(),
                 preview_cache_budget_mb=budget,
+                staged_decisions=staged_decisions_var.get(),
             )
+            self.session.staged_mode = staged_decisions_var.get()
+            self.staged_mode_var.set(staged_decisions_var.get())
             if not self.save_settings_changes(
                 settings,
                 set(selected) if filter_model.options else None,
@@ -485,6 +545,7 @@ class App(DnDCTk):
             ):
                 return
             close_dialog()
+            self.refresh_ui()
 
         ctk.CTkButton(button_row, text="Cancel", command=close_dialog).grid(row=0, column=0, padx=(0, 6), sticky="ew")
         save_button = ctk.CTkButton(button_row, text="Save", command=save_settings)
@@ -507,12 +568,16 @@ class App(DnDCTk):
         if persist:
             normalized.save()
         self.settings = normalized
+        self.session.staged_mode = normalized.staged_decisions
+        if hasattr(self, "staged_mode_var") and self.staged_mode_var is not None:
+            self.staged_mode_var.set(normalized.staged_decisions)
         self.preview_pipeline.configure_cache_budget(normalized.preview_cache_budget_mb)
         self.prune_preview_texture_cache(set(preview_paths_for(self.session)))
         self.preview_source_path = None
         self.preview_source_image = None
         self.reset_preview_request_state()
         self.refresh_preview(reload_image=True)
+        self.refresh_ui()
 
     def extension_filter_model(self) -> ExtensionFilterModel:
         return ExtensionFilterModel.from_session(self.session)
@@ -549,6 +614,8 @@ class App(DnDCTk):
         self.bind_all("<Right>", self.handle_next_shortcut)
         self.bind_all("<KeyPress-a>", self.handle_nah_shortcut)
         self.bind_all("<KeyPress-d>", self.handle_keep_shortcut)
+        self.bind_all("<KeyPress-f>", self.handle_flag_shortcut)
+        self.bind_all("<KeyPress-F>", self.handle_flag_shortcut)
         self.bind_all("<space>", self.handle_space_shortcut)
         self.bind_all("<Delete>", self.handle_delete_shortcut)
 
@@ -592,6 +659,12 @@ class App(DnDCTk):
         if not self.shortcuts_enabled():
             return None
         self.sort_current_photo("keep")
+        return "break"
+
+    def handle_flag_shortcut(self, _event=None):
+        if not self.shortcuts_enabled():
+            return None
+        self.sort_current_photo("flag")
         return "break"
 
     def handle_space_shortcut(self, _event=None):
@@ -821,6 +894,15 @@ class App(DnDCTk):
         action_state = "normal" if current is not None else "disabled"
         self.keep_button.configure(state=action_state)
         self.nah_button.configure(state=action_state)
+        if hasattr(self, "flag_button"):
+            self.flag_button.configure(state=action_state)
+        if hasattr(self, "review_button"):
+            staged_count = self.session.staged_summary.total_count
+            btn_text = f"Review Batch ({staged_count})" if staged_count > 0 else "Review Batch"
+            self.review_button.configure(
+                text=btn_text,
+                state="normal" if staged_count > 0 or self.session.staged_mode else "disabled",
+            )
         self.refresh_thumbnail_strip()
 
         if current is None:

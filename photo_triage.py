@@ -6,7 +6,7 @@ from typing import Literal
 
 from photo_groups import PhotoGroup
 
-Decision = Literal["keep", "nah"]
+Decision = Literal["keep", "nah", "flag"]
 ActionMode = Literal["move", "copy"]
 EMPTY_EXTENSION_SELECTION_MESSAGE = "Choose at least one file extension."
 
@@ -163,6 +163,10 @@ class PhotoTriage:
     @property
     def nah_count(self) -> int:
         return sum(1 for record in self.history if record.decision == "nah")
+
+    @property
+    def flag_count(self) -> int:
+        return sum(1 for record in self.history if record.decision == "flag")
 
     def decide_in_memory(
         self,

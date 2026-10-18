@@ -22,6 +22,11 @@ from photo_triage import (
     PhotoTriage,
     UndoResult,
 )
+from staged_triage import (
+    StagedBatchSummary,
+    StagedDecision,
+    StagedTriageManager,
+)
 from file_coordinator import FileCoordinator
 from session_state import SessionState
 import session_snapshot
@@ -45,6 +50,9 @@ class PhotoSession(FileCoordinator):
         history: list[ActionRecord] | None = None,
         completed_stems: set[str] | None = None,
         total_loaded: int = 0,
+        staged_mode: bool = False,
+        flag_dir: str | Path | None = None,
+        staged_decisions: list[StagedDecision] | None = None,
     ) -> None:
         self._state = SessionState(
             source_dir=source_dir,
@@ -60,15 +68,17 @@ class PhotoSession(FileCoordinator):
             total_loaded=total_loaded,
         )
         self._triage = PhotoTriage(history=history)
-        self.keep_count: int = sum(1 for r in self._triage.history if r.decision == "keep")
-        self.nah_count: int = sum(1 for r in self._triage.history if r.decision == "nah")
+        self.staged_mode: bool = staged_mode
+        self.flag_dir: Path | None = Path(flag_dir) if flag_dir is not None else None
+        self._staged_manager = StagedTriageManager(staged=staged_decisions)
+        self.keep_count: int = sum(1 for r in self._triage.history if r.decision == "keep") + self.staged_summary.keep_count
+        self.nah_count: int = sum(1 for r in self._triage.history if r.decision == "nah") + self.staged_summary.nah_count
 
     # --- Properties delegating to SessionState ---
 
     @property
     def source_dir(self) -> Path | None:
         return self._state.source_dir
-
     @source_dir.setter
     def source_dir(self, value: Path | None) -> None:
         self._state.source_dir = value
@@ -76,7 +86,6 @@ class PhotoSession(FileCoordinator):
     @property
     def keep_dir(self) -> Path | None:
         return self._state.keep_dir
-
     @keep_dir.setter
     def keep_dir(self, value: Path | None) -> None:
         self._state.keep_dir = value
@@ -84,7 +93,6 @@ class PhotoSession(FileCoordinator):
     @property
     def nah_dir(self) -> Path | None:
         return self._state.nah_dir
-
     @nah_dir.setter
     def nah_dir(self, value: Path | None) -> None:
         self._state.nah_dir = value
@@ -92,7 +100,6 @@ class PhotoSession(FileCoordinator):
     @property
     def action_mode(self) -> ActionMode:
         return self._state.action_mode
-
     @action_mode.setter
     def action_mode(self, value: ActionMode) -> None:
         self._state.action_mode = value
@@ -104,7 +111,6 @@ class PhotoSession(FileCoordinator):
     @property
     def available_extensions(self) -> tuple[str, ...]:
         return self._state.available_extensions
-
     @available_extensions.setter
     def available_extensions(self, value: tuple[str, ...]) -> None:
         self._state.available_extensions = value
@@ -112,7 +118,6 @@ class PhotoSession(FileCoordinator):
     @property
     def enabled_extensions(self) -> set[str]:
         return self._state.enabled_extensions
-
     @enabled_extensions.setter
     def enabled_extensions(self, value: set[str]) -> None:
         self._state.enabled_extensions = value
@@ -120,7 +125,6 @@ class PhotoSession(FileCoordinator):
     @property
     def pending_groups(self) -> list[PhotoGroup]:
         return self._state.pending_groups
-
     @pending_groups.setter
     def pending_groups(self, value: list[PhotoGroup]) -> None:
         self._state.pending_groups = value
@@ -128,7 +132,6 @@ class PhotoSession(FileCoordinator):
     @property
     def completed_stems(self) -> set[str]:
         return self._state.completed_stems
-
     @completed_stems.setter
     def completed_stems(self, value: set[str]) -> None:
         self._state.completed_stems = value
@@ -136,7 +139,6 @@ class PhotoSession(FileCoordinator):
     @property
     def queue(self) -> list[PhotoGroup]:
         return self._state.queue
-
     @queue.setter
     def queue(self, value: list[PhotoGroup]) -> None:
         self._state.queue = value
@@ -144,7 +146,6 @@ class PhotoSession(FileCoordinator):
     @property
     def active_index(self) -> int:
         return self._state.active_index
-
     @active_index.setter
     def active_index(self, value: int) -> None:
         self._state.active_index = value
@@ -152,7 +153,6 @@ class PhotoSession(FileCoordinator):
     @property
     def total_loaded(self) -> int:
         return self._state.total_loaded
-
     @total_loaded.setter
     def total_loaded(self, value: int) -> None:
         self._state.total_loaded = value
@@ -160,7 +160,6 @@ class PhotoSession(FileCoordinator):
     @property
     def _extensions_source(self) -> Path | None:
         return self._state._extensions_source
-
     @_extensions_source.setter
     def _extensions_source(self, value: Path | None) -> None:
         self._state._extensions_source = value
@@ -198,7 +197,6 @@ class PhotoSession(FileCoordinator):
     @property
     def history(self) -> list[ActionRecord]:
         return self._triage.history
-
     @history.setter
     def history(self, value: list[ActionRecord]) -> None:
         self._triage.history = value
@@ -209,7 +207,19 @@ class PhotoSession(FileCoordinator):
 
     @property
     def can_undo(self) -> bool:
-        return bool(self.history)
+        return bool(self.history) or not self._staged_manager.is_empty
+
+    @property
+    def staged_decisions(self) -> list[StagedDecision]:
+        return self._staged_manager.staged
+
+    @property
+    def staged_summary(self) -> StagedBatchSummary:
+        return self._staged_manager.summary()
+
+    @property
+    def flag_count(self) -> int:
+        return sum(1 for r in self._triage.history if r.decision == "flag") + self.staged_summary.flag_count
 
     @property
     def processed_count(self) -> int:
@@ -219,13 +229,10 @@ class PhotoSession(FileCoordinator):
 
     def set_source_dir(self, path: str | Path | None) -> None:
         self._state.set_source_dir(path)
-
     def set_keep_dir(self, path: str | Path | None) -> None:
         self._state.set_keep_dir(path)
-
     def set_nah_dir(self, path: str | Path | None) -> None:
         self._state.set_nah_dir(path)
-
     def set_action_mode(self, mode: str) -> None:
         self._state.set_action_mode(mode)
 
@@ -233,6 +240,7 @@ class PhotoSession(FileCoordinator):
         self._state.reset_queue()
         self.history.clear()
         self._partial_copy_undo.clear()
+        self._staged_manager.clear()
         self.keep_count = 0
         self.nah_count = 0
 
@@ -240,6 +248,7 @@ class PhotoSession(FileCoordinator):
         result = self._state.load_queue()
         self.history.clear()
         self._partial_copy_undo.clear()
+        self._staged_manager.clear()
         self.keep_count = 0
         self.nah_count = 0
         return result
@@ -264,19 +273,14 @@ class PhotoSession(FileCoordinator):
 
     def set_active_index(self, index: int) -> Path | None:
         return self._state.set_active_index(index)
-
     def move_active(self, offset: int) -> Path | None:
         return self._state.move_active(offset)
-
     def _project_pending_groups(self) -> list[PhotoGroup]:
         return self._state._project_pending_groups()
-
     def _validated_source_dir(self) -> Path:
         return self._state._validated_source_dir()
-
     def _remove_queue_item(self, index: int) -> PhotoGroup:
         return self._state.remove_queue_item(index)
-
     def _representative_for(self, members: tuple[Path, ...]) -> Path:
         return self._state._representative_for(members)
 
@@ -284,62 +288,24 @@ class PhotoSession(FileCoordinator):
     def _as_group(item: PhotoGroup | Path) -> PhotoGroup:
         return SessionState._as_group(item)
 
-    # --- File Operations delegation ---
-
-    def _execute_group_operations(
-        self,
-        group: PhotoGroup,
-        source_root: Path,
-        destination_root: Path,
-    ) -> tuple[FileOperation, ...]:
-        return self.execute_group_operations(group, source_root, destination_root, self.action_mode)
-
-    @classmethod
-    def _recorded_destination_root(cls, record: ActionRecord) -> Path:
-        return cls.recorded_destination_root(record)
-
-    def _undo_move_record(self, record: ActionRecord, destination_root: Path) -> None:
-        self.undo_move_record(record, destination_root, self.source_dir, self._refresh_record_identities)
-
-    def _undo_copy_record(self, record: ActionRecord, destination_root: Path) -> None:
-        self.undo_copy_record(record, destination_root, self._partial_copy_undo, self._refresh_record_identities)
-
     def _refresh_record_identities(
         self,
         record: ActionRecord,
         updates: dict[FileOperation, tuple[int, int]],
     ) -> None:
-        if not updates:
-            return
-        refreshed_files = tuple(
-            FileOperation(
-                operation.source,
-                operation.destination,
-                updates.get(operation, operation.destination_identity),
+        if updates:
+            refreshed_files = tuple(
+                FileOperation(op.source, op.destination, updates.get(op, op.destination_identity))
+                for op in record.files
             )
-            for operation in record.files
-        )
-        self.history[-1] = ActionRecord(
-            record.decision,
-            record.action_mode,
-            record.group,
-            refreshed_files,
-            record.index,
-        )
-
-    def _unique_destination(self, destination_dir: Path, filename: str) -> Path:
-        return self.unique_destination(destination_dir, filename)
-
-    def _destination_dir_for(self, decision: Decision) -> Path:
-        destination_dir = self.keep_dir if decision == "keep" else self.nah_dir
-        if destination_dir is None:
-            raise OSError("The action destination folder is unavailable")
-        return destination_dir
+            self.history[-1] = ActionRecord(
+                record.decision, record.action_mode, record.group, refreshed_files, record.index
+            )
 
     # --- Triage Actions: decide and undo ---
 
     def decide(self, decision: Decision) -> DecisionResult:
-        if decision not in {"keep", "nah"}:
+        if decision not in {"keep", "nah", "flag"}:
             raise PhotoSessionError(f"Unsupported decision: {decision}")
         group = self.active_group
         if group is None:
@@ -361,9 +327,37 @@ class PhotoSession(FileCoordinator):
             )
             group = PhotoGroup(group.stem, remaining_members, representative)
 
-        destination_dir = self.keep_dir if decision == "keep" else self.nah_dir
+        if decision == "keep":
+            destination_dir = self.keep_dir
+        elif decision == "nah":
+            destination_dir = self.nah_dir
+        else:
+            destination_dir = self.flag_dir
+
+        if self.staged_mode:
+            staged = self._staged_manager.stage(
+                group,
+                decision,
+                self.action_mode,
+                destination_dir,
+                current_index,
+            )
+            self._remove_queue_item(current_index)
+            self.completed_stems.add(group.stem)
+            if decision == "keep":
+                self.keep_count += 1
+            elif decision == "nah":
+                self.nah_count += 1
+            return DecisionResult(
+                decision,
+                self.action_mode,
+                group,
+                staged.files,
+                self.remaining_count,
+            )
+
         if destination_dir is None:
-            label = "Keep" if decision == "keep" else "Nah"
+            label = "Keep" if decision == "keep" else ("Nah" if decision == "nah" else "Flag")
             raise PhotoSessionError(f"Choose a {label} folder before sorting.")
 
         destination_dir = destination_dir.expanduser()
@@ -371,61 +365,67 @@ class PhotoSession(FileCoordinator):
             destination_dir.mkdir(parents=True, exist_ok=True)
         except OSError as error:
             raise PhotoSessionError(
-                f"Could not prepare the destination folder: {error}",
-                primary_error=error,
+                f"Could not prepare the destination folder: {error}", primary_error=error
             ) from error
 
         if self.action_mode == "move":
             try:
                 source_parent = group.members[0].resolve().parent
-                destination_parent = destination_dir.resolve()
+                dest_parent = destination_dir.resolve()
             except FileNotFoundError:
                 source_parent = group.members[0].parent
-                destination_parent = destination_dir
-
-            if source_parent == destination_parent:
+                dest_parent = destination_dir
+            if source_parent == dest_parent:
                 raise PhotoSessionError(
                     "Move mode requires destination folders different from the current photo folder."
                 )
 
-        operations = self._execute_group_operations(
-            group, group.members[0].parent, destination_dir
+        operations = self.execute_group_operations(
+            group, group.members[0].parent, destination_dir, self.action_mode
         )
-
         self._remove_queue_item(current_index)
         self.history.append(
-            ActionRecord(
-                decision,
-                self.action_mode,
-                group,
-                operations,
-                current_index,
-            )
+            ActionRecord(decision, self.action_mode, group, operations, current_index)
         )
         self.completed_stems.add(group.stem)
         if decision == "keep":
             self.keep_count += 1
-        else:
+        elif decision == "nah":
             self.nah_count += 1
 
         return DecisionResult(
-            decision,
-            self.action_mode,
-            group,
-            operations,
-            self.remaining_count,
+            decision, self.action_mode, group, operations, self.remaining_count
         )
 
     def undo(self) -> UndoResult:
+        if self.staged_mode and not self._staged_manager.is_empty:
+            staged = self._staged_manager.undo()
+            if staged is None:
+                raise PhotoSessionError("There is nothing to undo.")
+            self.completed_stems.discard(staged.stem)
+            self.pending_groups.append(staged.group)
+            self.pending_groups.sort(key=lambda group: (group.stem.lower(), group.stem))
+            self.queue = self._project_pending_groups()
+            self.active_index = next(
+                (i for i, g in enumerate(self.queue) if g.stem == staged.stem), 0
+            )
+            if staged.decision == "keep":
+                self.keep_count -= 1
+            elif staged.decision == "nah":
+                self.nah_count -= 1
+            return UndoResult(
+                staged.decision, staged.action_mode, staged.group, staged.files, self.remaining_count
+            )
+
         if not self.history:
             raise PhotoSessionError("There is nothing to undo.")
 
         record = self.history[-1]
-        destination_root = self._recorded_destination_root(record)
+        destination_root = self.recorded_destination_root(record)
         if record.action_mode == "move":
-            self._undo_move_record(record, destination_root)
+            self.undo_move_record(record, destination_root, self.source_dir, self._refresh_record_identities)
         else:
-            self._undo_copy_record(record, destination_root)
+            self.undo_copy_record(record, destination_root, self._partial_copy_undo, self._refresh_record_identities)
 
         self.history.pop()
         self.completed_stems.discard(record.group.stem)
@@ -434,30 +434,44 @@ class PhotoSession(FileCoordinator):
         self.pending_groups.sort(key=lambda group: (group.stem.lower(), group.stem))
         self.queue = self._project_pending_groups()
         self.active_index = next(
-            (
-                index
-                for index, group in enumerate(self.queue)
-                if group.stem == record.group.stem
-            ),
-            0,
+            (i for i, g in enumerate(self.queue) if g.stem == record.group.stem), 0
         )
         if record.decision == "keep":
             self.keep_count -= 1
-        else:
+        elif record.decision == "nah":
             self.nah_count -= 1
 
         return UndoResult(
-            record.decision,
-            record.action_mode,
-            record.group,
-            record.files,
-            self.remaining_count,
+            record.decision, record.action_mode, record.group, record.files, self.remaining_count
         )
+
+    def commit_staged_batch(
+        self,
+        on_progress: Callable[[int, int, str], None] | None = None,
+        cancel_token: threading.Event | None = None,
+    ) -> tuple[ActionRecord, ...]:
+        records = self._staged_manager.execute_batch(
+            self, on_progress=on_progress, cancel_token=cancel_token
+        )
+        self.history.extend(records)
+        return records
+
+    def undo_all_staged(self) -> int:
+        count = 0
+        while not self._staged_manager.is_empty:
+            self.undo()
+            count += 1
+        return count
 
     # --- Snapshot Serialization and Loading ---
 
     def to_snapshot(self) -> dict[str, object]:
-        return session_snapshot.to_snapshot(self._state, self._triage)
+        return session_snapshot.to_snapshot(
+            self._state,
+            self._triage,
+            staged_mode=self.staged_mode,
+            staged_decisions=self.staged_decisions,
+        )
 
     @classmethod
     def from_snapshot(cls, data: object) -> PhotoSession | None:

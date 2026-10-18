@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from photo_groups import PhotoGroup
 from photo_metadata import pillow_previewable_extensions
+from photo_triage import FileOperation
+from staged_triage import StagedDecision, StagedTriageManager
 import legacy_snapshot
 import snapshot_validators
 
@@ -23,8 +26,13 @@ def _group_to_snapshot(group: PhotoGroup) -> dict[str, object]:
     }
 
 
-def to_snapshot(state: SessionState, triage: PhotoTriage) -> dict[str, object]:
-    return {
+def to_snapshot(
+    state: SessionState,
+    triage: PhotoTriage,
+    staged_mode: bool = False,
+    staged_decisions: tuple[StagedDecision, ...] | list[StagedDecision] = (),
+) -> dict[str, object]:
+    snapshot = {
         "snapshot_version": SNAPSHOT_VERSION,
         "source_dir": str(state.source_dir) if state.source_dir is not None else None,
         "keep_dir": str(state.keep_dir) if state.keep_dir is not None else None,
@@ -68,6 +76,25 @@ def to_snapshot(state: SessionState, triage: PhotoTriage) -> dict[str, object]:
             for record in triage.history
         ],
     }
+    if staged_mode or staged_decisions:
+        snapshot["staged_mode"] = staged_mode
+        snapshot["staged_decisions"] = [
+            {
+                "stem": item.stem,
+                "group": _group_to_snapshot(item.group),
+                "decision": item.decision,
+                "action_mode": item.action_mode,
+                "destination_dir": (
+                    str(item.destination_dir)
+                    if item.destination_dir is not None
+                    else None
+                ),
+                "index": item.index,
+                "bytes_size": item.bytes_size,
+            }
+            for item in staged_decisions
+        ]
+    return snapshot
 
 
 def from_snapshot(
@@ -233,9 +260,52 @@ def _from_grouped_snapshot(
         nah_dir=nah_dir,
     )
     history_stems = {record.group.stem for record in session.history}
+    staged_mode = bool(data.get("staged_mode", False))
+    raw_staged = data.get("staged_decisions", [])
+    restored_staged: list[StagedDecision] = []
+    if isinstance(raw_staged, list):
+        for item in raw_staged:
+            if not isinstance(item, dict):
+                continue
+            group_dict = item.get("group")
+            if not isinstance(group_dict, dict):
+                continue
+            staged_group = snapshot_validators._queue_group_from_snapshot(
+                group_dict,
+                source_dir=source_dir,
+                enabled_extensions=enabled,
+                previewable_extensions=previewable_extensions,
+            )
+            if staged_group is None:
+                continue
+            decision = item.get("decision", "keep")
+            action_mode = item.get("action_mode", "move")
+            dest_dir = Path(item["destination_dir"]) if item.get("destination_dir") else None
+            idx = int(item.get("index", 0))
+            bytes_size = int(item.get("bytes_size", 0))
+            files = tuple(
+                FileOperation(m, dest_dir / m.name)
+                for m in staged_group.members
+            ) if dest_dir is not None else ()
+            restored_staged.append(
+                StagedDecision(
+                    group=staged_group,
+                    decision=decision,
+                    action_mode=action_mode,
+                    destination_dir=dest_dir,
+                    files=files,
+                    index=idx,
+                    bytes_size=bytes_size,
+                )
+            )
+
+    staged_stems = {s.stem for s in restored_staged}
     session.completed_stems = declared_completed
-    if not history_stems.issubset(session.completed_stems):
+    if not (history_stems | staged_stems).issubset(session.completed_stems):
         return None
     if {group.stem for group in session.pending_groups} & session.completed_stems:
         return None
+    session.staged_mode = staged_mode
+    if hasattr(session, "_staged_manager"):
+        session._staged_manager = StagedTriageManager(staged=restored_staged)
     return session
