@@ -1,3 +1,4 @@
+pub mod analysis;
 pub mod cache;
 pub mod fileops;
 pub mod image_loader;
@@ -257,6 +258,16 @@ fn py_photo_group(group: ScannedGroup) -> PyPhotoGroup {
 }
 
 #[pyfunction]
+fn compute_sharpness(py: Python<'_>, rgba: &[u8], width: u32, height: u32) -> f32 {
+    py.allow_threads(|| analysis::compute_sharpness(rgba, width, height))
+}
+
+#[pyfunction]
+fn compute_image_hash(py: Python<'_>, rgba: &[u8], width: u32, height: u32) -> u64 {
+    py.allow_threads(|| analysis::compute_image_hash(rgba, width, height))
+}
+
+#[pyfunction]
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
@@ -274,6 +285,8 @@ fn keep_or_nah_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(resize_image_rgba, m)?)?;
     m.add_function(wrap_pyfunction!(discover_photo_extensions, m)?)?;
     m.add_function(wrap_pyfunction!(build_photo_groups, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_sharpness, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_image_hash, m)?)?;
     m.add_function(wrap_pyfunction!(fileops::stage_regular_file, m)?)?;
     m.add_function(wrap_pyfunction!(fileops::file_identity, m)?)?;
     m.add_function(wrap_pyfunction!(fileops::remove_verified_file, m)?)?;

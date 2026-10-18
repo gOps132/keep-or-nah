@@ -20,6 +20,7 @@ _MISSING = object()
 
 from app_assets import apply_window_icon
 from app_settings import AppSettings, MAX_PREVIEW_CACHE_BUDGET_MB, MIN_PREVIEW_CACHE_BUDGET_MB
+from burst_clustering import BurstClusterer, PhotoBurstInfo
 from photo_session import PhotoSession, PhotoSessionError
 from preview_pipeline import PreviewPipeline
 from session_persistence import SessionLifecycle
@@ -97,6 +98,10 @@ class App(DnDCTk):
         self.thumbnail_cache_limit = 192
         self.thumbnail_raws: OrderedDict[Path, object] = OrderedDict()
         self.thumbnail_pending_requests: set[Path] = set()
+        self.burst_clusterer = BurstClusterer()
+        self.burst_info_map: dict[Path, PhotoBurstInfo] = {}
+        self.best_shots: set[Path] = set()
+        self.burst_shots: set[Path] = set()
         self.thumbnail_worker_thread: threading.Thread | None = None
         self.thumbnail_work_queue: queue.Queue | None = None
         self.thumbnail_result_queue: queue.Queue | None = None
@@ -632,6 +637,9 @@ class App(DnDCTk):
         self.thumbnail_cache = OrderedDict()
         self.thumbnail_raws = OrderedDict()
         self.thumbnail_pending_requests = set()
+        self.burst_info_map.clear()
+        self.best_shots.clear()
+        self.burst_shots.clear()
         self.thumbnail_refs = []
         self.thumbnail_signature = ()
         self.thumbnail_canvas_width = 0
@@ -1050,6 +1058,19 @@ class App(DnDCTk):
         self.preview_canvas.delete("all")
         self.preview_canvas.configure(scrollregion=(0, 0, region_width, region_height))
         self.preview_canvas.create_image(origin_x, origin_y, anchor="nw", image=self.preview_photo)
+        session = getattr(self, "session", None)
+        current = getattr(session, "active_photo", None) if session is not None else None
+        best_shots = getattr(self, "best_shots", ())
+        if current and current in best_shots:
+            self.preview_canvas.create_text(
+                region_width - 24,
+                24,
+                text="★ Best Shot (Burst)",
+                fill="#eab308",
+                font=("SF Pro Text", 13, "bold"),
+                anchor="ne",
+                tags=("best-shot-badge",),
+            )
         self.rendered_preview_size = (canvas_width, canvas_height)
         self.rendered_preview_scrollregion = (0, 0, region_width, region_height)
         self.restore_view_center(rel_x, rel_y)
@@ -1130,8 +1151,21 @@ class App(DnDCTk):
             if path is None:
                 return
             raw = self.decode_strip_thumbnail(path)
+            burst_info = None
+            if raw is not None and hasattr(raw, "data") and hasattr(raw, "width") and hasattr(raw, "height"):
+                try:
+                    mtime = path.stat().st_mtime
+                    burst_info = self.burst_clusterer.analyze_photo(
+                        path=path,
+                        timestamp=mtime,
+                        rgba=bytes(raw.data),
+                        width=raw.width,
+                        height=raw.height,
+                    )
+                except Exception:
+                    pass
             if not self.destroyed:
-                self.thumbnail_result_queue.put((path, raw))
+                self.thumbnail_result_queue.put((path, raw, burst_info))
 
     def schedule_thumbnail_result_poll(self) -> None:
         if self.thumbnail_poll_job is not None or self.destroyed:
@@ -1143,14 +1177,24 @@ class App(DnDCTk):
         if self.destroyed:
             return
         updated = False
+        new_bursts = False
         while True:
             try:
-                path, raw = self.thumbnail_result_queue.get_nowait()
+                item = self.thumbnail_result_queue.get_nowait()
             except queue.Empty:
                 break
+            path, raw = item[0], item[1]
+            burst_info = item[2] if len(item) > 2 else None
             self.thumbnail_pending_requests.discard(path)
             self.thumbnail_raws[path] = raw
+            if burst_info is not None:
+                self.burst_info_map[path] = burst_info
+                new_bursts = True
             updated = True
+        if new_bursts:
+            clusters = self.burst_clusterer.cluster(list(self.burst_info_map.values()))
+            self.best_shots = {c.best_shot for c in clusters if c.is_burst}
+            self.burst_shots = {p.path for c in clusters if c.is_burst for p in c.photos}
         if updated:
             self.prune_strip_thumbnail_state(set(preview_paths_for(self.session)))
             self.refresh_thumbnail_strip()
@@ -1252,6 +1296,18 @@ class App(DnDCTk):
                     fill=marker_color,
                     font=("SF Pro Display", 18, "bold"),
                     tags=(tag, "thumbnail"),
+                )
+
+            best_shots = getattr(self, "best_shots", ())
+            if path in best_shots:
+                self.thumbnail_canvas.create_text(
+                    x + self.thumbnail_item_width - 8,
+                    self.thumbnail_top_padding + 6,
+                    text="★",
+                    fill="#eab308",
+                    font=("SF Pro Text", 12, "bold"),
+                    anchor="ne",
+                    tags=(tag, "thumbnail", "best-shot-badge"),
                 )
 
             self.thumbnail_canvas.create_line(
