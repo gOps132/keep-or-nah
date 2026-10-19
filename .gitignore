@@ -10,3 +10,4 @@ crates/**/target/
 *.so
 *.dylib
 *.pyd
+freebuff-chat-*.md
