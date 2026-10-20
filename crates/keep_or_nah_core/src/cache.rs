@@ -55,7 +55,8 @@ impl PreviewCache {
 
     pub fn set_limits(&mut self, total_budget_bytes: usize) {
         self.source_limit_bytes = (total_budget_bytes as f64 * 0.62) as usize;
-        self.render_limit_bytes = (total_budget_bytes.saturating_sub(self.source_limit_bytes)).max(8 * 1024 * 1024);
+        self.render_limit_bytes =
+            (total_budget_bytes.saturating_sub(self.source_limit_bytes)).max(8 * 1024 * 1024);
         self.trim();
     }
 
@@ -147,7 +148,8 @@ impl PreviewCache {
         }
 
         self.failed_keys.retain(|k| allowed_paths.contains(&k.path));
-        self.unavailable_keys.retain(|k| allowed_paths.contains(&k.path));
+        self.unavailable_keys
+            .retain(|k| allowed_paths.contains(&k.path));
     }
 
     pub fn trim(&mut self) {
@@ -173,5 +175,217 @@ impl PreviewCache {
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MIB: usize = 1024 * 1024;
+
+    /// A fully opaque image of `pixels` square pixels.
+    fn image(pixels: u32) -> Arc<LoadedImage> {
+        Arc::new(LoadedImage {
+            width: pixels,
+            height: pixels,
+            rgba: vec![7u8; (pixels * pixels * 4) as usize],
+        })
+    }
+
+    fn viewport_key(path: &str) -> ViewportKey {
+        ViewportKey {
+            path: PathBuf::from(path),
+            width: 100,
+            height: 100,
+        }
+    }
+
+    fn render_key(path: &str, stage: PreviewStage) -> RenderKey {
+        RenderKey {
+            path: PathBuf::from(path),
+            width: 100,
+            height: 100,
+            stage,
+        }
+    }
+
+    #[test]
+    fn new_splits_the_budget_between_sources_and_renders() {
+        let cache = PreviewCache::new(100 * MIB);
+
+        assert_eq!(cache.source_limit_bytes, 65_011_712);
+        assert_eq!(cache.render_limit_bytes, 39_845_888);
+    }
+
+    #[test]
+    fn new_keeps_a_render_floor_of_eight_mebibytes() {
+        let cache = PreviewCache::new(4 * MIB);
+
+        assert_eq!(cache.source_limit_bytes, 2_600_468);
+        assert_eq!(cache.render_limit_bytes, 8 * MIB);
+    }
+
+    #[test]
+    fn sources_round_trip_through_the_cache() {
+        let mut cache = PreviewCache::new(100 * MIB);
+        let path = PathBuf::from("/photos/IMG.jpg");
+        let picture = image(64);
+
+        assert!(!cache.has_source(&path));
+        assert!(cache.get_source(&path).is_none());
+
+        cache.put_source(path.clone(), Arc::clone(&picture));
+
+        assert!(cache.has_source(&path));
+        assert_eq!(cache.get_source(&path).map(|entry| entry.width), Some(64));
+        assert_eq!(cache.source_bytes, picture.byte_size());
+    }
+
+    #[test]
+    fn putting_the_same_source_twice_does_not_double_count() {
+        let mut cache = PreviewCache::new(100 * MIB);
+        let path = PathBuf::from("/photos/IMG.jpg");
+        let picture = image(64);
+
+        cache.put_source(path.clone(), Arc::clone(&picture));
+        cache.put_source(path.clone(), Arc::clone(&picture));
+
+        assert_eq!(cache.source_bytes, picture.byte_size());
+    }
+
+    #[test]
+    fn the_least_recently_used_source_is_evicted_first() {
+        let mut cache = PreviewCache::new(16 * MIB);
+        // 9 sources of 1 MiB fit into the 10 MiB source budget, the tenth
+        // pushes the cache over the limit.
+        let pictures: Vec<Arc<LoadedImage>> = (0..10).map(|_| image(512)).collect();
+        let paths: Vec<PathBuf> = (0..10)
+            .map(|index| PathBuf::from(format!("/photos/{index}.jpg")))
+            .collect();
+
+        for (path, picture) in paths.iter().zip(pictures.iter()) {
+            cache.put_source(path.clone(), Arc::clone(picture));
+        }
+
+        assert!(
+            !cache.has_source(&paths[0]),
+            "the oldest source must be gone"
+        );
+        assert!(cache.has_source(&paths[9]), "the newest source must stay");
+        assert_eq!(cache.source_cache.len(), 9);
+        assert!(cache.source_bytes <= cache.source_limit_bytes);
+    }
+
+    #[test]
+    fn reading_a_source_makes_it_the_most_recently_used_one() {
+        // A 4 MiB budget leaves 2 MiB for the sources, so two 1 MiB images fit
+        // and the third one evicts the least recently used entry.
+        let mut cache = PreviewCache::new(4 * MIB);
+        let pictures: Vec<Arc<LoadedImage>> = (0..2).map(|_| image(512)).collect();
+        let paths: Vec<PathBuf> = (0..2)
+            .map(|index| PathBuf::from(format!("/photos/{index}.jpg")))
+            .collect();
+
+        cache.put_source(paths[0].clone(), Arc::clone(&pictures[0]));
+        cache.put_source(paths[1].clone(), Arc::clone(&pictures[1]));
+        // Touch the first entry so the second one becomes the eviction
+        // candidate.
+        assert!(cache.get_source(&paths[0]).is_some());
+        cache.put_source(PathBuf::from("/photos/2.jpg"), Arc::clone(&pictures[0]));
+
+        assert!(cache.has_source(&paths[0]));
+        assert!(!cache.has_source(&paths[1]));
+    }
+
+    #[test]
+    fn renders_round_trip_through_the_cache() {
+        let mut cache = PreviewCache::new(100 * MIB);
+        let key = render_key("/photos/IMG.jpg", PreviewStage::Full);
+        let picture = image(32);
+
+        assert!(!cache.has_render(&key));
+        cache.put_render(key.clone(), Arc::clone(&picture));
+
+        assert!(cache.has_render(&key));
+        assert_eq!(cache.get_render(&key).map(|entry| entry.height), Some(32));
+        assert_eq!(cache.render_bytes, picture.byte_size());
+    }
+
+    #[test]
+    fn storing_a_render_clears_its_failure_markers() {
+        let mut cache = PreviewCache::new(100 * MIB);
+        let key = render_key("/photos/IMG.jpg", PreviewStage::Full);
+        let viewport = viewport_key("/photos/IMG.jpg");
+
+        cache.mark_failed(viewport.clone());
+        assert!(cache.is_failed(&viewport));
+        assert!(!cache.is_unavailable(&viewport));
+
+        cache.put_render(key, Arc::clone(&image(32)));
+
+        assert!(!cache.is_failed(&viewport));
+        assert!(!cache.is_unavailable(&viewport));
+    }
+
+    #[test]
+    fn failure_and_unavailable_are_mutually_exclusive() {
+        let mut cache = PreviewCache::new(100 * MIB);
+        let viewport = viewport_key("/photos/IMG.jpg");
+
+        cache.mark_failed(viewport.clone());
+        assert!(cache.is_failed(&viewport));
+        assert!(!cache.is_unavailable(&viewport));
+
+        cache.mark_unavailable(viewport.clone());
+        assert!(!cache.is_failed(&viewport));
+        assert!(cache.is_unavailable(&viewport));
+    }
+
+    #[test]
+    fn prune_drops_everything_outside_the_allowed_paths() {
+        let mut cache = PreviewCache::new(100 * MIB);
+        let kept = PathBuf::from("/photos/kept.jpg");
+        let dropped = PathBuf::from("/photos/dropped.jpg");
+
+        cache.put_source(kept.clone(), image(64));
+        cache.put_source(dropped.clone(), image(64));
+        cache.put_render(
+            render_key("/photos/kept.jpg", PreviewStage::Full),
+            image(32),
+        );
+        cache.put_render(
+            render_key("/photos/dropped.jpg", PreviewStage::Full),
+            image(32),
+        );
+        cache.mark_failed(viewport_key("/photos/dropped.jpg"));
+
+        let allowed: HashSet<PathBuf> = HashSet::from([kept.clone()]);
+        cache.prune(&allowed);
+
+        assert!(cache.has_source(&kept));
+        assert!(!cache.has_source(&dropped));
+        assert!(cache.has_render(&render_key("/photos/kept.jpg", PreviewStage::Full)));
+        assert!(!cache.has_render(&render_key("/photos/dropped.jpg", PreviewStage::Full)));
+        assert!(!cache.is_failed(&viewport_key("/photos/dropped.jpg")));
+        assert_eq!(cache.source_bytes, 64 * 64 * 4);
+        assert_eq!(cache.render_bytes, 32 * 32 * 4);
+    }
+
+    #[test]
+    fn set_limits_trims_the_cache_down_to_the_new_budget() {
+        let mut cache = PreviewCache::new(100 * MIB);
+        let paths: Vec<PathBuf> = (0..4)
+            .map(|index| PathBuf::from(format!("/photos/{index}.jpg")))
+            .collect();
+        for path in &paths {
+            cache.put_source(path.clone(), image(512));
+        }
+        assert_eq!(cache.source_cache.len(), 4);
+
+        cache.set_limits(2 * MIB);
+
+        assert!(cache.source_bytes <= cache.source_limit_bytes);
+        assert!(cache.source_cache.len() < 4);
     }
 }

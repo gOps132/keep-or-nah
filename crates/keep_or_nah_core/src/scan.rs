@@ -98,10 +98,8 @@ pub fn build_photo_groups(
     previewable: &[String],
 ) -> Vec<ScannedGroup> {
     let enabled_set: HashSet<String> = enabled.iter().map(|raw| raw.to_lowercase()).collect();
-    let previewable_set: HashSet<String> = previewable
-        .iter()
-        .map(|raw| raw.to_lowercase())
-        .collect();
+    let previewable_set: HashSet<String> =
+        previewable.iter().map(|raw| raw.to_lowercase()).collect();
 
     // Bucket by exact stem (case-sensitive), like Python's `setdefault` loop.
     let mut buckets: HashMap<String, Vec<Member>> = HashMap::new();
@@ -140,10 +138,7 @@ pub fn build_photo_groups(
         // Representative: previewable first, then extension, then filename.
         let representative = eligible
             .iter()
-            .min_by(|a, b| {
-                rank_member(a, &previewable_set)
-                    .cmp(&rank_member(b, &previewable_set))
-            })
+            .min_by(|a, b| rank_member(a, &previewable_set).cmp(&rank_member(b, &previewable_set)))
             .expect("eligible is non-empty")
             .path
             .clone();
@@ -157,11 +152,243 @@ pub fn build_photo_groups(
     groups
 }
 
-fn rank_member(member: &Member, previewable_set: &HashSet<String>) -> (bool, String, String, String) {
+fn rank_member(
+    member: &Member,
+    previewable_set: &HashSet<String>,
+) -> (bool, String, String, String) {
     (
         !previewable_set.contains(&member.suffix_lower),
         member.suffix_lower.clone(),
         member.lower_name.clone(),
         member.name.clone(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn write(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, b"fixture").expect("write fixture");
+        path
+    }
+
+    fn names(paths: &[PathBuf]) -> Vec<String> {
+        paths
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn extensions(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    /// True when the file system keeps two entries whose names differ only in
+    /// case. macOS and Windows fold case, Linux does not.
+    fn case_sensitive_file_system(dir: &Path) -> bool {
+        let upper = dir.join("CaseProbe");
+        let lower = dir.join("caseprobe");
+        fs::write(&upper, b"upper").unwrap();
+        fs::write(&lower, b"lower").unwrap();
+        let distinct = upper.exists()
+            && lower.exists()
+            && fs::read(&upper).unwrap() != fs::read(&lower).unwrap();
+        let _ = fs::remove_file(&upper);
+        let _ = fs::remove_file(&lower);
+        distinct
+    }
+
+    #[test]
+    fn discover_extensions_normalizes_case_and_sorts_ascending() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "b.JPG");
+        write(dir.path(), "a.jpeg");
+        write(dir.path(), "c.XMP");
+
+        assert_eq!(
+            discover_extensions(dir.path()),
+            vec![".jpeg".to_string(), ".jpg".to_string(), ".xmp".to_string()]
+        );
+    }
+
+    #[test]
+    fn discover_extensions_ignores_files_without_a_suffix() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "README");
+        write(dir.path(), ".hidden");
+        write(dir.path(), "photo.jpg");
+
+        assert_eq!(discover_extensions(dir.path()), vec![".jpg".to_string()]);
+    }
+
+    #[test]
+    fn discover_extensions_only_looks_at_direct_children() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "photo.jpg");
+        let nested = dir.path().join("nested");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("inside.png"), b"fixture").unwrap();
+
+        assert_eq!(discover_extensions(dir.path()), vec![".jpg".to_string()]);
+    }
+
+    #[test]
+    fn discover_extensions_of_a_missing_directory_is_empty() {
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("does-not-exist");
+
+        assert!(discover_extensions(&missing).is_empty());
+    }
+
+    #[test]
+    fn build_photo_groups_groups_files_that_share_a_stem() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "IMG.jpg");
+        write(dir.path(), "IMG.xmp");
+        write(dir.path(), "OTHER.jpg");
+
+        let groups = build_photo_groups(
+            dir.path(),
+            &extensions(&[".jpg", ".xmp"]),
+            &extensions(&[".jpg"]),
+        );
+
+        assert_eq!(groups.len(), 2);
+        let group = &groups[0];
+        assert_eq!(group.stem, "IMG");
+        assert_eq!(names(&group.members), vec!["IMG.jpg", "IMG.xmp"]);
+        assert_eq!(group.representative.file_name().unwrap(), "IMG.jpg");
+        assert_eq!(groups[1].stem, "OTHER");
+    }
+
+    #[test]
+    fn build_photo_groups_picks_the_previewable_member_as_representative() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "IMG.cr2");
+        write(dir.path(), "IMG.xmp");
+        write(dir.path(), "IMG.jpg");
+
+        let groups = build_photo_groups(
+            dir.path(),
+            &extensions(&[".cr2", ".jpg", ".xmp"]),
+            &extensions(&[".jpg"]),
+        );
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].representative.file_name().unwrap(), "IMG.jpg");
+    }
+
+    #[test]
+    fn build_photo_groups_falls_back_to_the_lowest_extension() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "IMG.xmp");
+        write(dir.path(), "IMG.cr2");
+
+        let groups =
+            build_photo_groups(dir.path(), &extensions(&[".cr2", ".xmp"]), &extensions(&[]));
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].representative.file_name().unwrap(), "IMG.cr2");
+    }
+
+    #[test]
+    fn build_photo_groups_skips_stems_without_an_enabled_member() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "IMG.jpg");
+        write(dir.path(), "NOTES.txt");
+
+        let groups = build_photo_groups(dir.path(), &extensions(&[".jpg"]), &extensions(&[".jpg"]));
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].stem, "IMG");
+    }
+
+    #[test]
+    fn build_photo_groups_keeps_disabled_members_in_the_group() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "IMG.jpg");
+        write(dir.path(), "IMG.txt");
+
+        let groups = build_photo_groups(dir.path(), &extensions(&[".jpg"]), &extensions(&[".jpg"]));
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(names(&groups[0].members), vec!["IMG.jpg", "IMG.txt"]);
+        assert_eq!(groups[0].representative.file_name().unwrap(), "IMG.jpg");
+    }
+
+    #[test]
+    fn build_photo_groups_treats_stems_case_sensitively() {
+        let dir = TempDir::new().unwrap();
+        if !case_sensitive_file_system(dir.path()) {
+            // The file system folds case, so two stems that differ only in
+            // case cannot live in the same directory.
+            return;
+        }
+        write(dir.path(), "IMG.jpg");
+        write(dir.path(), "img.jpg");
+
+        let groups = build_photo_groups(dir.path(), &extensions(&[".jpg"]), &extensions(&[".jpg"]));
+
+        assert_eq!(groups.len(), 2);
+        let stems: Vec<&str> = groups.iter().map(|group| group.stem.as_str()).collect();
+        assert_eq!(stems, vec!["IMG", "img"]);
+    }
+
+    #[test]
+    fn build_photo_groups_orders_groups_case_insensitively() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "beta.jpg");
+        write(dir.path(), "Alpha.jpg");
+        write(dir.path(), "gamma.jpg");
+
+        let groups = build_photo_groups(dir.path(), &extensions(&[".jpg"]), &extensions(&[".jpg"]));
+
+        let stems: Vec<&str> = groups.iter().map(|group| group.stem.as_str()).collect();
+        assert_eq!(stems, vec!["Alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn build_photo_groups_uses_pathlib_suffix_semantics() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "IMG.tar.gz");
+        write(dir.path(), "sidecar.xmp");
+
+        let groups = build_photo_groups(
+            dir.path(),
+            &extensions(&[".gz", ".xmp"]),
+            &extensions(&[".gz"]),
+        );
+
+        assert_eq!(groups.len(), 2);
+        let stems: Vec<&str> = groups.iter().map(|group| group.stem.as_str()).collect();
+        assert_eq!(stems, vec!["IMG.tar", "sidecar"]);
+    }
+
+    #[test]
+    fn build_photo_groups_ignores_symlinks_and_directories() {
+        let dir = TempDir::new().unwrap();
+        let target = write(dir.path(), "IMG.jpg");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, dir.path().join("LINK.jpg")).unwrap();
+        fs::create_dir(dir.path().join("FOLDER.jpg")).unwrap();
+
+        let groups = build_photo_groups(dir.path(), &extensions(&[".jpg"]), &extensions(&[".jpg"]));
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].stem, "IMG");
+        assert_eq!(names(&groups[0].members), vec!["IMG.jpg"]);
+    }
+
+    #[test]
+    fn build_photo_groups_of_a_missing_directory_is_empty() {
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("does-not-exist");
+
+        let groups = build_photo_groups(&missing, &extensions(&[".jpg"]), &extensions(&[".jpg"]));
+
+        assert!(groups.is_empty());
+    }
 }

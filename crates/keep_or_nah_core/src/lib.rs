@@ -217,10 +217,7 @@ fn resize_image_rgba(
 }
 
 #[pyfunction]
-fn discover_photo_extensions(
-    py: Python<'_>,
-    source_dir: &str,
-) -> Vec<String> {
+fn discover_photo_extensions(py: Python<'_>, source_dir: &str) -> Vec<String> {
     // GIL released for the whole filesystem scan.
     py.allow_threads(|| scan::discover_extensions(Path::new(source_dir)))
 }
@@ -292,4 +289,35 @@ fn keep_or_nah_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fileops::remove_verified_file, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_core_modules_are_reachable() {
+        // The Python surface is a thin shell around these modules, so a missing
+        // module would silently remove a capability from the native core.
+        let rgba = vec![0u8; 4 * 4 * 4];
+        assert!(analysis::compute_sharpness(&rgba, 4, 4) >= 0.0);
+        assert_eq!(analysis::compute_image_hash(&rgba, 4, 4), 0);
+        assert!(scan::discover_extensions(Path::new("/definitely/not/here")).is_empty());
+        assert!(scan::build_photo_groups(Path::new("/definitely/not/here"), &[], &[]).is_empty());
+        assert_eq!(cache::PreviewCache::new(1024).source_limit_bytes, 634);
+        assert_eq!(
+            image_loader::PreviewStage::Fast,
+            image_loader::PreviewStage::Fast
+        );
+        assert!(pipeline::Pipeline::new(1, 64, 1)
+            .get_best_preview(Path::new("/nope"))
+            .image
+            .is_none());
+        assert!(fileops::identity_of(Path::new("/definitely/not/here")).is_err());
+    }
+
+    #[test]
+    fn the_reported_version_is_the_package_version() {
+        assert_eq!(version(), env!("CARGO_PKG_VERSION"));
+    }
 }

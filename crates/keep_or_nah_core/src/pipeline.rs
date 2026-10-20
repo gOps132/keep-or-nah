@@ -101,7 +101,7 @@ impl Pipeline {
         let task_notifier = Arc::new(Condvar::new());
         let (completed_tx, completed_rx) = unbounded();
 
-        let num_workers = max_workers.max(1).min(4);
+        let num_workers = max_workers.clamp(1, 4);
         let mut workers = Vec::with_capacity(num_workers);
 
         for index in 0..num_workers {
@@ -186,11 +186,21 @@ impl Pipeline {
         state.window_radius = (state.base_window_radius.max(cache_budget_mb / 96)).min(12);
     }
 
-    pub fn start_preview_request(&self, path: &Path, active_index: usize, progressive: bool) -> u64 {
+    pub fn start_preview_request(
+        &self,
+        path: &Path,
+        active_index: usize,
+        progressive: bool,
+    ) -> u64 {
         let request_id = self.sequence.fetch_add(1, AtomicOrdering::Relaxed);
         let (viewport, generation, window_radius, paths_len) = {
             let state = self.state.read();
-            (state.viewport, state.generation, state.window_radius, state.paths.len())
+            (
+                state.viewport,
+                state.generation,
+                state.window_radius,
+                state.paths.len(),
+            )
         };
 
         if viewport.0 < 8 || viewport.1 < 8 {
@@ -440,8 +450,12 @@ impl Pipeline {
             // Check if still current
             let is_current = {
                 let mut s = state.write();
-                s.pending_tasks
-                    .remove(&(task.generation, kind_id, task.path.clone(), task.viewport));
+                s.pending_tasks.remove(&(
+                    task.generation,
+                    kind_id,
+                    task.path.clone(),
+                    task.viewport,
+                ));
                 s.generation == task.generation && s.paths_set.contains(&task.path)
             };
 
@@ -494,11 +508,15 @@ impl Pipeline {
                         continue;
                     }
 
-                    let ext = task.path.extension().and_then(|s| s.to_str()).map(|s| s.to_lowercase());
-                    let is_known_extension = match ext.as_deref() {
-                        Some("bmp" | "gif" | "jpeg" | "jpg" | "png" | "tif" | "tiff" | "webp") => true,
-                        _ => false,
-                    };
+                    let ext = task
+                        .path
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_lowercase());
+                    let is_known_extension = matches!(
+                        ext.as_deref(),
+                        Some("bmp" | "gif" | "jpeg" | "jpg" | "png" | "tif" | "tiff" | "webp")
+                    );
 
                     if !is_known_extension {
                         {
@@ -528,10 +546,7 @@ impl Pipeline {
                             arc
                         }
                         Err(err) => {
-                            let is_unsupported = match &err {
-                                image::ImageError::Unsupported(_) => true,
-                                _ => false,
-                            };
+                            let is_unsupported = matches!(&err, image::ImageError::Unsupported(_));
                             {
                                 let mut s = state.write();
                                 if is_unsupported {
@@ -590,5 +605,237 @@ impl Pipeline {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{Rgba, RgbaImage};
+    use std::collections::BinaryHeap;
+    use std::time::{Duration, Instant};
+    use tempfile::TempDir;
+
+    fn task(priority: u8, sequence: u64) -> PreviewTask {
+        PreviewTask {
+            priority: (priority, 0, sequence),
+            sequence,
+            kind: TaskKind::PrefetchFull,
+            path: PathBuf::from("/photos/IMG.jpg"),
+            viewport: (100, 100),
+            request_id: sequence,
+            generation: 0,
+        }
+    }
+
+    fn write_png(dir: &Path, name: &str, width: u32, height: u32) -> PathBuf {
+        let path = dir.join(name);
+        let image = RgbaImage::from_pixel(width, height, Rgba([10, 20, 30, 255]));
+        image::DynamicImage::ImageRgba8(image)
+            .save(&path)
+            .expect("write png fixture");
+        path
+    }
+
+    /// Poll until the pipeline has a full quality preview for `path`.
+    fn wait_for_full_preview(pipeline: &Pipeline, path: &Path) -> Option<PreviewLookup> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            let lookup = pipeline.get_best_preview(path);
+            if lookup.stage == Some(PreviewStage::Full) {
+                return Some(lookup);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        None
+    }
+
+    /// Poll until the pipeline reports the source of `path` as loaded.
+    fn wait_for_source(pipeline: &Pipeline, path: &Path) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            if pipeline.has_source(path) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        false
+    }
+
+    #[test]
+    fn tasks_are_popped_in_priority_order() {
+        let mut heap = BinaryHeap::new();
+        heap.push(task(2, 0));
+        heap.push(task(0, 1));
+        heap.push(task(1, 2));
+
+        assert_eq!(heap.pop().unwrap().priority.0, 0);
+        assert_eq!(heap.pop().unwrap().priority.0, 1);
+        assert_eq!(heap.pop().unwrap().priority.0, 2);
+    }
+
+    #[test]
+    fn equal_priorities_are_ordered_by_sequence() {
+        let mut heap = BinaryHeap::new();
+        heap.push(task(1, 7));
+        heap.push(task(1, 3));
+
+        assert_eq!(heap.pop().unwrap().sequence, 3);
+        assert_eq!(heap.pop().unwrap().sequence, 7);
+    }
+
+    #[test]
+    fn request_ids_increase_with_every_request() {
+        let pipeline = Pipeline::new(2, 256, 1);
+        pipeline.set_viewport(100, 100);
+
+        let first = pipeline.start_preview_request(Path::new("/photos/IMG.jpg"), 0, true);
+        let second = pipeline.start_preview_request(Path::new("/photos/IMG.jpg"), 0, true);
+
+        assert!(second > first);
+        pipeline.shutdown();
+    }
+
+    #[test]
+    fn a_viewport_that_is_too_small_produces_no_preview() {
+        let pipeline = Pipeline::new(2, 256, 1);
+        let path = PathBuf::from("/photos/IMG.jpg");
+        pipeline.reset(vec![path.clone()]);
+        pipeline.set_viewport(4, 4);
+
+        pipeline.start_preview_request(&path, 0, true);
+        let lookup = pipeline.get_best_preview(&path);
+
+        assert!(lookup.image.is_none());
+        assert!(lookup.stage.is_none());
+        assert!(!lookup.failed);
+        assert!(!lookup.unavailable);
+        pipeline.shutdown();
+    }
+
+    #[test]
+    fn a_path_outside_the_session_has_no_preview() {
+        let pipeline = Pipeline::new(2, 256, 1);
+        let known = PathBuf::from("/photos/KNOWN.jpg");
+        let unknown = PathBuf::from("/photos/UNKNOWN.jpg");
+        pipeline.reset(vec![known]);
+        pipeline.set_viewport(100, 100);
+
+        let lookup = pipeline.get_best_preview(&unknown);
+
+        assert!(lookup.image.is_none());
+        assert!(!lookup.failed);
+        assert!(!lookup.unavailable);
+        pipeline.shutdown();
+    }
+
+    #[test]
+    fn reset_replaces_the_paths_of_the_session() {
+        let pipeline = Pipeline::new(2, 256, 1);
+        let first = PathBuf::from("/photos/FIRST.jpg");
+        let second = PathBuf::from("/photos/SECOND.jpg");
+        pipeline.set_viewport(100, 100);
+        pipeline.reset(vec![first.clone()]);
+        pipeline.reset(vec![second.clone()]);
+
+        assert!(pipeline.get_best_preview(&first).image.is_none());
+        assert!(pipeline.get_best_preview(&second).image.is_none());
+        pipeline.shutdown();
+    }
+
+    #[test]
+    fn the_pipeline_renders_a_full_preview_of_a_photo() {
+        let dir = TempDir::new().unwrap();
+        let path = write_png(dir.path(), "photo.png", 120, 80);
+        let pipeline = Pipeline::new(2, 256, 1);
+        pipeline.reset(vec![path.clone()]);
+        pipeline.set_viewport(60, 60);
+
+        let request_id = pipeline.start_preview_request(&path, 0, true);
+        let lookup = wait_for_full_preview(&pipeline, &path).expect("a full preview is rendered");
+
+        assert_eq!(lookup.stage, Some(PreviewStage::Full));
+        assert!(!lookup.failed);
+        assert!(!lookup.unavailable);
+        let image = lookup.image.expect("the preview carries pixels");
+        assert_eq!((image.width, image.height), (60, 40));
+        assert_eq!(image.rgba.len(), 60 * 40 * 4);
+
+        assert!(wait_for_source(&pipeline, &path));
+        assert!(pipeline.get_cached_source(&path).is_some());
+
+        let completed = pipeline.drain_completed();
+        assert!(
+            completed.iter().any(|entry| entry.stage == "full"
+                && entry.path == path
+                && entry.request_id == request_id),
+            "the full render is reported as completed: {completed:?}"
+        );
+        pipeline.shutdown();
+    }
+
+    #[test]
+    fn an_unreadable_photo_is_reported_as_failed() {
+        let dir = TempDir::new().unwrap();
+        // A file that carries a known extension but is not a decodable image.
+        let path = dir.path().join("broken.png");
+        std::fs::write(&path, b"not an image").unwrap();
+        let pipeline = Pipeline::new(2, 256, 1);
+        pipeline.reset(vec![path.clone()]);
+        pipeline.set_viewport(100, 100);
+
+        pipeline.start_preview_request(&path, 0, true);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut failed = false;
+        while Instant::now() < deadline && !failed {
+            failed = pipeline.get_best_preview(&path).failed;
+            if !failed {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        assert!(failed, "a broken photo is reported as failed");
+        pipeline.shutdown();
+    }
+
+    #[test]
+    fn an_unknown_extension_is_reported_as_unavailable() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("sidecar.xmp");
+        std::fs::write(&path, b"<xmp/>").unwrap();
+        let pipeline = Pipeline::new(2, 256, 1);
+        pipeline.reset(vec![path.clone()]);
+        pipeline.set_viewport(100, 100);
+
+        pipeline.start_preview_request(&path, 0, true);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut unavailable = false;
+        while Instant::now() < deadline && !unavailable {
+            unavailable = pipeline.get_best_preview(&path).unavailable;
+            if !unavailable {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        assert!(
+            unavailable,
+            "an unknown extension is reported as unavailable"
+        );
+        pipeline.shutdown();
+    }
+
+    #[test]
+    fn drain_completed_is_empty_without_work() {
+        let pipeline = Pipeline::new(2, 256, 1);
+
+        assert!(pipeline.drain_completed().is_empty());
+        pipeline.shutdown();
+    }
+
+    #[test]
+    fn shutdown_can_be_called_twice() {
+        let pipeline = Pipeline::new(2, 256, 1);
+        pipeline.shutdown();
+        pipeline.shutdown();
     }
 }
