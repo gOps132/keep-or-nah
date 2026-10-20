@@ -163,16 +163,27 @@ jobs:
       # dependency and the standalone builds do not bundle it. The GUI tests
       # import tkinter through customtkinter, so on Linux the virtualenv is
       # built from the system interpreter, which can have Tk.
+      # The self-hosted fleet runs as a user without passwordless sudo, so
+      # the check comes first: if the interpreter already has Tk, nothing
+      # needs to be installed and no privilege is needed. Only when Tk is
+      # missing is an install attempted, and it is attempted with a
+      # non-interactive sudo so the step fails fast with a clear message
+      # rather than hanging on a password prompt.
       - name: Install Tk for the system Python
         if: matrix.system-python
         run: |
-          # A self-hosted container commonly runs as root and has no sudo.
-          if [ "$(id -u)" -eq 0 ]; then
+          if /usr/bin/python3 -c "import tkinter" 2>/dev/null; then
+            echo "the system python already has Tk"
+          elif [ "$(id -u)" -eq 0 ]; then
             apt-get update
             apt-get install -y python3-tk
+          elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            sudo -n apt-get update
+            sudo -n apt-get install -y python3-tk
           else
-            sudo apt-get update
-            sudo apt-get install -y python3-tk
+            echo "::error::the system python has no Tk, and this runner cannot install it"
+            echo "::error::install python3-tk on the runner image, or give the runner user passwordless sudo"
+            exit 1
           fi
           /usr/bin/python3 -c "import tkinter; print('system tkinter', tkinter.TkVersion)"
           /usr/bin/python3 -c "
