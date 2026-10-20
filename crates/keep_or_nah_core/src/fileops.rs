@@ -468,12 +468,50 @@ fn stage_finish(
     {
         let _ = metadata;
     }
-    fs::File::open(staged)
-        .and_then(|handle| handle.sync_all())
-        .map_err(|error| FileOpError::Io {
-            path: staged.to_string_lossy().into_owned(),
-            message: error.to_string(),
-        })
+    sync_staged(staged).map_err(|error| FileOpError::Io {
+        path: staged.to_string_lossy().into_owned(),
+        message: error.to_string(),
+    })
+}
+
+/// Flush the staged file to disk.
+///
+/// `sync_all` is `fsync` on Unix, which works on a descriptor that was
+/// opened for reading. On Windows it is `FlushFileBuffers`, and that call
+/// needs a handle that was opened for writing: a handle opened for reading
+/// only fails with "Access is denied", which is why the Windows path opens
+/// the staged file for both.
+///
+/// The staged file is ours, but `fs::copy` carries the source's attributes
+/// over, so it can be read-only, and a read-only file cannot be opened for
+/// writing either. The read-only attribute is therefore lifted for the
+/// flush and put back afterwards.
+#[cfg(windows)]
+fn sync_staged(staged: &Path) -> std::io::Result<()> {
+    let was_readonly = fs::metadata(staged)?.permissions().readonly();
+    if was_readonly {
+        let mut permissions = fs::metadata(staged)?.permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(staged, permissions)?;
+    }
+    let result = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(staged)
+        .and_then(|handle| handle.sync_all());
+    if was_readonly {
+        let mut permissions = fs::metadata(staged)?.permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(staged, permissions)?;
+    }
+    result
+}
+
+/// Flush the staged file to disk. See the Windows variant for why the two
+/// platforms differ.
+#[cfg(not(windows))]
+fn sync_staged(staged: &Path) -> std::io::Result<()> {
+    fs::File::open(staged).and_then(|handle| handle.sync_all())
 }
 
 // ---------------------------------------------------------------------------
