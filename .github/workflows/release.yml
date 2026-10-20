@@ -105,11 +105,21 @@ jobs:
       - name: Build the macOS app bundle
         run: uv run python scripts/build.py macos
 
+      # The bundle is uploaded as one archive. Uploading the directory's
+      # contents instead would attach every file inside the bundle to the
+      # release individually, which is hundreds of assets and a rate limit
+      # waiting to happen.
+      - name: Package the macOS app bundle
+        run: |
+          cd dist/macos
+          zip -r "$GITHUB_WORKSPACE/Keep-or-Nah-macos.zip" "Keep or Nah.app" -x '*.DS_Store'
+          cd "$GITHUB_WORKSPACE"
+
       - name: Upload the macOS app bundle
         uses: actions/upload-artifact@v4
         with:
           name: keep-or-nah-macos
-          path: dist/macos/
+          path: Keep-or-Nah-macos.zip
           if-no-files-found: error
 
   windows:
@@ -147,11 +157,17 @@ jobs:
       - name: Build the Windows executable
         run: uv run python scripts/build.py windows
 
+      # The executable is uploaded as one archive, for the same reason the
+      # macOS bundle is.
+      - name: Package the Windows executable
+        shell: pwsh
+        run: Compress-Archive -Path dist/windows/KeepOrNah.exe -DestinationPath Keep-or-Nah-windows.zip
+
       - name: Upload the Windows executable
         uses: actions/upload-artifact@v4
         with:
           name: keep-or-nah-windows
-          path: dist/windows/
+          path: Keep-or-Nah-windows.zip
           if-no-files-found: error
 
   publish:
@@ -175,13 +191,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: keep-or-nah-macos
-          path: dist/macos
+          path: .
 
       - name: Download the Windows artifact
         uses: actions/download-artifact@v4
         with:
           name: keep-or-nah-windows
-          path: dist/windows
+          path: .
 
       - name: Collect the release notes
         run: |
@@ -211,5 +227,5 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           body_path: release-notes.md
           files: |
-            dist/macos/**
-            dist/windows/**
+            Keep-or-Nah-macos.zip
+            Keep-or-Nah-windows.zip
