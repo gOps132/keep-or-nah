@@ -1,0 +1,149 @@
+name: CI
+
+# The gate that every pull request must pass. It calls the same scripts a
+# developer runs locally (scripts/verify.sh), so a green CI run and a green
+# local run are the same set of commands. Do not duplicate the checks here.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# The verification scripts are bash. Windows runners default to PowerShell,
+# which cannot execute them, so every step runs under bash everywhere.
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_PYTHON: "3.12"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Sync the Python environment
+        run: uv sync --all-groups
+
+      - name: Python lint
+        run: scripts/verify.sh --stage lint-python
+
+      - name: Python format
+        run: scripts/verify.sh --stage format-python
+
+      - name: Rust format
+        run: scripts/verify.sh --stage format-rust
+
+      - name: Rust clippy
+        run: scripts/verify.sh --stage lint-rust
+
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "crates/keep_or_nah_core"
+
+      - name: Sync the Python environment
+        run: uv sync --all-groups
+
+      - name: Rust tests
+        run: scripts/verify.sh --stage test-rust
+
+  test:
+    name: test (${{ matrix.os }}, python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.12"]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "crates/keep_or_nah_core"
+
+      - name: Sync the Python environment
+        run: uv sync --all-groups
+
+      - name: Build the native module
+        run: scripts/verify.sh --stage build
+
+      - name: Python tests
+        run: scripts/verify.sh --stage test-python
+
+  artifacts:
+    name: artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Sync the Python environment
+        run: uv sync --all-groups
+
+      - name: Check the repository has no stray build artifacts
+        run: scripts/agent/check-artifacts.sh
