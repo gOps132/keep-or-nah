@@ -7,6 +7,12 @@ and the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.0] - 2026-10-21
+
+The revamp, and the engineering process that keeps it honest.
+
 ### Added
 
 - Deterministic verification gate: `scripts/verify.sh` with per-role hooks
@@ -43,6 +49,23 @@ and the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The file identity could not tell a replaced file from the file it
+  replaced on Linux.** The identity was the device and the inode, and Linux
+  recycles inode numbers, so a file created at a path whose file was just
+  unlinked could carry the inode of the file it replaced. The app could
+  delete a file it did not own — the exact failure the Undo Journal exists
+  to prevent. The identity now carries the size and the change time, which
+  are not recycled. See ADR-0007.
+- **The Rust crate never compiled on stable Windows.** The file index came
+  from a nightly-only API. It now reads the volume serial number and the
+  file index from the Windows API.
+- **A staged file could never be flushed on Windows.** `sync_all` is
+  `FlushFileBuffers` there, and it needs a handle that was opened for
+  writing. Every staged file operation failed on Windows.
+- **A session saved before the identity was extended lost its history on
+  Windows.** The legacy record and the native identity are different
+  numbers in different namespaces, and the legacy record is now verified in
+  the namespace it was recorded in.
 - `photo_session.py` referenced `Callable` and `threading` in annotations
   without importing them.
 - The preview pipeline used bare `assert` statements for control flow, which
@@ -53,9 +76,6 @@ and the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - The crate could not be linted: `cargo fmt --check` and `cargo clippy` were
   both failing on the pre-existing code, invisibly, because the crate could
   not link.
-
-## [0.1.0] - Unreleased
-
-Initial release of the revamped application: Photo Groups, staged triage with
-batch commit, split comparison, burst clustering, the native Rust core, and the
-verified undo journal.
+- `.pytest_cache/` and `.ruff_cache/` were not in `.gitignore`. They did not
+  show up in `git status` only because pytest and ruff each write a
+  `.gitignore` inside their own cache directory — a convention, not a rule.
