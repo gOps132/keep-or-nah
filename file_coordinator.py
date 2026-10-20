@@ -43,7 +43,7 @@ class FileCoordinator:
         file_identity.validate_basename(name)
 
     @staticmethod
-    def _path_identity(path: Path) -> tuple[int, int]:
+    def _path_identity(path: Path) -> tuple[int, ...]:
         return file_identity.path_identity(path)
 
     @staticmethod
@@ -55,12 +55,20 @@ class FileCoordinator:
         file_identity.require_directory_identity(path, expected_identity)
 
     @classmethod
-    def _require_owned_path(cls, path: Path, expected_identity: tuple[int, int]) -> None:
+    def _require_owned_path(cls, path: Path, expected_identity: tuple[int, ...]) -> None:
         file_identity.require_owned_path(path, expected_identity)
 
     @classmethod
-    def _remove_owned_path(cls, path: Path, expected_identity: tuple[int, int]) -> None:
+    def _remove_owned_path(cls, path: Path, expected_identity: tuple[int, ...]) -> None:
         file_identity.remove_owned_path(path, expected_identity)
+
+    @classmethod
+    def _published_identity(cls, path: Path, recorded_identity: tuple[int, ...]) -> tuple[int, ...]:
+        return file_identity.published_identity(path, recorded_identity)
+
+    @classmethod
+    def _remove_published_entry(cls, path: Path, recorded_identity: tuple[int, ...]) -> None:
+        file_identity.remove_published_entry(path, recorded_identity)
 
     @staticmethod
     def _validate_destination_parent(path: Path, destination_root: Path) -> None:
@@ -113,9 +121,9 @@ class FileCoordinator:
         destination: Path,
         destination_root: Path,
         *,
-        expected_source_identity: tuple[int, int] | None = None,
+        expected_source_identity: tuple[int, ...] | None = None,
         expected_destination_root_identity: tuple[int, int] | None = None,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, ...]:
         if expected_destination_root_identity is None:
             expected_destination_root_identity = self._directory_identity(destination_root)
         self._require_directory_identity(destination_root, expected_destination_root_identity)
@@ -127,23 +135,34 @@ class FileCoordinator:
         staged = stage_fn(
             str(source),
             str(destination_root),
-            expected_dev=expected_source_identity[0]
-            if expected_source_identity is not None
-            else None,
-            expected_ino=expected_source_identity[1]
-            if expected_source_identity is not None
-            else None,
+            **file_identity.expected_identity_arguments(expected_source_identity),
         )
         temporary_path = Path(staged.path)
-        temporary_identity = (staged.dev, staged.ino)
-        published_identity: tuple[int, int] | None = None
+        temporary_identity = self._path_identity(temporary_path)
+        published_identity: tuple[int, ...] | None = None
         temporary_consumed = False
         try:
             self._require_owned_path(temporary_path, temporary_identity)
             self._require_directory_identity(destination_root, expected_destination_root_identity)
             self._validate_destination(destination, destination_root)
             temporary_consumed = self._publish_staged(temporary_path, destination)
-            published_identity = temporary_identity
+            if not temporary_consumed:
+                # The staged entry is still there under its own name, and
+                # the link changed its identity with it.
+                temporary_identity = self._path_identity(temporary_path)
+            # The destination has to hold the file that was staged. The
+            # change time of that file moved with the publish, so the
+            # components a publish cannot change decide it. The identity
+            # is only adopted once the check passes: an identity read
+            # from a path that holds somebody else's file must never
+            # become the identity this operation owns.
+            candidate_identity = self._path_identity(destination)
+            if (
+                candidate_identity[: file_identity.PUBLISHED_COMPONENT_COUNT]
+                != temporary_identity[: file_identity.PUBLISHED_COMPONENT_COUNT]
+            ):
+                raise OSError(f"Destination does not hold the published file: {destination}")
+            published_identity = candidate_identity
             self._require_owned_path(destination, published_identity)
             self._require_directory_identity(destination_root, expected_destination_root_identity)
             self._validate_destination_parent(destination, destination_root)
@@ -156,7 +175,7 @@ class FileCoordinator:
                     cleanup_errors.append(cleanup_error)
             if not temporary_consumed:
                 try:
-                    self._remove_owned_path(temporary_path, temporary_identity)
+                    self._remove_published_entry(temporary_path, temporary_identity)
                 except Exception as cleanup_error:
                     cleanup_errors.append(cleanup_error)
             if cleanup_errors:
@@ -168,6 +187,10 @@ class FileCoordinator:
         else:
             if not temporary_consumed:
                 self._remove_owned_path(temporary_path, temporary_identity)
+                # Removing the staged entry changed the link count of the
+                # published file, and the link count is part of its change
+                # time, so the published identity is read again.
+                published_identity = self._published_identity(destination, published_identity)
             return published_identity
 
     def _move_path_exclusive(
@@ -176,9 +199,9 @@ class FileCoordinator:
         destination: Path,
         destination_root: Path,
         *,
-        expected_source_identity: tuple[int, int] | None = None,
+        expected_source_identity: tuple[int, ...] | None = None,
         expected_destination_root_identity: tuple[int, int] | None = None,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, ...]:
         if expected_source_identity is None:
             expected_source_identity = self._path_identity(source)
         self._require_owned_path(source, expected_source_identity)
@@ -311,9 +334,8 @@ class FileCoordinator:
             for operation in record.files:
                 cls._validate_destination_parent(operation.destination, destination_root)
                 recorded_destination = destination_root / operation.destination.name
-                if (
-                    cls._path_occupied(recorded_destination)
-                    and cls._path_identity(recorded_destination) != operation.destination_identity
+                if cls._path_occupied(recorded_destination) and not file_identity.identity_matches(
+                    cls._path_identity(recorded_destination), operation.destination_identity
                 ):
                     raise PhotoSessionError(
                         "A recorded destination identity no longer matches the action-owned file."
@@ -332,7 +354,7 @@ class FileCoordinator:
         record: ActionRecord,
         destination_root: Path,
         source_dir: Path | None,
-        on_refresh: Callable[[ActionRecord, dict[FileOperation, tuple[int, int]]], None],
+        on_refresh: Callable[[ActionRecord, dict[FileOperation, tuple[int, ...]]], None],
     ) -> None:
         if source_dir is None:
             raise PhotoSessionError(
@@ -341,7 +363,7 @@ class FileCoordinator:
         source_root = source_dir.resolve(strict=True)
         source_root_identity = self._directory_identity(source_root)
         destination_root_identity = self._directory_identity(destination_root)
-        pending: list[tuple[FileOperation, tuple[int, int]]] = []
+        pending: list[tuple[FileOperation, tuple[int, ...]]] = []
         for operation in reversed(record.files):
             recorded_destination = destination_root / operation.destination.name
             source_occupied = self._path_occupied(operation.source)
@@ -361,7 +383,7 @@ class FileCoordinator:
                     "A moved group file is missing, so the last action cannot be undone."
                 )
 
-        completed: list[tuple[FileOperation, tuple[int, int]]] = []
+        completed: list[tuple[FileOperation, tuple[int, ...]]] = []
         try:
             for operation, destination_identity in pending:
                 restored_identity = self._move_path_exclusive(
@@ -374,7 +396,7 @@ class FileCoordinator:
                 completed.append((operation, restored_identity))
         except Exception as primary_error:
             rollback_errors: list[BaseException] = []
-            identity_updates: dict[FileOperation, tuple[int, int]] = {}
+            identity_updates: dict[FileOperation, tuple[int, ...]] = {}
             for operation, restored_identity in reversed(completed):
                 try:
                     identity_updates[operation] = self._move_path_exclusive(
@@ -399,10 +421,10 @@ class FileCoordinator:
         record: ActionRecord,
         destination_root: Path,
         partial_copy_undo: set[FileOperation],
-        on_refresh: Callable[[ActionRecord, dict[FileOperation, tuple[int, int]]], None],
+        on_refresh: Callable[[ActionRecord, dict[FileOperation, tuple[int, ...]]], None],
     ) -> None:
         destination_root_identity = self._directory_identity(destination_root)
-        pending: list[tuple[FileOperation, tuple[int, int]]] = []
+        pending: list[tuple[FileOperation, tuple[int, ...]]] = []
         for operation in reversed(record.files):
             recorded_destination = destination_root / operation.destination.name
             if self._path_occupied(recorded_destination):
@@ -423,7 +445,7 @@ class FileCoordinator:
                 partial_copy_undo.add(operation)
         except Exception as primary_error:
             rollback_errors: list[BaseException] = []
-            identity_updates: dict[FileOperation, tuple[int, int]] = {}
+            identity_updates: dict[FileOperation, tuple[int, ...]] = {}
             for operation in reversed(completed):
                 try:
                     identity_updates[operation] = self._copy_path_exclusive(

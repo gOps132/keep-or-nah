@@ -333,16 +333,54 @@ class RustFileOpsTests(unittest.TestCase):
     def test_remove_verified_file_deletes_matching_identity_only(self) -> None:
         path = self.write_source("IMG.jpg", b"raw")
         identity = keep_or_nah_core.file_identity(str(path))
-        self.assertEqual(len(identity), 2)
+        self.assertEqual(len(identity), 5)
 
-        keep_or_nah_core.remove_verified_file(str(path), identity[0], identity[1])
+        keep_or_nah_core.remove_verified_file(str(path), *identity)
         self.assertFalse(path.exists())
 
         replacement = self.root / "IMG.jpg"
         replacement.write_bytes(b"replacement")
         with self.assertRaises(OSError):
-            keep_or_nah_core.remove_verified_file(str(replacement), identity[0], identity[1])
+            keep_or_nah_core.remove_verified_file(str(replacement), *identity)
         self.assertTrue(replacement.exists())
+
+    def test_remove_verified_file_refuses_a_replacement_of_the_same_size(self) -> None:
+        """A replacement is not the file, even when it carries the same size.
+
+        The device and the inode are recycled by the file system, so they
+        cannot tell a replacement from the file it replaced. The size and
+        the change time are not recycled, and the change time of a
+        replacement is the moment it was created.
+        """
+        import time
+
+        path = self.write_source("IMG.jpg", b"raw")
+        identity = keep_or_nah_core.file_identity(str(path))
+        time.sleep(0.02)
+        path.unlink()
+        path.write_bytes(b"raw")
+
+        with self.assertRaises(OSError):
+            keep_or_nah_core.remove_verified_file(str(path), *identity)
+        self.assertTrue(path.exists())
+
+    def test_remove_verified_file_accepts_a_legacy_identity(self) -> None:
+        """A session saved before the identity was extended stays usable."""
+        path = self.write_source("IMG.jpg", b"raw")
+        identity = keep_or_nah_core.file_identity(str(path))
+
+        keep_or_nah_core.remove_verified_file(str(path), identity[0], identity[1])
+
+        self.assertFalse(path.exists())
+
+    def test_remove_verified_file_refuses_a_half_recorded_identity(self) -> None:
+        """A record that carries some of the components is not comparable."""
+        path = self.write_source("IMG.jpg", b"raw")
+        identity = keep_or_nah_core.file_identity(str(path))
+
+        with self.assertRaises(OSError):
+            keep_or_nah_core.remove_verified_file(str(path), identity[0], identity[1], identity[2])
+        self.assertTrue(path.exists())
 
     def test_file_identity_refuses_symlinks_and_directories(self) -> None:
         import os
@@ -357,10 +395,12 @@ class RustFileOpsTests(unittest.TestCase):
             keep_or_nah_core.file_identity(str(link))
         with self.assertRaises(OSError):
             keep_or_nah_core.file_identity(str(self.root))
-        self.assertEqual(
-            tuple(keep_or_nah_core.file_identity(str(real))),
-            (os.stat(real).st_dev, os.stat(real).st_ino),
-        )
+        identity = tuple(keep_or_nah_core.file_identity(str(real)))
+        real_stat = os.stat(real)
+        self.assertEqual(len(identity), 5)
+        self.assertEqual(identity[:2], (real_stat.st_dev, real_stat.st_ino))
+        self.assertEqual(identity[2], real_stat.st_size)
+        self.assertEqual(identity[3], int(real_stat.st_ctime))
 
 
 class RustGroupingSessionIntegrationTests(unittest.TestCase):

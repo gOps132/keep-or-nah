@@ -74,6 +74,37 @@ floor with it. A mismatch is a packaging bug, not a cosmetic difference —
 the artifact would claim compatibility with interpreters the project has
 never been tested against.
 
+### The file identity has five components, and the crate builds on stable Rust
+
+The native core refuses to remove a file that no longer owns the identity it
+recorded for it. That identity is the device, the inode, the size, and the
+change time of the inode (ADR-0007). The device and the inode alone are not
+enough: filesystems recycle inode numbers, so a replacement can carry the
+inode of the file it replaced.
+
+Two things about it are easy to break by accident:
+
+- **A recorded identity is compared on the components it records.** A session
+  saved before the identity was extended records the device and the inode
+  only, and it is verified under exactly the guarantee it was recorded under.
+  Do not reject a legacy record, and do not compare components the record
+  does not carry: a photographer's pending session must not be discarded over
+  the shape of its own record.
+- **The crate builds on stable Rust on every platform, including Windows.**
+  The Windows identity needs the volume serial number and the 64-bit file
+  index, which the stable `std::os::windows::fs::MetadataExt` cannot read:
+  those methods are still behind the unstable `windows_by_handle` feature.
+  The crate asks the Windows API for them through the Windows-only
+  `windows-sys` dependency. A platform-specific code path that is never
+  compiled is a code path that is broken: check it with
+  `cargo check --target x86_64-pc-windows-msvc` before claiming it works.
+
+The change time of an inode moves when the application publishes a file,
+because publishing changes the link count of the inode. The identity of a
+published file is therefore read after the publication is complete, and the
+components a publication cannot change decide whether a path still holds the
+file that was published.
+
 ## Roles
 
 ### Implementer

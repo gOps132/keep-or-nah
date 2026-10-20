@@ -728,6 +728,68 @@ class PhotoSessionGroupTests(unittest.TestCase):
         self.assertEqual((real_keep / "IMG.jpg").read_bytes(), photo.read_bytes())
         self.assertEqual(list(outside.iterdir()), [])
 
+    def test_the_recorded_identity_carries_more_than_the_device_and_the_inode(self):
+        self.write("IMG.cr3", b"raw")
+        session = self.make_session()
+        session.load_queue()
+        result = session.decide("keep")
+
+        identity = result.files[0].destination_identity
+
+        self.assertIsNotNone(identity)
+        self.assertEqual(len(identity), 5)
+        published = result.files[0].destination.stat()
+        self.assertEqual(identity[:2], (published.st_dev, published.st_ino))
+        self.assertEqual(identity[2], published.st_size)
+        self.assertGreater(identity[3], 0)
+        self.assertGreaterEqual(identity[4], 0)
+        self.assertLess(identity[4], 1_000_000_000)
+
+    def test_a_session_saved_with_a_legacy_identity_is_still_undoable(self):
+        """A session saved before the identity was extended stays usable.
+
+        The legacy record holds the device and the inode only, and it is
+        verified under exactly the guarantee it was recorded under.
+        """
+        self.write("A_done.cr3", b"raw")
+        self.write("Z_remaining.jpg", b"jpg")
+        session = self.make_session()
+        session.load_queue()
+        session.decide("keep")
+        snapshot = session.to_snapshot()
+        for entry in snapshot["history"][0]["files"]:
+            entry["destination_identity"] = list(entry["destination_identity"][:2])
+
+        restored = PhotoSession.from_snapshot(snapshot)
+
+        self.assertIsNotNone(restored)
+        self.assertTrue(restored.can_undo)
+        restored.undo()
+        self.assertEqual((self.source / "A_done.cr3").read_bytes(), b"raw")
+
+    def test_a_racer_that_replaces_the_destination_after_the_publish_keeps_its_file(self):
+        """The identity of a path that holds somebody else's file is never ours."""
+        self.write("IMG.cr3", b"raw")
+        session = self.make_session()
+        session.load_queue()
+        real_publish = session._publish_staged
+
+        def replace_destination_after_publish(source, destination):
+            consumed = real_publish(source, destination)
+            destination.unlink()
+            destination.write_bytes(b"racer")
+            return consumed
+
+        with patch.object(
+            session,
+            "_publish_staged",
+            side_effect=replace_destination_after_publish,
+        ):
+            with self.assertRaisesRegex(PhotoSessionError, "identity|replaced|published"):
+                session.decide("keep")
+
+        self.assertEqual((self.keep / "IMG.cr3").read_bytes(), b"racer")
+
     def test_posix_move_does_not_unlink_replaced_source_name(self):
         raw = self.write("IMG.cr3", b"raw")
         self.write("IMG.jpg", b"jpg")

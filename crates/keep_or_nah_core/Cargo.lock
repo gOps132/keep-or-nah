@@ -533,6 +533,7 @@ dependencies = [
  "parking_lot",
  "pyo3",
  "tempfile",
+ "windows-sys",
 ]
 
 [[package]]

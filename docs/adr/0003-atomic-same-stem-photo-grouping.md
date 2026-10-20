@@ -12,3 +12,4 @@ Photographers frequently shoot RAW+JPEG pairs alongside companion XMP sidecar me
 
 - File operations, session state, and undo journaling must coordinate moves across all member files within a group simultaneously.
 - If a group contains multiple previewable formats (e.g. RAW and JPEG), the pipeline deterministically selects the optimal representative file.
+- Every member of a group carries its own file identity, so a group is moved atomically only when every member still owns the identity that was recorded for it (ADR-0007).

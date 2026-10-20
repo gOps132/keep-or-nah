@@ -32,7 +32,10 @@ class PhotoSessionError(RuntimeError):
 class FileOperation:
     source: Path
     destination: Path
-    destination_identity: tuple[int, int] | None = None
+    # The identity of the published file: the device, the inode, the size,
+    # and the change time of the inode. A session saved before the identity
+    # was extended records the device and the inode only.
+    destination_identity: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -122,7 +125,7 @@ class ActionRecord:
         )
 
     @property
-    def destination_identity(self) -> tuple[int, int] | None:
+    def destination_identity(self) -> tuple[int, ...] | None:
         return next(
             (
                 item.destination_identity

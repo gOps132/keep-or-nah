@@ -371,8 +371,14 @@ mod tests {
     fn build_photo_groups_ignores_symlinks_and_directories() {
         let dir = TempDir::new().unwrap();
         let target = write(dir.path(), "IMG.jpg");
+        let link = dir.path().join("LINK.jpg");
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&target, dir.path().join("LINK.jpg")).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        #[cfg(windows)]
+        // Creating a symbolic link on Windows needs a privilege that a
+        // build agent does not have. The scan still has to leave the
+        // directory alone when the link cannot be created.
+        let _ = std::os::windows::fs::symlink_file(&target, &link);
         fs::create_dir(dir.path().join("FOLDER.jpg")).unwrap();
 
         let groups = build_photo_groups(dir.path(), &extensions(&[".jpg"]), &extensions(&[".jpg"]));

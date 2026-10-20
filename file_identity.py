@@ -6,7 +6,37 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from keep_or_nah_core import file_identity as native_file_identity
 from keep_or_nah_core import remove_verified_file
+
+# The components of a file identity, in the canonical order: the device, the
+# inode, the size, and the change time of the inode in seconds and
+# nanoseconds.
+#
+# The device and the inode alone are not enough. Filesystems recycle inode
+# numbers, so a replacement published at the same path can carry the inode
+# of the file it replaced. The size and the change time are not recycled,
+# so the identity of a replacement never matches the identity that was
+# recorded for the file it replaced.
+IDENTITY_COMPONENT_COUNT = 5
+
+# The components a legacy identity records: the device and the inode. A
+# session saved before the identity was extended records those two, and it
+# is verified under exactly the guarantee it was recorded under, rather
+# than being discarded.
+LEGACY_IDENTITY_COMPONENT_COUNT = 2
+
+# The components of a file identity that publishing cannot change: the
+# device, the inode, and the size. The change time of the inode moves when
+# a file is published, because publishing changes the file itself: a hard
+# link changes the link count of the inode, and a rename changes the inode
+# on the filesystems that track the change of a moved file.
+PUBLISHED_COMPONENT_COUNT = 3
+
+# The names the native module expects the components under.
+IDENTITY_COMPONENT_NAMES = ("dev", "ino", "size", "ctime_sec", "ctime_nsec")
+
+FileIdentity = tuple[int, ...]
 
 
 def _get_os() -> object:
@@ -37,11 +67,12 @@ def validate_basename(name: str) -> None:
         raise OSError(f"Unsafe direct-child filename: {name!r}")
 
 
-def path_identity(path: Path) -> tuple[int, int]:
+def path_identity(path: Path) -> FileIdentity:
+    """The identity of a regular, non-symlink file entry."""
     path_stat = path.lstat()
     if path.is_symlink() or not stat.S_ISREG(path_stat.st_mode):
         raise OSError(f"Owned path is no longer a regular file: {path}")
-    return path_stat.st_dev, path_stat.st_ino
+    return tuple(native_file_identity(str(path)))
 
 
 def directory_identity(path: Path) -> tuple[int, int]:
@@ -56,14 +87,72 @@ def require_directory_identity(path: Path, expected_identity: tuple[int, int]) -
         raise OSError(f"Destination root identity changed: {path}")
 
 
-def require_owned_path(path: Path, expected_identity: tuple[int, int]) -> None:
-    if path_identity(path) != expected_identity:
+def identity_matches(current: FileIdentity, expected: FileIdentity) -> bool:
+    """Whether a freshly read identity still carries the recorded one.
+
+    Only the components that were recorded are compared. A session saved
+    before the identity was extended records the device and the inode
+    only, and it is verified under exactly the guarantee it was recorded
+    under.
+    """
+    if len(expected) < LEGACY_IDENTITY_COMPONENT_COUNT:
+        return False
+    if len(expected) > len(current):
+        return False
+    return current[: len(expected)] == tuple(expected)
+
+
+def require_owned_path(path: Path, expected_identity: FileIdentity) -> None:
+    if not identity_matches(path_identity(path), expected_identity):
         raise OSError(f"Refusing to remove a replaced path: {path}")
 
 
-def remove_owned_path(path: Path, expected_identity: tuple[int, int]) -> None:
+def remove_owned_path(path: Path, expected_identity: FileIdentity) -> None:
     remove_fn = _get_remove_fn()
-    remove_fn(str(path), expected_identity[0], expected_identity[1])
+    remove_fn(str(path), *expected_identity)
+
+
+def published_identity(path: Path, recorded_identity: FileIdentity) -> FileIdentity:
+    """The identity of a published file whose change time has moved.
+
+    Publishing changes the file itself: creating a hard link changes the
+    link count of the inode, and removing the staged entry changes it
+    again. The link count is part of the change time, so the change time
+    of a published file moves while the operation runs. The components a
+    publish cannot change decide whether the entry still is the file that
+    was published.
+    """
+    current = path_identity(path)
+    if current[:PUBLISHED_COMPONENT_COUNT] != recorded_identity[:PUBLISHED_COMPONENT_COUNT]:
+        raise OSError(f"The published file was replaced: {path}")
+    return current
+
+
+def remove_published_entry(path: Path, recorded_identity: FileIdentity) -> None:
+    """Remove an entry this operation published, if it still is ours.
+
+    The staged entry and the published file share their inode, so
+    removing one of them moves the change time of the other. The entry is
+    matched against the recorded identity on the components a publish
+    cannot change, and its identity is read again so that the native
+    removal verifies it a second time.
+    """
+    current = path_identity(path)
+    if current[:PUBLISHED_COMPONENT_COUNT] != recorded_identity[:PUBLISHED_COMPONENT_COUNT]:
+        raise OSError(f"Refusing to remove a replaced path: {path}")
+    remove_owned_path(path, current)
+
+
+def expected_identity_arguments(identity: FileIdentity | None) -> dict[str, int]:
+    """The native stage function's expected-identity keywords for a record."""
+    if identity is None:
+        return {}
+    if len(identity) not in (LEGACY_IDENTITY_COMPONENT_COUNT, IDENTITY_COMPONENT_COUNT):
+        raise OSError(f"Recorded file identity is not usable: {identity!r}")
+    return {
+        f"expected_{name}": value
+        for name, value in zip(IDENTITY_COMPONENT_NAMES, identity, strict=False)
+    }
 
 
 def is_direct_child(path: Path, root: Path) -> bool:

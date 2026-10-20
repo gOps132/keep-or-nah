@@ -47,6 +47,16 @@ parking_lot = "0.12"
 crossbeam-channel = "0.5"
 lru = "0.13"
 
+# The stable `std::os::windows::fs::MetadataExt` cannot read the volume
+# serial number and the file index of a file: those methods are still
+# behind the unstable `windows_by_handle` feature, and the crate has to
+# build on stable Rust. The Windows API returns both from an open handle.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+
 [dev-dependencies]
 # The test harness has to link without libpython:
 #

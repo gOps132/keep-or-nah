@@ -1,0 +1,18 @@
+# The File Identity Detects a Replaced Path
+
+The application never deletes or moves a file it does not own. It enforces that promise by recording the identity of a file when the file is published, and by re-checking that identity before every destructive step. We decided that the identity of a file entry is the device, the inode, the size, and the change time of the inode, and that a recorded identity is compared against a freshly read identity on the components it actually records.
+
+## Considered Options
+
+- **Device and inode alone**: the identity every version of the application recorded before this decision. It is the identity of the file *while the file is alive*, and nothing more. We rejected it: filesystems recycle inode numbers, so a file created at a path whose file was just removed can be handed the inode of the file it replaced, and the identity then matches the recorded one. On Linux the recycling is immediate in practice, which means the check was blind to the exact case the Undo Journal exists to prevent.
+- **A content digest**: a hash of the bytes is unforgeable and detects every replacement. We rejected it as the identity: a photo session holds tens of gigabytes of RAW files, and the identity is read several times per file operation. A digest would turn every check into a full read of the file.
+- **The modification time and the size**: the modification time of a file does not move when the application publishes it, so it would have been the simple choice. We rejected it because ordinary software can set it: a racer that copies a file with its timestamps preserved would produce a replacement with the same modification time, and the size alone is a thin signal for the files that matter.
+- **The change time and the size (chosen)**: the change time of an inode is set by the file system, not by the program that writes the file, so a replacement carries a fresh one even when the inode number is reused. The size catches the replacement that is a different file of a different length.
+
+## Consequences
+
+- The identity of a file entry has five components: the device, the inode, the size, the change time in seconds, and the change time in nanoseconds. The native module returns them as one tuple, and the Python side compares them as one tuple.
+- The change time of an inode moves when the application itself publishes a file: creating a hard link changes the link count of the inode, and removing the staged entry changes it again. The identity of a published file is therefore read after the publication is complete, and the components a publication cannot change decide whether a path still holds the file that was published.
+- A session saved before this decision records the device and the inode only. Such a record is verified on the components it records, under exactly the guarantee it was recorded under, rather than being rejected: a photographer's pending session must not be discarded over the shape of its own record. New sessions record the full identity.
+- On Windows the change time of an inode is the creation time of the file, and the device and the inode are the volume serial number and the 64-bit file index the Windows API reports for an open handle. The stable `std::os::windows::fs::MetadataExt` cannot read the last two, so the native core asks the Windows API for them through `windows-sys` rather than through a nightly-only standard library API.
+- The directory identity of a destination folder stays the device and the inode. The change time of a directory moves every time a file is added to it, which is exactly what a batch commit does.

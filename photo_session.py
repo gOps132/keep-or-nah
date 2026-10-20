@@ -9,6 +9,7 @@ from PIL import Image as Image
 
 import session_snapshot
 from file_coordinator import FileCoordinator
+from file_identity import FileIdentity
 from keep_or_nah_core import remove_verified_file as remove_verified_file
 from keep_or_nah_core import stage_regular_file as stage_regular_file
 from photo_groups import PhotoGroup
@@ -164,7 +165,7 @@ class PhotoSession(PhotoSessionProperties, FileCoordinator):
     def _refresh_record_identities(
         self,
         record: ActionRecord,
-        updates: dict[FileOperation, tuple[int, int]],
+        updates: dict[FileOperation, FileIdentity],
     ) -> None:
         if updates:
             refreshed_files = tuple(

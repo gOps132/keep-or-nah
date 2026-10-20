@@ -108,7 +108,7 @@ def _is_regular_file(path: Path) -> bool:
         return False
 
 
-def _path_identity(path: Path) -> tuple[int, int]:
+def _path_identity(path: Path) -> tuple[int, ...]:
     return file_identity.path_identity(path)
 
 
@@ -130,14 +130,29 @@ def _source_path_from_snapshot(
     return path
 
 
-def _snapshot_identity(value: object) -> tuple[int, int]:
-    if (
-        not isinstance(value, (list, tuple))
-        or len(value) != 2
-        or any(type(part) is not int or part < 0 for part in value)
+def _snapshot_identity(value: object) -> tuple[int, ...]:
+    """The identity a snapshot recorded for a file operation.
+
+    A session saved before the identity was extended records the device
+    and the inode only. A session saved after it records the device, the
+    inode, the size, and the change time. Both are accepted: a
+    photographer's pending session must not be discarded over the shape
+    of its own record, and a legacy record is verified under exactly the
+    guarantee it was recorded under.
+    """
+    if not isinstance(value, (list, tuple)) or len(value) not in (
+        file_identity.LEGACY_IDENTITY_COMPONENT_COUNT,
+        file_identity.IDENTITY_COMPONENT_COUNT,
     ):
-        raise ValueError("Snapshot destination identity must contain two integers")
-    return value[0], value[1]
+        raise ValueError("Snapshot destination identity must contain two or five integers")
+    parts: list[int] = []
+    for index, part in enumerate(value):
+        if type(part) is not int:
+            raise ValueError("Snapshot destination identity must contain plain integers")
+        if index < file_identity.PUBLISHED_COMPONENT_COUNT and part < 0:
+            raise ValueError("Snapshot destination identity must not hold negative numbers")
+        parts.append(part)
+    return tuple(parts)
 
 
 def _file_operation_from_snapshot(
@@ -162,7 +177,7 @@ def _file_operation_from_snapshot(
     if destination.is_symlink() or not _is_regular_file(destination):
         raise ValueError("Snapshot destination is not an owned regular file")
     destination_identity = _snapshot_identity(value["destination_identity"])
-    if _path_identity(destination) != destination_identity:
+    if not file_identity.identity_matches(_path_identity(destination), destination_identity):
         raise ValueError("Snapshot destination ownership has changed")
     return FileOperation(source, destination, destination_identity)
 
