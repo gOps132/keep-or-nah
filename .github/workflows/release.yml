@@ -161,7 +161,16 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
+      # The release notes are generated from the commit history, so the
+      # repository has to be checked out with its full history and its tags.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
       - name: Download the macOS artifact
         uses: actions/download-artifact@v4
         with:
@@ -176,11 +185,11 @@ jobs:
 
       - name: Collect the release notes
         run: |
-          previous_tag="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          previous_tag="$(git describe --tags --abbrev=0 "${RELEASE_TAG}^" 2>/dev/null || true)"
           if [ -n "$previous_tag" ]; then
-            range="${previous_tag}..${GITHUB_SHA}"
+            range="${previous_tag}..${RELEASE_TAG}"
           else
-            range="${GITHUB_SHA}"
+            range="${RELEASE_TAG}"
           fi
           {
             echo "## Changes"
@@ -199,6 +208,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: Keep or Nah ${{ inputs.tag || github.ref_name }}
+          tag_name: ${{ inputs.tag || github.ref_name }}
           body_path: release-notes.md
           files: |
             dist/macos/**
