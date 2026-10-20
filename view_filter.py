@@ -1,17 +1,18 @@
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Protocol
+from typing import Protocol
 
 from photo_groups import PhotoGroup, build_photo_groups, discover_extensions
 from photo_session import (
     EMPTY_EXTENSION_SELECTION_MESSAGE,
-    PhotoSession,
     SUPPORTED_IMAGE_EXTENSIONS,
+    PhotoSession,
 )
 from session_startup import preview_paths_for
-
 
 EMPTY_SELECTION_MESSAGE = EMPTY_EXTENSION_SELECTION_MESSAGE
 
@@ -59,9 +60,7 @@ def validate_extension_selection(extensions: Iterable[str]) -> frozenset[str]:
 
 
 def selected_extensions(variables: Mapping[str, object]) -> frozenset[str]:
-    return frozenset(
-        extension for extension, variable in variables.items() if variable.get()
-    )
+    return frozenset(extension for extension, variable in variables.items() if variable.get())
 
 
 class ExtensionFilterApp(Protocol):
@@ -173,14 +172,10 @@ def save_view_filter_settings(
             _restore_filter_state(app.session, filter_state)
         if old_settings is not None:
             app.settings = old_settings
-            try:
+            with contextlib.suppress(OSError):
                 old_settings.save()
-            except OSError:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 app.apply_preview_settings(old_settings, persist=False)
-            except Exception:
-                pass
             app.settings = old_settings
         if filter_state is not None:
             try:
