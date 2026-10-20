@@ -192,6 +192,24 @@ def expected_identity_arguments(identity: FileIdentity | None) -> dict[str, int]
     }
 
 
+def native_expected_arguments(path: Path, identity: FileIdentity | None) -> dict[str, int]:
+    """The expected-identity keywords for a record, in the native namespace.
+
+    A legacy identity was recorded in the namespace `os.lstat` reports,
+    which is not the native namespace on every platform: on Windows the
+    native core reports the volume serial number and `os.lstat` reports the
+    drive number. The legacy identity is verified by the caller, in the
+    namespace it was recorded in, and the native function is handed the
+    identity it can check for itself, so a path replaced in between is
+    still caught.
+    """
+    if identity is None:
+        return {}
+    if len(identity) == LEGACY_IDENTITY_COMPONENT_COUNT:
+        return expected_identity_arguments(path_identity(path))
+    return expected_identity_arguments(identity)
+
+
 def is_direct_child(path: Path, root: Path) -> bool:
     return path.resolve(strict=False).parent == root.resolve(strict=False)
 

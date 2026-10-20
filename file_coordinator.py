@@ -135,7 +135,7 @@ class FileCoordinator:
         staged = stage_fn(
             str(source),
             str(destination_root),
-            **file_identity.expected_identity_arguments(expected_source_identity),
+            **file_identity.native_expected_arguments(source, expected_source_identity),
         )
         temporary_path = Path(staged.path)
         temporary_identity = self._path_identity(temporary_path)
