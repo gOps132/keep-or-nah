@@ -31,7 +31,9 @@ env:
 jobs:
   verify:
     name: verify
-    runs-on: ubuntu-latest
+    # The Armada fleet serves Linux x64 nodes under the `armada` label, so a
+    # job that asks for `ubuntu-latest` is never scheduled.
+    runs-on: [self-hosted, armada]
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -49,8 +51,14 @@ jobs:
       # interpreter, which can have Tk.
       - name: Install Tk for the system Python
         run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-tk
+          # A self-hosted container commonly runs as root and has no sudo.
+          if [ "$(id -u)" -eq 0 ]; then
+            apt-get update
+            apt-get install -y python3-tk
+          else
+            sudo apt-get update
+            sudo apt-get install -y python3-tk
+          fi
           /usr/bin/python3 -c "import tkinter; print('system tkinter', tkinter.TkVersion)"
 
       - name: Read the pinned Rust toolchain
@@ -173,7 +181,7 @@ jobs:
   publish:
     name: publish
     needs: [macos, windows]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, armada]
     timeout-minutes: 15
     permissions:
       contents: write
