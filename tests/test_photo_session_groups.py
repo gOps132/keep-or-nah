@@ -763,7 +763,13 @@ class PhotoSessionGroupTests(unittest.TestCase):
         session.decide("keep")
         snapshot = session.to_snapshot()
         for entry in snapshot["history"][0]["files"]:
-            entry["destination_identity"] = list(entry["destination_identity"][:2])
+            # A session saved before the identity was extended held the
+            # device and the inode that `os.stat` reports, which is not
+            # the first two components of the native identity on every
+            # platform: on Windows the native core reports the volume
+            # serial number and `os.stat` reports the drive number.
+            recorded = Path(entry["destination"]).stat()
+            entry["destination_identity"] = [recorded.st_dev, recorded.st_ino]
 
         restored = PhotoSession.from_snapshot(snapshot)
 
