@@ -335,7 +335,10 @@ class FileCoordinator:
                 cls._validate_destination_parent(operation.destination, destination_root)
                 recorded_destination = destination_root / operation.destination.name
                 if cls._path_occupied(recorded_destination) and not file_identity.identity_matches(
-                    cls._path_identity(recorded_destination), operation.destination_identity
+                    file_identity.read_identity(
+                        recorded_destination, operation.destination_identity
+                    ),
+                    operation.destination_identity,
                 ):
                     raise PhotoSessionError(
                         "A recorded destination identity no longer matches the action-owned file."
@@ -371,7 +374,14 @@ class FileCoordinator:
             if destination_occupied:
                 self._require_owned_path(recorded_destination, operation.destination_identity)
             if destination_occupied and not source_occupied:
-                pending.append((operation, self._path_identity(recorded_destination)))
+                pending.append(
+                    (
+                        operation,
+                        file_identity.read_identity(
+                            recorded_destination, operation.destination_identity
+                        ),
+                    )
+                )
             elif source_occupied and not destination_occupied:
                 continue
             elif source_occupied:
@@ -429,7 +439,14 @@ class FileCoordinator:
             recorded_destination = destination_root / operation.destination.name
             if self._path_occupied(recorded_destination):
                 self._require_owned_path(recorded_destination, operation.destination_identity)
-                pending.append((operation, self._path_identity(recorded_destination)))
+                pending.append(
+                    (
+                        operation,
+                        file_identity.read_identity(
+                            recorded_destination, operation.destination_identity
+                        ),
+                    )
+                )
             elif operation not in partial_copy_undo:
                 raise PhotoSessionError(
                     "A copied group file is missing, so the last action cannot be undone."
