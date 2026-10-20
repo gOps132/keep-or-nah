@@ -49,8 +49,18 @@ jobs:
       # interpreter, which can have Tk.
       - name: Install Tk for the system Python
         run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-tk
+          if /usr/bin/python3 -c "import tkinter" 2>/dev/null; then
+            echo "the system python already has Tk"
+          elif [ "$(id -u)" -eq 0 ]; then
+            apt-get update
+            apt-get install -y python3-tk
+          elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            sudo -n apt-get update
+            sudo -n apt-get install -y python3-tk
+          else
+            echo "::error::the system python has no Tk, and this runner cannot install it"
+            exit 1
+          fi
           /usr/bin/python3 -c "import tkinter; print('system tkinter', tkinter.TkVersion)"
 
       - name: Read the pinned Rust toolchain
