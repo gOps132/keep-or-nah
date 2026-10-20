@@ -44,6 +44,15 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
+      # uv's managed CPython builds for Linux omit Tk, and the verification
+      # gate runs the GUI test suite. Build the virtualenv from the system
+      # interpreter, which can have Tk.
+      - name: Install Tk for the system Python
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+          /usr/bin/python3 -c "import tkinter; print('system tkinter', tkinter.TkVersion)"
+
       - name: Read the pinned Rust toolchain
         id: rust
         run: echo "version=$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
@@ -55,7 +64,9 @@ jobs:
           components: rustfmt, clippy
 
       - name: Sync the Python environment
-        run: uv sync --all-groups
+        run: |
+          uv sync --all-groups --python /usr/bin/python3
+          echo "UV_PYTHON=/usr/bin/python3" >> "$GITHUB_ENV"
 
       - name: Run the full verification gate
         run: scripts/verify.sh

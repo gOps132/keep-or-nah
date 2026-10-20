@@ -24,7 +24,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  UV_PYTHON: "3.12"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
 
@@ -109,10 +108,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.12"]
         include:
+          # Linux builds its virtualenv from the system Python, because uv's
+          # managed Linux builds of CPython do not ship Tk and the GUI tests
+          # import it. The system Python can have Tk, so the Linux legs use
+          # it and the 3.13 leg lives on the other platforms.
           - os: ubuntu-latest
+            python-version: "3.12"
+            system-python: true
+          - os: macos-latest
+            python-version: "3.12"
+          - os: macos-latest
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.12"
+          - os: windows-latest
             python-version: "3.13"
     steps:
       - uses: actions/checkout@v4
@@ -123,6 +133,22 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
           python-version: ${{ matrix.python-version }}
+
+      # uv's managed CPython builds for Linux omit Tk: it is a large system
+      # dependency and the standalone builds do not bundle it. The GUI tests
+      # import tkinter through customtkinter, so on Linux the virtualenv is
+      # built from the system interpreter, which can have Tk.
+      - name: Install Tk for the system Python
+        if: matrix.system-python
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+          /usr/bin/python3 -c "import tkinter; print('system tkinter', tkinter.TkVersion)"
+          /usr/bin/python3 -c "
+          import sys
+          assert (3, 12) <= sys.version_info[:2] < (3, 14), sys.version
+          print('system python', sys.version.split()[0])
+          "
 
       - name: Read the pinned Rust toolchain
         id: rust
@@ -140,7 +166,13 @@ jobs:
           workspaces: "crates/keep_or_nah_core"
 
       - name: Sync the Python environment
-        run: uv sync --all-groups
+        run: |
+          if [ "${{ matrix.system-python }}" = "true" ]; then
+            uv sync --all-groups --python /usr/bin/python3
+            echo "UV_PYTHON=/usr/bin/python3" >> "$GITHUB_ENV"
+          else
+            uv sync --all-groups --python ${{ matrix.python-version }}
+          fi
 
       - name: Build the native module
         run: scripts/verify.sh --stage build
