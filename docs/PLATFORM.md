@@ -11,7 +11,13 @@
   module. Packaged builds ship it inside the app; development builds install
   it with `uv run maturin develop`.
 - **Rust toolchain** (`cargo`, `rustfmt`, `clippy`) — needed to build or test
-  the native core, not to run an already packaged build.
+  the native core, not to run an already packaged build. The version is
+  pinned in `rust-toolchain.toml` at the repository root, and `rustup` picks
+  it up automatically from the working directory. The pin exists for the same
+  reason the Ruff configuration is pinned: clippy gains lints between
+  releases, so an unpinned toolchain turns the lint gate into a moving
+  target. Raising it is a deliberate act — change the channel, then fix
+  whatever the new clippy finds.
 - **`uv`** — the toolchain this repo manages its environment with.
 
 ## macOS
@@ -45,3 +51,10 @@
 - Mouse-wheel zoom binds the X11 `Button-4`/`Button-5` events.
 - No packaging recipe ships for Linux. Run the app from source with
   `uv run python main.py`.
+- **Linux recycles inode numbers.** After a file is unlinked, the next file
+  created at the same path can be handed the same inode number, so a
+  `(device, inode)` pair does not by itself prove that a path still refers to
+  the file it did a moment ago. The native core's file identity includes
+  information that is not recycled, so a replaced file is still detected
+  here. This is the reason the file-identity tests run on Linux in CI rather
+  than only on macOS.

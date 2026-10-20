@@ -9,7 +9,7 @@ pub fn compute_sharpness(rgba: &[u8], width: u32, height: u32) -> f32 {
 
     // Convert RGBA to luminance buffer: Y = (77*R + 150*G + 29*B) >> 8
     let mut lum = Vec::with_capacity(w * h);
-    for chunk in rgba[..w * h * 4].chunks_exact(4) {
+    for chunk in rgba[..w * h * 4].as_chunks::<4>().0 {
         let r = chunk[0] as u32;
         let g = chunk[1] as u32;
         let b = chunk[2] as u32;
@@ -92,11 +92,7 @@ pub fn compute_image_hash(rgba: &[u8], width: u32, height: u32) -> u64 {
                 }
             }
 
-            grid[gy * GRID_W + gx] = if pixel_count > 0 {
-                (lum_sum / pixel_count) as u32
-            } else {
-                0
-            };
+            grid[gy * GRID_W + gx] = lum_sum.checked_div(pixel_count).unwrap_or(0) as u32;
         }
     }
 
@@ -122,7 +118,7 @@ mod tests {
     /// Build an RGBA buffer where every pixel is the given grey level.
     fn solid(width: usize, height: usize, value: u8) -> Vec<u8> {
         let mut buffer = vec![0u8; width * height * 4];
-        for pixel in buffer.chunks_exact_mut(4) {
+        for pixel in buffer.as_chunks_mut::<4>().0 {
             pixel[0] = value;
             pixel[1] = value;
             pixel[2] = value;
