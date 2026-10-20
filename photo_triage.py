@@ -74,11 +74,7 @@ class UndoResult:
     @property
     def destination(self) -> Path:
         return next(
-            (
-                item.destination
-                for item in self.files
-                if item.source == self.group.representative
-            ),
+            (item.destination for item in self.files if item.source == self.group.representative),
             self.files[0].destination,
         )
 
@@ -121,11 +117,7 @@ class ActionRecord:
     @property
     def destination(self) -> Path:
         return next(
-            (
-                item.destination
-                for item in self.files
-                if item.source == self.group.representative
-            ),
+            (item.destination for item in self.files if item.source == self.group.representative),
             self.files[0].destination,
         )
 
@@ -179,10 +171,7 @@ class PhotoTriage:
     ) -> DecisionResult:
         """Execute a purely in-memory triage decision without disk operations."""
         dest_dir = destination_dir or Path(f"/{decision}")
-        files = tuple(
-            FileOperation(member, dest_dir / member.name)
-            for member in group.members
-        )
+        files = tuple(FileOperation(member, dest_dir / member.name) for member in group.members)
         record = ActionRecord(
             decision=decision,
             action_mode=action_mode,

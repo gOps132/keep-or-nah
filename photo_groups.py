@@ -44,9 +44,7 @@ def build_photo_groups(
 ) -> list[PhotoGroup]:
     """Build one deterministic queue item for every eligible exact stem."""
     if RUST_CORE_AVAILABLE:
-        scanned = _rust_build_photo_groups(
-            str(source_dir), set(enabled), set(previewable)
-        )
+        scanned = _rust_build_photo_groups(str(source_dir), set(enabled), set(previewable))
         return [
             PhotoGroup(
                 group.stem,

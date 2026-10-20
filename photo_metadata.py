@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
+
 from PIL import Image
 
 SUPPORTED_IMAGE_EXTENSIONS: set[str] = {
@@ -24,8 +24,7 @@ def pillow_previewable_extensions() -> frozenset[str]:
     return frozenset(
         extension.lower()
         for extension, format_name in Image.registered_extensions().items()
-        if extension.lower() in SUPPORTED_IMAGE_EXTENSIONS
-        and format_name in open_formats
+        if extension.lower() in SUPPORTED_IMAGE_EXTENSIONS and format_name in open_formats
     )
 
 

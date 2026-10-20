@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
 import threading
+from pathlib import Path
+
 import pytest
 
+from file_coordinator import FileCoordinator
 from photo_groups import PhotoGroup
 from photo_triage import FileOperation, PhotoSessionError
 from staged_triage import (
@@ -12,7 +14,6 @@ from staged_triage import (
     StagedTriageManager,
     format_bytes,
 )
-from file_coordinator import FileCoordinator
 
 
 def test_format_bytes() -> None:
@@ -263,4 +264,3 @@ def test_photo_session_staged_snapshot_persistence(tmp_path: Path) -> None:
     assert len(restored.staged_decisions) == 1
     assert restored.staged_decisions[0].stem == "p1"
     assert restored.remaining_count == 1
-

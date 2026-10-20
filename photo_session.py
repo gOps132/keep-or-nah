@@ -1,38 +1,48 @@
 from __future__ import annotations
 
-import os
+import os as os
+import threading
+from collections.abc import Callable
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image as Image
 
-from keep_or_nah_core import remove_verified_file, stage_regular_file
+import session_snapshot
+from file_coordinator import FileCoordinator
+from keep_or_nah_core import remove_verified_file as remove_verified_file
+from keep_or_nah_core import stage_regular_file as stage_regular_file
 from photo_groups import PhotoGroup
-from photo_metadata import (
-    SUPPORTED_IMAGE_EXTENSIONS,
-    pillow_previewable_extensions,
-)
+from photo_metadata import SUPPORTED_IMAGE_EXTENSIONS as SUPPORTED_IMAGE_EXTENSIONS
+from photo_metadata import pillow_previewable_extensions as pillow_previewable_extensions
+from photo_session_properties import PhotoSessionProperties
+from photo_triage import EMPTY_EXTENSION_SELECTION_MESSAGE as EMPTY_EXTENSION_SELECTION_MESSAGE
 from photo_triage import (
     ActionMode,
     ActionRecord,
     Decision,
     DecisionResult,
-    EMPTY_EXTENSION_SELECTION_MESSAGE,
     FileOperation,
     PhotoSessionError,
     PhotoTriage,
     UndoResult,
 )
+from session_state import SessionState
 from staged_triage import (
-    StagedBatchSummary,
     StagedDecision,
     StagedTriageManager,
 )
-from file_coordinator import FileCoordinator
-from session_state import SessionState
-import session_snapshot
+
+# `photo_session` is the public facade of the photo triage core. The re-exports
+# above are load-bearing, not incidental: `file_coordinator` and
+# `file_identity` resolve `os`, `stage_regular_file`, and
+# `remove_verified_file` through `sys.modules["photo_session"]` at call time,
+# so those names must stay bound on this module. `view_filter`,
+# `preview_strategies`, and the test suite import the extension constants and
+# `pillow_previewable_extensions` from here. The redundant `as` aliases mark
+# them as intentional re-exports so the linter does not prune them as unused.
 
 
-class PhotoSession(FileCoordinator):
+class PhotoSession(PhotoSessionProperties, FileCoordinator):
     snapshot_version = 2
 
     def __init__(
@@ -71,168 +81,26 @@ class PhotoSession(FileCoordinator):
         self.staged_mode: bool = staged_mode
         self.flag_dir: Path | None = Path(flag_dir) if flag_dir is not None else None
         self._staged_manager = StagedTriageManager(staged=staged_decisions)
-        self.keep_count: int = sum(1 for r in self._triage.history if r.decision == "keep") + self.staged_summary.keep_count
-        self.nah_count: int = sum(1 for r in self._triage.history if r.decision == "nah") + self.staged_summary.nah_count
-
-    # --- Properties delegating to SessionState ---
-
-    @property
-    def source_dir(self) -> Path | None:
-        return self._state.source_dir
-    @source_dir.setter
-    def source_dir(self, value: Path | None) -> None:
-        self._state.source_dir = value
-
-    @property
-    def keep_dir(self) -> Path | None:
-        return self._state.keep_dir
-    @keep_dir.setter
-    def keep_dir(self, value: Path | None) -> None:
-        self._state.keep_dir = value
-
-    @property
-    def nah_dir(self) -> Path | None:
-        return self._state.nah_dir
-    @nah_dir.setter
-    def nah_dir(self, value: Path | None) -> None:
-        self._state.nah_dir = value
-
-    @property
-    def action_mode(self) -> ActionMode:
-        return self._state.action_mode
-    @action_mode.setter
-    def action_mode(self, value: ActionMode) -> None:
-        self._state.action_mode = value
-
-    @property
-    def previewable_extensions(self) -> frozenset[str]:
-        return self._state.previewable_extensions
-
-    @property
-    def available_extensions(self) -> tuple[str, ...]:
-        return self._state.available_extensions
-    @available_extensions.setter
-    def available_extensions(self, value: tuple[str, ...]) -> None:
-        self._state.available_extensions = value
-
-    @property
-    def enabled_extensions(self) -> set[str]:
-        return self._state.enabled_extensions
-    @enabled_extensions.setter
-    def enabled_extensions(self, value: set[str]) -> None:
-        self._state.enabled_extensions = value
-
-    @property
-    def pending_groups(self) -> list[PhotoGroup]:
-        return self._state.pending_groups
-    @pending_groups.setter
-    def pending_groups(self, value: list[PhotoGroup]) -> None:
-        self._state.pending_groups = value
-
-    @property
-    def completed_stems(self) -> set[str]:
-        return self._state.completed_stems
-    @completed_stems.setter
-    def completed_stems(self, value: set[str]) -> None:
-        self._state.completed_stems = value
-
-    @property
-    def queue(self) -> list[PhotoGroup]:
-        return self._state.queue
-    @queue.setter
-    def queue(self, value: list[PhotoGroup]) -> None:
-        self._state.queue = value
-
-    @property
-    def active_index(self) -> int:
-        return self._state.active_index
-    @active_index.setter
-    def active_index(self, value: int) -> None:
-        self._state.active_index = value
-
-    @property
-    def total_loaded(self) -> int:
-        return self._state.total_loaded
-    @total_loaded.setter
-    def total_loaded(self, value: int) -> None:
-        self._state.total_loaded = value
-
-    @property
-    def _extensions_source(self) -> Path | None:
-        return self._state._extensions_source
-    @_extensions_source.setter
-    def _extensions_source(self, value: Path | None) -> None:
-        self._state._extensions_source = value
-
-    @property
-    def active_group(self) -> PhotoGroup | None:
-        return self._state.active_group
-
-    @property
-    def active_photo(self) -> Path | None:
-        return self._state.active_photo
-
-    @property
-    def preview_paths(self) -> tuple[Path, ...]:
-        return self._state.preview_paths
-
-    @property
-    def remaining_count(self) -> int:
-        return self._state.remaining_count
-
-    @property
-    def pending_count(self) -> int:
-        return self._state.pending_count
-
-    @property
-    def visible_count(self) -> int:
-        return self._state.visible_count
-
-    @property
-    def current_position(self) -> int:
-        return self._state.current_position
-
-    # --- Properties delegating to PhotoTriage ---
-
-    @property
-    def history(self) -> list[ActionRecord]:
-        return self._triage.history
-    @history.setter
-    def history(self, value: list[ActionRecord]) -> None:
-        self._triage.history = value
-
-    @property
-    def _partial_copy_undo(self) -> set[FileOperation]:
-        return self._triage.partial_copy_undo
-
-    @property
-    def can_undo(self) -> bool:
-        return bool(self.history) or not self._staged_manager.is_empty
-
-    @property
-    def staged_decisions(self) -> list[StagedDecision]:
-        return self._staged_manager.staged
-
-    @property
-    def staged_summary(self) -> StagedBatchSummary:
-        return self._staged_manager.summary()
-
-    @property
-    def flag_count(self) -> int:
-        return sum(1 for r in self._triage.history if r.decision == "flag") + self.staged_summary.flag_count
-
-    @property
-    def processed_count(self) -> int:
-        return self.keep_count + self.nah_count
+        self.keep_count: int = (
+            sum(1 for r in self._triage.history if r.decision == "keep")
+            + self.staged_summary.keep_count
+        )
+        self.nah_count: int = (
+            sum(1 for r in self._triage.history if r.decision == "nah")
+            + self.staged_summary.nah_count
+        )
 
     # --- Navigation & Queue Methods ---
 
     def set_source_dir(self, path: str | Path | None) -> None:
         self._state.set_source_dir(path)
+
     def set_keep_dir(self, path: str | Path | None) -> None:
         self._state.set_keep_dir(path)
+
     def set_nah_dir(self, path: str | Path | None) -> None:
         self._state.set_nah_dir(path)
+
     def set_action_mode(self, mode: str) -> None:
         self._state.set_action_mode(mode)
 
@@ -273,14 +141,19 @@ class PhotoSession(FileCoordinator):
 
     def set_active_index(self, index: int) -> Path | None:
         return self._state.set_active_index(index)
+
     def move_active(self, offset: int) -> Path | None:
         return self._state.move_active(offset)
+
     def _project_pending_groups(self) -> list[PhotoGroup]:
         return self._state._project_pending_groups()
+
     def _validated_source_dir(self) -> Path:
         return self._state._validated_source_dir()
+
     def _remove_queue_item(self, index: int) -> PhotoGroup:
         return self._state.remove_queue_item(index)
+
     def _representative_for(self, members: tuple[Path, ...]) -> Path:
         return self._state._representative_for(members)
 
@@ -393,9 +266,7 @@ class PhotoSession(FileCoordinator):
         elif decision == "nah":
             self.nah_count += 1
 
-        return DecisionResult(
-            decision, self.action_mode, group, operations, self.remaining_count
-        )
+        return DecisionResult(decision, self.action_mode, group, operations, self.remaining_count)
 
     def undo(self) -> UndoResult:
         if self.staged_mode and not self._staged_manager.is_empty:
@@ -414,7 +285,11 @@ class PhotoSession(FileCoordinator):
             elif staged.decision == "nah":
                 self.nah_count -= 1
             return UndoResult(
-                staged.decision, staged.action_mode, staged.group, staged.files, self.remaining_count
+                staged.decision,
+                staged.action_mode,
+                staged.group,
+                staged.files,
+                self.remaining_count,
             )
 
         if not self.history:
@@ -423,9 +298,13 @@ class PhotoSession(FileCoordinator):
         record = self.history[-1]
         destination_root = self.recorded_destination_root(record)
         if record.action_mode == "move":
-            self.undo_move_record(record, destination_root, self.source_dir, self._refresh_record_identities)
+            self.undo_move_record(
+                record, destination_root, self.source_dir, self._refresh_record_identities
+            )
         else:
-            self.undo_copy_record(record, destination_root, self._partial_copy_undo, self._refresh_record_identities)
+            self.undo_copy_record(
+                record, destination_root, self._partial_copy_undo, self._refresh_record_identities
+            )
 
         self.history.pop()
         self.completed_stems.discard(record.group.stem)

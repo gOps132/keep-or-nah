@@ -5,9 +5,9 @@ import time
 import unittest
 from pathlib import Path
 
-import keep_or_nah_core
 from PIL import Image
 
+import keep_or_nah_core
 from photo_groups import (
     _python_build_photo_groups,
     _python_discover_extensions,
@@ -224,11 +224,13 @@ class RustGroupingParityTests(unittest.TestCase):
         )
 
         self.assertEqual(
+            [(group.stem, group.members, group.representative) for group in reference_groups],
             [
-                (group.stem, group.members, group.representative) for group in reference_groups
-            ],
-            [
-                (group.stem, tuple(Path(member) for member in group.members), Path(group.representative))
+                (
+                    group.stem,
+                    tuple(Path(member) for member in group.members),
+                    Path(group.representative),
+                )
                 for group in rust_groups
             ],
         )
@@ -299,12 +301,9 @@ class RustFileOpsTests(unittest.TestCase):
         self.assertTrue(staged_path.name.startswith(".keep-or-nah-"))
         self.assertEqual(staged_path.read_bytes(), b"raw-content")
         staged_stat = staged_path.stat()
-        self.assertEqual(
-            stat.S_IMODE(staged_stat.st_mode), stat.S_IMODE(source.stat().st_mode)
-        )
+        self.assertEqual(stat.S_IMODE(staged_stat.st_mode), stat.S_IMODE(source.stat().st_mode))
         self.assertEqual(staged_stat.st_mtime_ns, source.stat().st_mtime_ns)
-        self.assertEqual((staged.dev, staged.ino),
-                         (staged_stat.st_dev, staged_stat.st_ino))
+        self.assertEqual((staged.dev, staged.ino), (staged_stat.st_dev, staged_stat.st_ino))
 
     def test_stage_regular_file_refuses_symlink_and_directory_sources(self) -> None:
         real = self.write_source("IMG.jpg", b"raw")
@@ -326,7 +325,9 @@ class RustFileOpsTests(unittest.TestCase):
 
         (self.stage / "occupied").write_bytes(b"o")
         with self.assertRaises(OSError):
-            keep_or_nah_core.stage_regular_file(str(source), str(Path(os.devnull).parent / "nonexist"))
+            keep_or_nah_core.stage_regular_file(
+                str(source), str(Path(os.devnull).parent / "nonexist")
+            )
         self.assertTrue(Path(staged.path).exists())
 
     def test_remove_verified_file_deletes_matching_identity_only(self) -> None:
@@ -340,9 +341,7 @@ class RustFileOpsTests(unittest.TestCase):
         replacement = self.root / "IMG.jpg"
         replacement.write_bytes(b"replacement")
         with self.assertRaises(OSError):
-            keep_or_nah_core.remove_verified_file(
-                str(replacement), identity[0], identity[1]
-            )
+            keep_or_nah_core.remove_verified_file(str(replacement), identity[0], identity[1])
         self.assertTrue(replacement.exists())
 
     def test_file_identity_refuses_symlinks_and_directories(self) -> None:
@@ -380,9 +379,7 @@ class RustGroupingSessionIntegrationTests(unittest.TestCase):
             [group.stem for group in session.pending_groups],
             ["archive.tar", "beach", "dot.hidden", "IMG_0001", "lower", "Photo (1)", "photo (2)"],
         )
-        self.assertEqual(
-            session.pending_groups[3].representative.name, "IMG_0001.JPG"
-        )
+        self.assertEqual(session.pending_groups[3].representative.name, "IMG_0001.JPG")
         self.assertEqual(
             tuple(member.name for member in session.pending_groups[3].members),
             ("IMG_0001.cr3", "IMG_0001.JPG", "IMG_0001.xmp"),

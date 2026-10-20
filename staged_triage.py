@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import contextlib
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-import threading
-from typing import Callable, Sequence
 
+from file_coordinator import FileCoordinator
 from photo_groups import PhotoGroup
 from photo_triage import (
     ActionMode,
@@ -13,7 +15,6 @@ from photo_triage import (
     FileOperation,
     PhotoSessionError,
 )
-from file_coordinator import FileCoordinator
 
 
 def format_bytes(bytes_count: int) -> str:
@@ -86,15 +87,12 @@ class StagedTriageManager:
     ) -> StagedDecision:
         total_bytes = 0
         for member in group.members:
-            try:
+            with contextlib.suppress(OSError):
                 total_bytes += member.stat().st_size
-            except OSError:
-                pass
 
         if destination_dir is not None:
             files = tuple(
-                FileOperation(member, destination_dir / member.name)
-                for member in group.members
+                FileOperation(member, destination_dir / member.name) for member in group.members
             )
         else:
             files = ()
@@ -201,9 +199,7 @@ class StagedTriageManager:
             if item.destination_dir is not None:
                 item.destination_dir.mkdir(parents=True, exist_ok=True)
                 source_parent = (
-                    item.group.members[0].resolve().parent
-                    if item.group.members
-                    else Path(".")
+                    item.group.members[0].resolve().parent if item.group.members else Path(".")
                 )
                 try:
                     executed_files = coordinator.execute_group_operations(
@@ -250,11 +246,7 @@ class StagedTriageManager:
             if not record.files:
                 continue
             dest_root = coordinator.recorded_destination_root(record)
-            src_root = (
-                record.group.members[0].parent
-                if record.group.members
-                else None
-            )
+            src_root = record.group.members[0].parent if record.group.members else None
             try:
                 if record.action_mode == "move":
                     coordinator.undo_move_record(

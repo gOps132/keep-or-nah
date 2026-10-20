@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
+import legacy_snapshot
+import snapshot_validators
 from photo_groups import PhotoGroup
 from photo_metadata import pillow_previewable_extensions
 from photo_triage import FileOperation
 from staged_triage import StagedDecision, StagedTriageManager
-import legacy_snapshot
-import snapshot_validators
 
 if TYPE_CHECKING:
     from photo_session import PhotoSession
@@ -38,17 +39,11 @@ def to_snapshot(
         "keep_dir": str(state.keep_dir) if state.keep_dir is not None else None,
         "nah_dir": str(state.nah_dir) if state.nah_dir is not None else None,
         "action_mode": state.action_mode,
-        "queue": [
-            _group_to_snapshot(state._as_group(item)) for item in state.queue
-        ],
-        "pending_groups": [
-            _group_to_snapshot(group) for group in state.pending_groups
-        ],
+        "queue": [_group_to_snapshot(state._as_group(item)) for item in state.queue],
+        "pending_groups": [_group_to_snapshot(group) for group in state.pending_groups],
         "completed_stems": sorted(state.completed_stems),
         "active_index": state.active_index,
-        "active_stem": (
-            state.active_group.stem if state.active_group is not None else None
-        ),
+        "active_stem": (state.active_group.stem if state.active_group is not None else None),
         "total_loaded": state.total_loaded,
         "keep_count": triage.keep_count,
         "nah_count": triage.nah_count,
@@ -85,9 +80,7 @@ def to_snapshot(
                 "decision": item.decision,
                 "action_mode": item.action_mode,
                 "destination_dir": (
-                    str(item.destination_dir)
-                    if item.destination_dir is not None
-                    else None
+                    str(item.destination_dir) if item.destination_dir is not None else None
                 ),
                 "index": item.index,
                 "bytes_size": item.bytes_size,
@@ -133,10 +126,7 @@ def _from_grouped_snapshot(
     if raw_completed is not None:
         if (
             not isinstance(raw_completed, list)
-            or any(
-                not snapshot_validators._is_safe_completed_stem(stem)
-                for stem in raw_completed
-            )
+            or any(not snapshot_validators._is_safe_completed_stem(stem) for stem in raw_completed)
             or len(set(raw_completed)) != len(raw_completed)
         ):
             return None
@@ -174,8 +164,7 @@ def _from_grouped_snapshot(
         for index, item in enumerate(raw_queue)
     ]
     declared_visible_stems = [
-        item.get("stem") if isinstance(item, dict) else None
-        for item in raw_queue
+        item.get("stem") if isinstance(item, dict) else None for item in raw_queue
     ]
     if raw_queue and active_stem != declared_visible_stems[active_index]:
         return None
@@ -183,9 +172,7 @@ def _from_grouped_snapshot(
         return None
 
     surviving_visible = [
-        (original_index, group)
-        for original_index, group in restored_visible
-        if group is not None
+        (original_index, group) for original_index, group in restored_visible if group is not None
     ]
     restored_pending = [
         snapshot_validators._queue_group_from_snapshot(
@@ -199,10 +186,7 @@ def _from_grouped_snapshot(
     pending_groups = [group for group in restored_pending if group is not None]
     if not pending_groups:
         return None
-    pending_stems = [
-        item.get("stem") if isinstance(item, dict) else None
-        for item in raw_pending
-    ]
+    pending_stems = [item.get("stem") if isinstance(item, dict) else None for item in raw_pending]
     if len(set(pending_stems)) != len(pending_stems):
         return None
     all_members = [member for group in pending_groups for member in group.members]
@@ -233,11 +217,7 @@ def _from_grouped_snapshot(
         return None
     if session.queue:
         retained_active_index = next(
-            (
-                index
-                for index, group in enumerate(session.queue)
-                if group.stem == active_stem
-            ),
+            (index for index, group in enumerate(session.queue) if group.stem == active_stem),
             None,
         )
         if retained_active_index is None:
@@ -283,10 +263,11 @@ def _from_grouped_snapshot(
             dest_dir = Path(item["destination_dir"]) if item.get("destination_dir") else None
             idx = int(item.get("index", 0))
             bytes_size = int(item.get("bytes_size", 0))
-            files = tuple(
-                FileOperation(m, dest_dir / m.name)
-                for m in staged_group.members
-            ) if dest_dir is not None else ()
+            files = (
+                tuple(FileOperation(m, dest_dir / m.name) for m in staged_group.members)
+                if dest_dir is not None
+                else ()
+            )
             restored_staged.append(
                 StagedDecision(
                     group=staged_group,

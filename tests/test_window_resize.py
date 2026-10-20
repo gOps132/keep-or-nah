@@ -242,12 +242,10 @@ class AsyncThumbnailStripTests(unittest.TestCase):
         self.assertNotIn(unexpected, fake.thumbnail_pending_requests)
 
     def test_decode_uses_native_engine_and_never_pillow(self) -> None:
-        fake = ThumbnailFakeFactory.make_async(App)
+        ThumbnailFakeFactory.make_async(App)
         native_raw = ThumbnailFakeFactory.make_raw(72, 48)
 
-        with patch(
-            "gui_app.thumbnail_rgba", return_value=native_raw
-        ) as native_decode:
+        with patch("gui_app.thumbnail_rgba", return_value=native_raw) as native_decode:
             result = App.decode_strip_thumbnail(Path("x.jpg"))
 
         native_decode.assert_called_once_with("x.jpg", fake_thumbnail_size)
@@ -260,9 +258,11 @@ class AsyncThumbnailStripTests(unittest.TestCase):
         fake = ThumbnailFakeFactory.make_async(App)
         paths = (Path("a.jpg"),)
 
-        with patch("gui_app.Image", create=True, side_effect=AssertionError(
-            "main thread must not decode thumbnails with Pillow"
-        )):
+        with patch(
+            "gui_app.Image",
+            create=True,
+            side_effect=AssertionError("main thread must not decode thumbnails with Pillow"),
+        ):
             App.request_missing_strip_thumbnails(fake, paths, (0, 1))
             self.assertIsNone(App.get_thumbnail_photo(fake, paths[0]))
 
@@ -271,9 +271,10 @@ class AsyncThumbnailStripTests(unittest.TestCase):
         raw = ThumbnailFakeFactory.make_raw(72, 48)
         fake.thumbnail_raws[Path("a.jpg")] = raw
 
-        with patch("gui_app.Image.frombytes") as frombytes, patch(
-            "gui_app.ImageTk.PhotoImage"
-        ) as photo_image:
+        with (
+            patch("gui_app.Image.frombytes") as frombytes,
+            patch("gui_app.ImageTk.PhotoImage") as photo_image,
+        ):
             photo = App.get_thumbnail_photo(fake, Path("a.jpg"))
 
         frombytes.assert_called_once_with("RGBA", (72, 48), raw.data)

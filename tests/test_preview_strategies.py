@@ -1,24 +1,23 @@
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from PIL import Image
 
 from gui_app import App
-from preview_pipeline import PreviewPipeline
-from preview_pipeline import PreviewLookup
+from photo_session import PhotoSession, pillow_previewable_extensions
+from preview_pipeline import PreviewLookup, PreviewPipeline
 from preview_strategies import (
     PillowPreviewStrategy,
     PreviewStrategyRegistry,
     UnavailablePreviewStrategy,
 )
-from photo_session import PhotoSession, pillow_previewable_extensions
 
 
 class PreviewStrategyRegistryTests(unittest.TestCase):
@@ -56,9 +55,7 @@ class PreviewStrategyRegistryTests(unittest.TestCase):
             session = PhotoSession(previewable_extensions=set())
             session.set_source_dir(source)
             session.load_queue()
-            registry = PreviewStrategyRegistry(
-                [PillowPreviewStrategy(extensions={".jpg"})]
-            )
+            registry = PreviewStrategyRegistry([PillowPreviewStrategy(extensions={".jpg"})])
 
             self.assertEqual(session.active_photo, heic)
             self.assertIsInstance(registry.for_path(heic), UnavailablePreviewStrategy)
@@ -186,9 +183,7 @@ class UnavailablePreviewFrontendTests(unittest.TestCase):
                     frontend.refresh_preview(fake, preserve_view=preserve_view)
 
                     fake.hide_loading_overlay.assert_called_once_with()
-                    fake.clear_preview.assert_called_once_with(
-                        "Preview not available\nA.cr3\n.cr3"
-                    )
+                    fake.clear_preview.assert_called_once_with("Preview not available\nA.cr3\n.cr3")
                     fake.schedule_preview_poll.assert_not_called()
                     fake.schedule_loading_overlay_delay.assert_not_called()
 

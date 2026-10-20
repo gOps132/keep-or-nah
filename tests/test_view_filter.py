@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import tempfile
+import unittest
 from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
-import tempfile
-import unittest
 from unittest.mock import Mock
 
 from app_settings import AppSettings
@@ -105,75 +105,77 @@ class ViewFilterApplicationTests(unittest.TestCase):
             self.assertEqual(session.enabled_extensions, {".jpg", ".png"})
             self.assertEqual(session.queue, old_queue)
 
-    def test_both_frontend_settings_saves_are_atomic_when_settings_write_fails(self) -> None:
-        for frontend in (App,):
-            with tempfile.TemporaryDirectory() as directory:
-                source = Path(directory)
-                (source / "A.jpg").write_bytes(b"jpg")
-                (source / "B.png").write_bytes(b"png")
-                session = PhotoSession()
-                session.set_source_dir(source)
-                session.load_queue()
-                old_settings = AppSettings(True, True, 256)
-                new_settings = AppSettings(False, False, 128)
-                show_error = Mock()
-                fake = SimpleNamespace(
-                    session=session,
-                    settings=old_settings,
-                    preview_pipeline=SimpleNamespace(
-                        reset=Mock(),
-                        configure_cache_budget=Mock(),
-                    ),
-                    preview_texture_cache=OrderedDict({("old",): object()}),
-                    thumbnail_cache=OrderedDict({Path("old.jpg"): object()}),
-                    thumbnail_refs=[object()],
-                    thumbnail_signature=(Path("old.jpg"),),
-                    rendered_thumbnail_range=(0, 1),
-                    rendered_active_index=0,
-                    preview_source_path=Path("old.jpg"),
-                    preview_source_image=object(),
-                    reset_zoom_state=Mock(),
-                    reset_preview_request_state=Mock(),
-                    persist_session=Mock(),
-                    refresh_ui=Mock(),
-                    refresh_preview=Mock(),
-                    prune_preview_texture_cache=Mock(),
-                )
-                fake.apply_preview_settings = lambda settings, **kwargs: frontend.apply_preview_settings(
-                    fake,
-                    settings,
-                    **kwargs,
-                )
-                old_queue = list(session.queue)
+    def test_frontend_settings_saves_are_atomic_when_settings_write_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "A.jpg").write_bytes(b"jpg")
+            (source / "B.png").write_bytes(b"png")
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.load_queue()
+            old_settings = AppSettings(True, True, 256)
+            new_settings = AppSettings(False, False, 128)
+            show_error = Mock()
+            fake = SimpleNamespace(
+                session=session,
+                settings=old_settings,
+                preview_pipeline=SimpleNamespace(
+                    reset=Mock(),
+                    configure_cache_budget=Mock(),
+                ),
+                preview_texture_cache=OrderedDict({("old",): object()}),
+                thumbnail_cache=OrderedDict({Path("old.jpg"): object()}),
+                thumbnail_refs=[object()],
+                thumbnail_signature=(Path("old.jpg"),),
+                rendered_thumbnail_range=(0, 1),
+                rendered_active_index=0,
+                preview_source_path=Path("old.jpg"),
+                preview_source_image=object(),
+                reset_zoom_state=Mock(),
+                reset_preview_request_state=Mock(),
+                persist_session=Mock(),
+                refresh_ui=Mock(),
+                refresh_preview=Mock(),
+                prune_preview_texture_cache=Mock(),
+            )
+            fake.apply_preview_settings = lambda settings, **kwargs: App.apply_preview_settings(
+                fake,
+                settings,
+                **kwargs,
+            )
+            old_queue = list(session.queue)
 
-                with self.subTest(frontend=frontend.__name__), unittest.mock.patch.object(
+            with (
+                self.subTest(frontend=App.__name__),
+                unittest.mock.patch.object(
                     AppSettings,
                     "save",
                     side_effect=OSError("settings disk full"),
-                ):
-                    saved = frontend.save_settings_changes(
-                        fake,
-                        new_settings,
-                        {".jpg"},
-                        show_error,
-                    )
+                ),
+            ):
+                saved = App.save_settings_changes(
+                    fake,
+                    new_settings,
+                    {".jpg"},
+                    show_error,
+                )
 
-                    self.assertFalse(saved)
-                    show_error.assert_called_once_with(
-                        "Keep or Nah",
-                        "settings disk full",
-                    )
-                    self.assertIs(fake.settings, old_settings)
-                    self.assertEqual(session.enabled_extensions, {".jpg", ".png"})
-                    self.assertEqual(session.queue, old_queue)
-                    fake.preview_pipeline.reset.assert_not_called()
-                    fake.preview_pipeline.configure_cache_budget.assert_not_called()
-                    fake.prune_preview_texture_cache.assert_not_called()
-                    self.assertEqual(list(fake.preview_texture_cache), [("old",)])
-                    self.assertEqual(list(fake.thumbnail_cache), [Path("old.jpg")])
-                    fake.persist_session.assert_not_called()
-                    fake.refresh_ui.assert_not_called()
-                    fake.refresh_preview.assert_not_called()
+                self.assertFalse(saved)
+                show_error.assert_called_once_with(
+                    "Keep or Nah",
+                    "settings disk full",
+                )
+                self.assertIs(fake.settings, old_settings)
+                self.assertEqual(session.enabled_extensions, {".jpg", ".png"})
+                self.assertEqual(session.queue, old_queue)
+                fake.preview_pipeline.reset.assert_not_called()
+                fake.preview_pipeline.configure_cache_budget.assert_not_called()
+                fake.prune_preview_texture_cache.assert_not_called()
+                self.assertEqual(list(fake.preview_texture_cache), [("old",)])
+                self.assertEqual(list(fake.thumbnail_cache), [Path("old.jpg")])
+                fake.persist_session.assert_not_called()
+                fake.refresh_ui.assert_not_called()
+                fake.refresh_preview.assert_not_called()
 
     def test_source_drift_to_no_effective_selection_is_atomic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -250,144 +252,140 @@ class ViewFilterApplicationTests(unittest.TestCase):
         app.refresh_ui.assert_called_once_with()
         app.refresh_preview.assert_called_once_with()
 
-    def test_both_frontends_delegate_filter_application_to_shared_coordinator(self) -> None:
-        for frontend in (App,):
-            fake = SimpleNamespace()
-            with self.subTest(frontend=frontend.__name__), unittest.mock.patch(
-                f"{frontend.__module__}.apply_extension_filter"
-            ) as coordinator:
-                frontend.apply_view_filter(fake, {".jpg"})
-                coordinator.assert_called_once_with(fake, {".jpg"})
+    def test_frontend_delegates_filter_application_to_shared_coordinator(self) -> None:
+        fake = SimpleNamespace()
+        with (
+            self.subTest(frontend=App.__name__),
+            unittest.mock.patch(f"{App.__module__}.apply_extension_filter") as coordinator,
+        ):
+            App.apply_view_filter(fake, {".jpg"})
+            coordinator.assert_called_once_with(fake, {".jpg"})
 
-    def test_both_frontends_expose_the_shared_settings_model(self) -> None:
+    def test_frontend_exposes_the_shared_settings_model(self) -> None:
         session = SimpleNamespace(
             available_extensions=(".cr3", ".jpg"),
             enabled_extensions={".jpg"},
         )
-        for frontend in (App,):
-            with self.subTest(frontend=frontend.__name__):
-                model = frontend.extension_filter_model(SimpleNamespace(session=session))
-                self.assertEqual(model.options, (".cr3", ".jpg"))
-                self.assertEqual(model.selected, frozenset({".jpg"}))
+        with self.subTest(frontend=App.__name__):
+            model = App.extension_filter_model(SimpleNamespace(session=session))
+            self.assertEqual(model.options, (".cr3", ".jpg"))
+            self.assertEqual(model.selected, frozenset({".jpg"}))
 
-    def test_both_frontends_apply_filter_persist_and_refresh_unsupported_preview(self) -> None:
+    def test_frontend_applies_filter_persists_and_refreshes_unsupported_preview(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)
             (source / "IMG_1.jpg").write_bytes(b"jpg")
             (source / "IMG_1.cr3").write_bytes(b"raw")
 
-            for frontend in (App,):
-                session = PhotoSession()
-                session.set_source_dir(source)
-                session.load_queue()
-                preview_messages = []
-                fake = SimpleNamespace(
-                    session=session,
-                    preview_pipeline=SimpleNamespace(reset=Mock()),
-                    preview_texture_cache=OrderedDict(),
-                    thumbnail_cache=OrderedDict(),
-                    thumbnail_refs=[],
-                    thumbnail_signature=(),
-                    rendered_thumbnail_range=(-1, -1),
-                    rendered_active_index=None,
-                    preview_source_path=None,
-                    preview_source_image=None,
-                    reset_zoom_state=Mock(),
-                    reset_preview_request_state=Mock(),
-                    persist_session=Mock(),
-                    refresh_ui=Mock(),
-                    refresh_preview=lambda: preview_messages.append(
-                        unavailable_preview_message(session.active_photo)
-                    ),
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.load_queue()
+            preview_messages = []
+            fake = SimpleNamespace(
+                session=session,
+                preview_pipeline=SimpleNamespace(reset=Mock()),
+                preview_texture_cache=OrderedDict(),
+                thumbnail_cache=OrderedDict(),
+                thumbnail_refs=[],
+                thumbnail_signature=(),
+                rendered_thumbnail_range=(-1, -1),
+                rendered_active_index=None,
+                preview_source_path=None,
+                preview_source_image=None,
+                reset_zoom_state=Mock(),
+                reset_preview_request_state=Mock(),
+                persist_session=Mock(),
+                refresh_ui=Mock(),
+                refresh_preview=lambda: preview_messages.append(
+                    unavailable_preview_message(session.active_photo)
+                ),
+            )
+
+            with self.subTest(frontend=App.__name__):
+                App.apply_view_filter(fake, {".cr3"})
+                self.assertEqual(session.enabled_extensions, {".cr3"})
+                self.assertEqual(session.active_group.stem, "IMG_1")
+                self.assertEqual(session.active_photo.name, "IMG_1.cr3")
+                fake.persist_session.assert_called_once_with()
+                self.assertEqual(
+                    preview_messages[-1],
+                    "Preview not available\nIMG_1.cr3\n.cr3",
                 )
 
-                with self.subTest(frontend=frontend.__name__):
-                    frontend.apply_view_filter(fake, {".cr3"})
-                    self.assertEqual(session.enabled_extensions, {".cr3"})
-                    self.assertEqual(session.active_group.stem, "IMG_1")
-                    self.assertEqual(session.active_photo.name, "IMG_1.cr3")
-                    fake.persist_session.assert_called_once_with()
-                    self.assertEqual(
-                        preview_messages[-1],
-                        "Preview not available\nIMG_1.cr3\n.cr3",
-                    )
+    def test_frontend_settings_saves_catch_filter_drift_before_preview_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            jpg = source / "IMG.jpg"
+            jpg.write_bytes(b"jpg")
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.load_queue()
+            jpg.unlink()
+            (source / "IMG.png").write_bytes(b"png")
+            show_error = Mock()
+            fake = SimpleNamespace(
+                session=session,
+                apply_preview_settings=Mock(),
+            )
 
-    def test_both_frontend_settings_saves_catch_filter_drift_before_preview_mutation(self) -> None:
-        for frontend in (App,):
-            with tempfile.TemporaryDirectory() as directory:
-                source = Path(directory)
-                jpg = source / "IMG.jpg"
-                jpg.write_bytes(b"jpg")
-                session = PhotoSession()
-                session.set_source_dir(source)
-                session.load_queue()
-                jpg.unlink()
-                (source / "IMG.png").write_bytes(b"png")
-                show_error = Mock()
-                fake = SimpleNamespace(
-                    session=session,
-                    apply_preview_settings=Mock(),
+            with self.subTest(frontend=App.__name__):
+                saved = App.save_settings_changes(
+                    fake,
+                    SimpleNamespace(),
+                    {".jpg"},
+                    show_error,
                 )
-
-                with self.subTest(frontend=frontend.__name__):
-                    saved = frontend.save_settings_changes(
-                        fake,
-                        SimpleNamespace(),
-                        {".jpg"},
-                        show_error,
-                    )
-                    self.assertFalse(saved)
-                    show_error.assert_called_once_with(
-                        "Keep or Nah",
-                        EMPTY_SELECTION_MESSAGE,
-                    )
-                    fake.apply_preview_settings.assert_not_called()
-
-    def test_both_frontend_settings_saves_catch_missing_source(self) -> None:
-        for frontend in (App,):
-            with tempfile.TemporaryDirectory() as directory:
-                source = Path(directory) / "source"
-                source.mkdir()
-                (source / "IMG.jpg").write_bytes(b"jpg")
-                session = PhotoSession()
-                session.set_source_dir(source)
-                session.load_queue()
-                source.rename(source.with_name("moved"))
-                show_error = Mock()
-                fake = SimpleNamespace(
-                    session=session,
-                    apply_preview_settings=Mock(),
+                self.assertFalse(saved)
+                show_error.assert_called_once_with(
+                    "Keep or Nah",
+                    EMPTY_SELECTION_MESSAGE,
                 )
+                fake.apply_preview_settings.assert_not_called()
 
-                with self.subTest(frontend=frontend.__name__):
-                    saved = frontend.save_settings_changes(
-                        fake,
-                        SimpleNamespace(),
-                        {".jpg"},
-                        show_error,
-                    )
-                    self.assertFalse(saved)
-                    self.assertIn("No such file", show_error.call_args.args[1])
-                    fake.apply_preview_settings.assert_not_called()
+    def test_frontend_settings_saves_catch_missing_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            source.mkdir()
+            (source / "IMG.jpg").write_bytes(b"jpg")
+            session = PhotoSession()
+            session.set_source_dir(source)
+            session.load_queue()
+            source.rename(source.with_name("moved"))
+            show_error = Mock()
+            fake = SimpleNamespace(
+                session=session,
+                apply_preview_settings=Mock(),
+            )
+
+            with self.subTest(frontend=App.__name__):
+                saved = App.save_settings_changes(
+                    fake,
+                    SimpleNamespace(),
+                    {".jpg"},
+                    show_error,
+                )
+                self.assertFalse(saved)
+                self.assertIn("No such file", show_error.call_args.args[1])
+                fake.apply_preview_settings.assert_not_called()
 
 
 class UnsupportedPreviewControlTests(unittest.TestCase):
-    def test_both_frontends_keep_sorting_controls_enabled_for_unsupported_path(self) -> None:
+    def test_frontend_keeps_sorting_controls_enabled_for_unsupported_path(self) -> None:
         session = SimpleNamespace(
             active_photo=Path("IMG.cr3"),
             source_dir=Path("source"),
             can_undo=False,
             total_loaded=1,
         )
-        common = dict(
-            session=session,
-            update_selector_buttons=Mock(),
-            update_action_button_visibility=Mock(),
-            refresh_thumbnail_strip=Mock(),
-            focus_set=Mock(),
-            reset_preview_request_state=Mock(),
-            clear_preview=Mock(),
-        )
+        common = {
+            "session": session,
+            "update_selector_buttons": Mock(),
+            "update_action_button_visibility": Mock(),
+            "refresh_thumbnail_strip": Mock(),
+            "focus_set": Mock(),
+            "reset_preview_request_state": Mock(),
+            "clear_preview": Mock(),
+        }
 
         custom = SimpleNamespace(
             **common,
@@ -403,7 +401,7 @@ class UnsupportedPreviewControlTests(unittest.TestCase):
         custom.keep_button.configure.assert_called_with(state="normal")
         custom.nah_button.configure.assert_called_with(state="normal")
 
-    def test_both_frontends_show_filtered_empty_state_with_pending_groups(self) -> None:
+    def test_frontend_shows_filtered_empty_state_with_pending_groups(self) -> None:
         session = SimpleNamespace(
             active_photo=None,
             source_dir=Path("source"),
@@ -411,29 +409,28 @@ class UnsupportedPreviewControlTests(unittest.TestCase):
             total_loaded=2,
             pending_count=1,
         )
-        for frontend in (App,):
-            fake = SimpleNamespace(
-                session=session,
-                update_selector_buttons=Mock(),
-                update_action_button_visibility=Mock(),
-                refresh_thumbnail_strip=Mock(),
-                focus_set=Mock(),
-                reset_preview_request_state=Mock(),
-                clear_preview=Mock(),
-                load_button=Mock(),
-                undo_button=Mock(),
-                zoom_in_button=Mock(),
-                zoom_out_button=Mock(),
-                zoom_fit_button=Mock(),
-                keep_button=Mock(),
-                nah_button=Mock(),
-            )
+        fake = SimpleNamespace(
+            session=session,
+            update_selector_buttons=Mock(),
+            update_action_button_visibility=Mock(),
+            refresh_thumbnail_strip=Mock(),
+            focus_set=Mock(),
+            reset_preview_request_state=Mock(),
+            clear_preview=Mock(),
+            load_button=Mock(),
+            undo_button=Mock(),
+            zoom_in_button=Mock(),
+            zoom_out_button=Mock(),
+            zoom_fit_button=Mock(),
+            keep_button=Mock(),
+            nah_button=Mock(),
+        )
 
-            with self.subTest(frontend=frontend.__name__):
-                frontend.refresh_ui(fake)
-                fake.clear_preview.assert_called_once_with(
-                    "No Photo\nNo pending photos match the extension filter."
-                )
+        with self.subTest(frontend=App.__name__):
+            App.refresh_ui(fake)
+            fake.clear_preview.assert_called_once_with(
+                "No Photo\nNo pending photos match the extension filter."
+            )
 
 
 class UnavailablePreviewMessageTests(unittest.TestCase):

@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
-from pathlib import Path
 import sys
-from typing import Callable
+from collections.abc import Callable
+from pathlib import Path
 
 from app_settings import resolve_settings_path
 from photo_session import PhotoSession
-
 
 SESSION_FILE_NAME = "session.json"
 
@@ -46,16 +46,12 @@ class SessionPersistence:
                 os.fsync(file.fileno())
             temporary.replace(self.path)
         finally:
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 temporary.unlink()
-            except FileNotFoundError:
-                pass
 
     def clear(self) -> None:
-        try:
+        with contextlib.suppress(FileNotFoundError):
             self.path.unlink()
-        except FileNotFoundError:
-            pass
 
 
 class SessionLifecycle:

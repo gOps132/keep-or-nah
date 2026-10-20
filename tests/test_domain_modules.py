@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+
 import pytest
 
 from photo_groups import PhotoGroup
@@ -8,6 +9,7 @@ from photo_groups import PhotoGroup
 def test_domain_modules_under_500_lines() -> None:
     modules = [
         "photo_session.py",
+        "photo_session_properties.py",
         "session_state.py",
         "photo_triage.py",
         "file_coordinator.py",
@@ -16,6 +18,16 @@ def test_domain_modules_under_500_lines() -> None:
         "session_snapshot.py",
         "snapshot_validators.py",
         "legacy_snapshot.py",
+        "ui/__init__.py",
+        "ui/gui_targets.py",
+        "ui/preview_controller.py",
+        "ui/compare_controller.py",
+        "ui/thumbnail_strip.py",
+        "ui/shortcuts.py",
+        "ui/viewport.py",
+        "ui/layout.py",
+        "ui/settings_dialog.py",
+        "ui/session_commands.py",
     ]
     for filename in modules:
         path = Path(filename)
@@ -25,7 +37,7 @@ def test_domain_modules_under_500_lines() -> None:
 
 
 def test_in_memory_triage_decide_and_undo() -> None:
-    from photo_triage import PhotoTriage, ActionRecord, FileOperation, PhotoSessionError
+    from photo_triage import ActionRecord, FileOperation, PhotoSessionError, PhotoTriage
 
     triage = PhotoTriage()
     assert not triage.can_undo

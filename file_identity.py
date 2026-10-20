@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import stat
 import sys
-from typing import Callable
+from collections.abc import Callable
+from pathlib import Path
 
 from keep_or_nah_core import remove_verified_file
 
@@ -12,14 +12,14 @@ from keep_or_nah_core import remove_verified_file
 def _get_os() -> object:
     mod = sys.modules.get("photo_session")
     if mod and hasattr(mod, "os"):
-        return getattr(mod, "os")
+        return mod.os
     return os
 
 
 def _get_remove_fn() -> Callable[..., object]:
     mod = sys.modules.get("photo_session")
     if mod and hasattr(mod, "remove_verified_file"):
-        return getattr(mod, "remove_verified_file")
+        return mod.remove_verified_file
     return remove_verified_file
 
 
@@ -74,13 +74,9 @@ def validate_destination_parent(path: Path, destination_root: Path) -> None:
     try:
         resolved_parent = path.parent.resolve(strict=True)
     except OSError as error:
-        raise OSError(
-            f"Destination parent cannot be resolved safely: {path.parent}"
-        ) from error
+        raise OSError(f"Destination parent cannot be resolved safely: {path.parent}") from error
     if resolved_parent != destination_root:
-        raise OSError(
-            f"Destination parent escapes the selected folder: {path.parent}"
-        )
+        raise OSError(f"Destination parent escapes the selected folder: {path.parent}")
 
 
 def validate_destination(path: Path, destination_root: Path) -> None:

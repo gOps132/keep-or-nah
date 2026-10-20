@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
 import threading
 import time
+from pathlib import Path
+
 import pytest
 
 from photo_session import PhotoSession

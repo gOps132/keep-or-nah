@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Protocol
-from tkinter import filedialog
 import sys
+from pathlib import Path
+from tkinter import filedialog
+from typing import Protocol
 
 
 class StartupSessionApp(Protocol):

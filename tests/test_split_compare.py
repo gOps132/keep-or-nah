@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 import pytest
 
 from burst_clustering import PhotoBurstInfo
@@ -174,6 +175,7 @@ def test_compare_pair_fewer_than_two_photos(tmp_path: Path) -> None:
 
 def test_gui_compare_toggle_and_controls() -> None:
     from unittest.mock import Mock
+
     from gui_app import App
 
     app = Mock(spec=App)
@@ -197,12 +199,15 @@ def test_gui_compare_toggle_and_controls() -> None:
     # Toggle Off
     App.toggle_compare_mode(app)
     assert app.compare_mode is False
-    app.compare_mode_button.configure.assert_called_with(text="2-Up (C)", fg_color=["#3a7ebf", "#1f538d"])
+    app.compare_mode_button.configure.assert_called_with(
+        text="2-Up (C)", fg_color=["#3a7ebf", "#1f538d"]
+    )
     app.compare_canvas.grid_remove.assert_called_once()
 
 
 def test_gui_synchronized_pan_and_scroll() -> None:
     from unittest.mock import Mock
+
     from gui_app import App
 
     app = Mock(spec=App)
@@ -237,6 +242,7 @@ def test_gui_synchronized_pan_and_scroll() -> None:
 
 def test_gui_compare_candidate_pick_shortcuts() -> None:
     from unittest.mock import Mock
+
     from gui_app import App
 
     app = Mock(spec=App)
@@ -251,4 +257,3 @@ def test_gui_compare_candidate_pick_shortcuts() -> None:
     # Press 2
     assert App.handle_compare_pick_2_shortcut(app) == "break"
     app.pick_compare_candidate.assert_called_with(2)
-

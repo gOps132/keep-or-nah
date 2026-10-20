@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import threading
-from typing import Callable
+from collections.abc import Callable
 
 import customtkinter as ctk
 
@@ -71,7 +70,7 @@ class ReviewCommitController:
 
         self.is_committing = True
         self.cancel_token.clear()
-        total_items = len(self.session.staged_decisions)
+        len(self.session.staged_decisions)
 
         def _worker() -> None:
             try:
@@ -138,12 +137,18 @@ class ReviewCommitModal(ctk.CTkToplevel):
         self.stat_total.grid(row=0, column=0, padx=8, pady=10)
 
         self.stat_keep = ctk.CTkLabel(
-            self.banner_frame, text="", text_color="#22c55e", font=ctk.CTkFont(size=13, weight="bold")
+            self.banner_frame,
+            text="",
+            text_color="#22c55e",
+            font=ctk.CTkFont(size=13, weight="bold"),
         )
         self.stat_keep.grid(row=0, column=1, padx=8, pady=10)
 
         self.stat_nah = ctk.CTkLabel(
-            self.banner_frame, text="", text_color="#ef4444", font=ctk.CTkFont(size=13, weight="bold")
+            self.banner_frame,
+            text="",
+            text_color="#ef4444",
+            font=ctk.CTkFont(size=13, weight="bold"),
         )
         self.stat_nah.grid(row=0, column=2, padx=8, pady=10)
 
@@ -192,7 +197,10 @@ class ReviewCommitModal(ctk.CTkToplevel):
             name_lbl.grid(row=0, column=0, sticky="w", padx=8)
 
             size_lbl = ctk.CTkLabel(
-                row_frame, text=format_bytes(item.bytes_size), text_color="gray60", font=ctk.CTkFont(size=12)
+                row_frame,
+                text=format_bytes(item.bytes_size),
+                text_color="gray60",
+                font=ctk.CTkFont(size=12),
             )
             size_lbl.grid(row=0, column=1, padx=8)
 
@@ -234,9 +242,7 @@ class ReviewCommitModal(ctk.CTkToplevel):
         self.progress_frame.grid(row=2, column=0, sticky="ew", padx=16, pady=4)
         self.progress_frame.grid_columnconfigure(0, weight=1)
 
-        self.progress_label = ctk.CTkLabel(
-            self.progress_frame, text="", font=ctk.CTkFont(size=12)
-        )
+        self.progress_label = ctk.CTkLabel(self.progress_frame, text="", font=ctk.CTkFont(size=12))
         self.progress_label.grid(row=0, column=0, sticky="w", padx=4)
 
         self.progress_bar = ctk.CTkProgressBar(self.progress_frame)

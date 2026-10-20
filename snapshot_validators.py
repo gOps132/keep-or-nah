@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from pathlib import Path
 import stat
+from pathlib import Path
 
+import file_identity
 from photo_groups import PhotoGroup
-from photo_metadata import pillow_previewable_extensions
 from photo_triage import (
     ActionMode,
     ActionRecord,
     FileOperation,
 )
-import file_identity
 
 
 def _snapshot_int(value: object) -> int:
@@ -45,7 +44,7 @@ def _optional_path(value: object) -> Path | None:
 
 def _snapshot_extensions(value: object) -> tuple[str, ...]:
     if not isinstance(value, list):
-        raise ValueError("Snapshot extensions must be a list")
+        raise TypeError("Snapshot extensions must be a list")
     extensions: list[str] = []
     for extension in value:
         if (
@@ -85,8 +84,9 @@ def _safe_raw_history_stems(raw_history: object, *, source_dir: Path) -> set[str
         group_item = item.get("group")
         if isinstance(group_item, dict):
             stem = group_item.get("stem")
-            if _is_safe_completed_stem(stem):
-                assert isinstance(stem, str)
+            # The explicit `type(...) is str` check narrows the type for the
+            # checker; `_is_safe_completed_stem` then validates the value.
+            if type(stem) is str and _is_safe_completed_stem(stem):
                 stems.add(stem)
             continue
         legacy_source = item.get("source")
@@ -147,7 +147,7 @@ def _file_operation_from_snapshot(
     destination_root: Path,
 ) -> FileOperation:
     if not isinstance(value, dict):
-        raise ValueError("Snapshot file operation is invalid")
+        raise TypeError("Snapshot file operation is invalid")
     source = _source_path_from_snapshot(
         value["source"],
         source_dir=source_dir,
@@ -157,9 +157,7 @@ def _file_operation_from_snapshot(
     if type(destination_value) is not str or not destination_value:
         raise ValueError("Snapshot destination path is invalid")
     destination = Path(destination_value).expanduser()
-    if ".." in destination.parts or not _is_direct_child(
-        destination, destination_root
-    ):
+    if ".." in destination.parts or not _is_direct_child(destination, destination_root):
         raise ValueError("Snapshot destination escapes its action folder")
     if destination.is_symlink() or not _is_regular_file(destination):
         raise ValueError("Snapshot destination is not an owned regular file")
@@ -176,7 +174,7 @@ def _group_from_snapshot(
     require_existing: bool,
 ) -> PhotoGroup:
     if not isinstance(value, dict):
-        raise ValueError("Snapshot photo group is invalid")
+        raise TypeError("Snapshot photo group is invalid")
     stem = value.get("stem")
     raw_members = value.get("members")
     if type(stem) is not str or not stem or not isinstance(raw_members, list):
@@ -213,7 +211,7 @@ def _queue_group_from_snapshot(
     previewable_extensions: frozenset[str],
 ) -> PhotoGroup | None:
     if not isinstance(value, dict):
-        raise ValueError("Snapshot photo group is invalid")
+        raise TypeError("Snapshot photo group is invalid")
     stem = value.get("stem")
     raw_members = value.get("members")
     if type(stem) is not str or not stem or not isinstance(raw_members, list):
@@ -249,11 +247,7 @@ def _queue_group_from_snapshot(
     if not members:
         return None
 
-    eligible = [
-        member
-        for member in members
-        if member.suffix.lower() in enabled_extensions
-    ]
+    eligible = [member for member in members if member.suffix.lower() in enabled_extensions]
     if not eligible:
         return None
     representative = min(
@@ -308,14 +302,11 @@ def _grouped_history_from_snapshot(
             )
             sources = [operation.source for operation in files]
             destinations = [operation.destination for operation in files]
-            destination_identities = [
-                operation.destination_identity for operation in files
-            ]
+            destination_identities = [operation.destination_identity for operation in files]
             if (
                 len(set(sources)) != len(sources)
                 or len(set(destinations)) != len(destinations)
-                or len(set(destination_identities))
-                != len(destination_identities)
+                or len(set(destination_identities)) != len(destination_identities)
             ):
                 raise ValueError("Snapshot action files contain duplicates")
             if tuple(operation.source for operation in files) != group.members:

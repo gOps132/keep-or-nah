@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from collections import OrderedDict
-from dataclasses import dataclass, field
 import logging
+import threading
+from collections import OrderedDict
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Empty, PriorityQueue, Queue
-import threading
-from typing import Literal, Sequence
+from typing import Literal
 
 from PIL import Image
 
@@ -18,8 +19,11 @@ except ImportError as err:
         "Please compile it by running: uv run maturin develop"
     ) from err
 
-from preview_strategies import DEFAULT_PREVIEW_STRATEGY_REGISTRY, PreviewStrategyRegistry, UnavailablePreviewStrategy
-
+from preview_strategies import (
+    DEFAULT_PREVIEW_STRATEGY_REGISTRY,
+    PreviewStrategyRegistry,
+    UnavailablePreviewStrategy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,15 +150,29 @@ class PreviewPipeline:
         if self._python_pipeline is not None:
             self._python_pipeline.configure_cache_budget(budget_mb)
 
+    def _require_python_engine(self) -> _PythonPreviewEngine:
+        """Return the Python fallback engine, or fail loudly.
+
+        The Rust pipeline and the Python engine are mutually exclusive, so
+        reaching the Python path while the engine is absent is a bug rather
+        than a state a caller can handle. A plain `assert` would be stripped
+        under `python -O` and turn this into an `AttributeError` deep inside
+        the pipeline.
+        """
+        engine = self._python_pipeline
+        if engine is None:
+            raise RuntimeError(
+                "The preview pipeline has no Python engine. The native Rust pipeline "
+                "is active, so the Python fallback path was reached in error."
+            )
+        return engine
+
     def start_preview_request(
         self, path: Path, active_index: int, progressive_enabled: bool = True
     ) -> int:
         if self._rust is not None:
-            return self._rust.start_preview_request(
-                str(path), active_index, progressive_enabled
-            )
-        assert self._python_pipeline is not None
-        return self._python_pipeline.start_preview_request(
+            return self._rust.start_preview_request(str(path), active_index, progressive_enabled)
+        return self._require_python_engine().start_preview_request(
             path, active_index, progressive_enabled
         )
 
@@ -163,18 +181,14 @@ class PreviewPipeline:
             res = self._rust.get_best_preview(str(path))
             if res.data is not None:
                 img = Image.frombytes("RGBA", (res.width, res.height), res.data)
-                return PreviewLookup(
-                    image=img, stage=res.stage, failed=False, unavailable=False
-                )
+                return PreviewLookup(image=img, stage=res.stage, failed=False, unavailable=False)
             if res.unavailable:
                 strategy = self.preview_registry.for_path(path)
                 if not isinstance(strategy, UnavailablePreviewStrategy):
                     try:
                         source = strategy.load(path)
                         if source is not None:
-                            img = self._render_fit_preview(
-                                source, self.viewport, stage="full"
-                            )
+                            img = self._render_fit_preview(source, self.viewport, stage="full")
                             return PreviewLookup(
                                 image=img,
                                 stage="full",
@@ -189,8 +203,7 @@ class PreviewPipeline:
                 failed=res.failed,
                 unavailable=res.unavailable,
             )
-        assert self._python_pipeline is not None
-        return self._python_pipeline.get_best_preview(path)
+        return self._require_python_engine().get_best_preview(path)
 
     def get_cached_source_copy(self, path: Path) -> Image.Image | None:
         if self._rust is not None:
@@ -198,14 +211,12 @@ class PreviewPipeline:
             if raw is not None:
                 return Image.frombytes("RGBA", (raw.width, raw.height), raw.data)
             return None
-        assert self._python_pipeline is not None
-        return self._python_pipeline.get_cached_source_copy(path)
+        return self._require_python_engine().get_cached_source_copy(path)
 
     def has_source(self, path: Path) -> bool:
         if self._rust is not None:
             return self._rust.has_source(str(path))
-        assert self._python_pipeline is not None
-        return self._python_pipeline.has_source(path)
+        return self._require_python_engine().has_source(path)
 
     def drain_completed(self) -> list[CompletedPreview]:
         if self._rust is not None:
@@ -218,8 +229,7 @@ class PreviewPipeline:
                 )
                 for event in raw_events
             ]
-        assert self._python_pipeline is not None
-        return self._python_pipeline.drain_completed()
+        return self._require_python_engine().drain_completed()
 
     @staticmethod
     def _render_fit_preview(
@@ -230,11 +240,9 @@ class PreviewPipeline:
             return source.copy()
 
         fit_scale = min(viewport_width / source.width, viewport_height / source.height)
-        display_width = max(int(round(source.width * fit_scale)), 1)
-        display_height = max(int(round(source.height * fit_scale)), 1)
-        resampling = (
-            Image.Resampling.BILINEAR if stage == "fast" else Image.Resampling.LANCZOS
-        )
+        display_width = max(round(source.width * fit_scale), 1)
+        display_height = max(round(source.height * fit_scale), 1)
+        resampling = Image.Resampling.BILINEAR if stage == "fast" else Image.Resampling.LANCZOS
         return source.resize((display_width, display_height), resampling)
 
 
@@ -482,17 +490,11 @@ class _PythonPreviewEngine:
                     self._pending_keys.discard(pending_key)
 
     def _process_task(self, task: PreviewTask) -> None:
-        if task.kind == "prefetch_full" and self._has_render(
-            task.path, task.viewport, "full"
-        ):
+        if task.kind == "prefetch_full" and self._has_render(task.path, task.viewport, "full"):
             return
-        if task.kind == "active_fast" and self._has_render(
-            task.path, task.viewport, "fast"
-        ):
+        if task.kind == "active_fast" and self._has_render(task.path, task.viewport, "fast"):
             return
-        if task.kind == "active_full" and self._has_render(
-            task.path, task.viewport, "full"
-        ):
+        if task.kind == "active_full" and self._has_render(task.path, task.viewport, "full"):
             return
 
         source = self._get_or_load_source(task)
@@ -500,16 +502,12 @@ class _PythonPreviewEngine:
             return
 
         if task.kind == "active_fast":
-            preview = PreviewPipeline._render_fit_preview(
-                source, task.viewport, stage="fast"
-            )
+            preview = PreviewPipeline._render_fit_preview(source, task.viewport, stage="fast")
             if self._store_render(task, "fast", preview):
                 self._publish_completion(task, "fast")
             return
 
-        preview = PreviewPipeline._render_fit_preview(
-            source, task.viewport, stage="full"
-        )
+        preview = PreviewPipeline._render_fit_preview(source, task.viewport, stage="full")
         if self._store_render(task, "full", preview):
             self._publish_completion(task, "full")
 
@@ -524,10 +522,7 @@ class _PythonPreviewEngine:
             if cached is not None:
                 self.source_cache.move_to_end(task.path)
                 return cached
-            if (
-                self._preview_key(task.path, task.viewport)
-                in self.unavailable_preview_keys
-            ):
+            if self._preview_key(task.path, task.viewport) in self.unavailable_preview_keys:
                 return None
 
         try:
@@ -573,12 +568,8 @@ class _PythonPreviewEngine:
                 self.render_cache_bytes -= self._estimate_bytes(previous)
             self.render_cache[key] = preview
             self.render_cache_bytes += preview_bytes
-            self.failed_preview_keys.discard(
-                (task.path, task.viewport[0], task.viewport[1])
-            )
-            self.unavailable_preview_keys.discard(
-                (task.path, task.viewport[0], task.viewport[1])
-            )
+            self.failed_preview_keys.discard((task.path, task.viewport[0], task.viewport[1]))
+            self.unavailable_preview_keys.discard((task.path, task.viewport[0], task.viewport[1]))
             self._trim_render_cache_locked()
             return True
 
@@ -591,9 +582,7 @@ class _PythonPreviewEngine:
                 self.failed_preview_keys.add(key)
                 self.unavailable_preview_keys.discard(key)
             self._completed.put(
-                CompletedPreview(
-                    path=task.path, request_id=task.request_id, stage="error"
-                )
+                CompletedPreview(path=task.path, request_id=task.request_id, stage="error")
             )
 
     def _mark_unavailable(self, task: PreviewTask) -> None:
@@ -605,9 +594,7 @@ class _PythonPreviewEngine:
                 self.unavailable_preview_keys.add(key)
                 self.failed_preview_keys.discard(key)
             self._completed.put(
-                CompletedPreview(
-                    path=task.path, request_id=task.request_id, stage="unavailable"
-                )
+                CompletedPreview(path=task.path, request_id=task.request_id, stage="unavailable")
             )
 
     def _publish_completion(self, task: PreviewTask, stage) -> None:
@@ -615,9 +602,7 @@ class _PythonPreviewEngine:
             if not self._task_is_current_locked(task):
                 return
             self._completed.put(
-                CompletedPreview(
-                    path=task.path, request_id=task.request_id, stage=stage
-                )
+                CompletedPreview(path=task.path, request_id=task.request_id, stage=stage)
             )
 
     def _task_is_current(self, task: PreviewTask) -> bool:
@@ -627,9 +612,7 @@ class _PythonPreviewEngine:
     def _task_is_current_locked(self, task: PreviewTask) -> bool:
         return task.generation == self._generation and task.path in self.paths
 
-    def _has_render(
-        self, path: Path, viewport: tuple[int, int], stage: PreviewStage
-    ) -> bool:
+    def _has_render(self, path: Path, viewport: tuple[int, int], stage: PreviewStage) -> bool:
         key = self._preview_key(path, viewport)
         if key is None:
             return False
@@ -653,24 +636,16 @@ class _PythonPreviewEngine:
         self._trim_render_cache_locked()
 
     def _trim_source_cache_locked(self) -> None:
-        while (
-            self.source_cache
-            and self.source_cache_bytes > self.source_cache_limit_bytes
-        ):
+        while self.source_cache and self.source_cache_bytes > self.source_cache_limit_bytes:
             _path, image = self.source_cache.popitem(last=False)
             self.source_cache_bytes -= self._estimate_bytes(image)
 
     def _trim_render_cache_locked(self) -> None:
-        while (
-            self.render_cache
-            and self.render_cache_bytes > self.render_cache_limit_bytes
-        ):
+        while self.render_cache and self.render_cache_bytes > self.render_cache_limit_bytes:
             _key, image = self.render_cache.popitem(last=False)
             self.render_cache_bytes -= self._estimate_bytes(image)
 
-    def _preview_key(
-        self, path: Path, viewport: tuple[int, int]
-    ) -> PreviewKey | None:
+    def _preview_key(self, path: Path, viewport: tuple[int, int]) -> PreviewKey | None:
         viewport_width, viewport_height = viewport
         if viewport_width < 8 or viewport_height < 8:
             return None

@@ -1,6 +1,7 @@
-import pytest
 from pathlib import Path
-from PIL import Image, ImageFilter, ImageDraw
+
+import pytest
+from PIL import Image, ImageDraw, ImageFilter
 
 import keep_or_nah_core
 from burst_clustering import BurstClusterer, PhotoBurstInfo
@@ -32,7 +33,9 @@ def test_sharpness_detects_blur() -> None:
 
     assert isinstance(sharp_score, float)
     assert isinstance(blurry_score, float)
-    assert sharp_score > blurry_score * 3, f"Expected sharp ({sharp_score}) >> blurry ({blurry_score})"
+    assert sharp_score > blurry_score * 3, (
+        f"Expected sharp ({sharp_score}) >> blurry ({blurry_score})"
+    )
 
 
 def test_perceptual_hash_similar_vs_different() -> None:
@@ -72,12 +75,32 @@ def test_burst_clusterer_identifies_best_shot() -> None:
     clusterer = BurstClusterer(time_threshold_seconds=2.0, hash_distance_threshold=10)
 
     # 3 photos taken within 1 second of each other with identical hash
-    p1 = PhotoBurstInfo(path=Path("/photos/burst1.jpg"), timestamp=100.0, image_hash=0x1234567890ABCDEF, sharpness=50.0)
-    p2 = PhotoBurstInfo(path=Path("/photos/burst2.jpg"), timestamp=100.5, image_hash=0x1234567890ABCDEF, sharpness=120.0)
-    p3 = PhotoBurstInfo(path=Path("/photos/burst3.jpg"), timestamp=101.0, image_hash=0x1234567890ABCDEF, sharpness=80.0)
+    p1 = PhotoBurstInfo(
+        path=Path("/photos/burst1.jpg"),
+        timestamp=100.0,
+        image_hash=0x1234567890ABCDEF,
+        sharpness=50.0,
+    )
+    p2 = PhotoBurstInfo(
+        path=Path("/photos/burst2.jpg"),
+        timestamp=100.5,
+        image_hash=0x1234567890ABCDEF,
+        sharpness=120.0,
+    )
+    p3 = PhotoBurstInfo(
+        path=Path("/photos/burst3.jpg"),
+        timestamp=101.0,
+        image_hash=0x1234567890ABCDEF,
+        sharpness=80.0,
+    )
 
     # 1 independent photo taken 10 seconds later with different hash
-    p4 = PhotoBurstInfo(path=Path("/photos/solo.jpg"), timestamp=115.0, image_hash=0xFFFFFFFFFFFFFFFF, sharpness=95.0)
+    p4 = PhotoBurstInfo(
+        path=Path("/photos/solo.jpg"),
+        timestamp=115.0,
+        image_hash=0xFFFFFFFFFFFFFFFF,
+        sharpness=95.0,
+    )
 
     clusters = clusterer.cluster([p1, p2, p3, p4])
     assert len(clusters) == 2

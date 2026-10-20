@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import errno
 import os
-from pathlib import Path
 import sys
-from typing import Callable
+from collections.abc import Callable
+from pathlib import Path
 
+import file_identity
 from keep_or_nah_core import stage_regular_file
 from photo_groups import PhotoGroup
 from photo_triage import (
@@ -14,20 +15,19 @@ from photo_triage import (
     FileOperation,
     PhotoSessionError,
 )
-import file_identity
 
 
 def _get_stage_fn() -> Callable[..., object]:
     mod = sys.modules.get("photo_session")
     if mod and hasattr(mod, "stage_regular_file"):
-        return getattr(mod, "stage_regular_file")
+        return mod.stage_regular_file
     return stage_regular_file
 
 
 def _get_os() -> object:
     mod = sys.modules.get("photo_session")
     if mod and hasattr(mod, "os"):
-        return getattr(mod, "os")
+        return mod.os
     return os
 
 
@@ -99,10 +99,7 @@ class FileCoordinator:
                 errno.EXDEV,
                 errno.EINVAL,
             }
-            if (
-                not self._is_windows_fallback()
-                or error.errno not in unsupported_errors
-            ):
+            if not self._is_windows_fallback() or error.errno not in unsupported_errors:
                 raise
         if self._path_occupied(destination):
             raise FileExistsError(f"Destination became occupied: {destination}")
@@ -130,8 +127,12 @@ class FileCoordinator:
         staged = stage_fn(
             str(source),
             str(destination_root),
-            expected_dev=expected_source_identity[0] if expected_source_identity is not None else None,
-            expected_ino=expected_source_identity[1] if expected_source_identity is not None else None,
+            expected_dev=expected_source_identity[0]
+            if expected_source_identity is not None
+            else None,
+            expected_ino=expected_source_identity[1]
+            if expected_source_identity is not None
+            else None,
         )
         temporary_path = Path(staged.path)
         temporary_identity = (staged.dev, staged.ino)
@@ -200,7 +201,9 @@ class FileCoordinator:
             raise
         return published_identity
 
-    def _group_destinations(self, group: PhotoGroup, destination_dir: Path) -> tuple[FileOperation, ...]:
+    def _group_destinations(
+        self, group: PhotoGroup, destination_dir: Path
+    ) -> tuple[FileOperation, ...]:
         collision_number = 0
         while True:
             operations = tuple(
@@ -262,7 +265,9 @@ class FileCoordinator:
                             expected_destination_root_identity=source_root_identity,
                         )
                     else:
-                        self._remove_owned_path(operation.destination, operation.destination_identity)
+                        self._remove_owned_path(
+                            operation.destination, operation.destination_identity
+                        )
                 except Exception as rollback_error:
                     rollback_errors.append(rollback_error)
             message = f"Could not {action_mode} the photo group: {primary_error}"
@@ -411,7 +416,9 @@ class FileCoordinator:
         completed: list[FileOperation] = []
         try:
             for operation, destination_identity in pending:
-                self._remove_owned_path(destination_root / operation.destination.name, destination_identity)
+                self._remove_owned_path(
+                    destination_root / operation.destination.name, destination_identity
+                )
                 completed.append(operation)
                 partial_copy_undo.add(operation)
         except Exception as primary_error:

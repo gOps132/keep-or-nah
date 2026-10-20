@@ -19,12 +19,8 @@ class PillowPreviewStrategy:
         self,
         extensions: set[str] | frozenset[str] | None = None,
     ) -> None:
-        runtime_extensions = (
-            pillow_previewable_extensions() if extensions is None else extensions
-        )
-        self.extensions = frozenset(
-            extension.lower() for extension in runtime_extensions
-        )
+        runtime_extensions = pillow_previewable_extensions() if extensions is None else extensions
+        self.extensions = frozenset(extension.lower() for extension in runtime_extensions)
 
     def load(self, path: Path) -> Image.Image:
         with Image.open(path) as image:

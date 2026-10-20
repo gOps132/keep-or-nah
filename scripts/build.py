@@ -9,7 +9,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CX_WINE_BIN = Path(
     "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/CrossOver-Hosted Application/wine"
@@ -28,12 +27,17 @@ WINDOWS_BUILD_PACKAGES = [
 
 
 def run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
-    subprocess.run(cmd, check=True, cwd=REPO_ROOT, env=env)
+    # The command list is built from constants in this file, never from user
+    # input, so S603 does not apply here.
+    subprocess.run(cmd, check=True, cwd=REPO_ROOT, env=env)  # noqa: S603
 
 
 def check(cmd: list[str], *, env: dict[str, str] | None = None) -> bool:
     try:
-        result = subprocess.run(
+        # The command list is built from constants in this file, never from
+        # user input, so S603 does not apply here. `check` is deliberately left
+        # off: this helper reports the exit status instead of raising.
+        result = subprocess.run(  # noqa: S603, PLW1510
             cmd,
             cwd=REPO_ROOT,
             env=env,
@@ -48,7 +52,9 @@ def check(cmd: list[str], *, env: dict[str, str] | None = None) -> bool:
 def resolve_uv() -> str:
     uv_bin = shutil.which("uv")
     if not uv_bin:
-        raise SystemExit("uv is required for local builds. Install uv first, then run the build again.")
+        raise SystemExit(
+            "uv is required for local builds. Install uv first, then run the build again."
+        )
     return uv_bin
 
 
@@ -304,7 +310,9 @@ def build_windows_crossover(cx_wine_bin: str, cx_bottle: str, win_python: str) -
     print(f"Build complete: {REPO_ROOT / 'dist' / 'windows' / 'KeepOrNah.exe'}", flush=True)
 
 
-def build_windows(python_bin: str | None, cx_wine_bin: str, cx_bottle: str | None, win_python: str) -> None:
+def build_windows(
+    python_bin: str | None, cx_wine_bin: str, cx_bottle: str | None, win_python: str
+) -> None:
     if os.name == "nt":
         build_windows_native(resolve_python(python_bin))
         return
@@ -403,7 +411,9 @@ def main() -> int:
         return 0
 
     if os.name == "nt":
-        raise SystemExit("The 'all' build is only supported on macOS because it includes the macOS app build")
+        raise SystemExit(
+            "The 'all' build is only supported on macOS because it includes the macOS app build"
+        )
 
     if not args.cx_bottle:
         raise SystemExit("--cx-bottle is required for the 'all' build")

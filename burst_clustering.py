@@ -53,7 +53,9 @@ class BurstClusterer:
             sharpness=sharpness,
         )
 
-    def cluster(self, photos: list[PhotoBurstInfo] | tuple[PhotoBurstInfo, ...]) -> list[BurstCluster]:
+    def cluster(
+        self, photos: list[PhotoBurstInfo] | tuple[PhotoBurstInfo, ...]
+    ) -> list[BurstCluster]:
         if not photos:
             return []
 
@@ -66,7 +68,10 @@ class BurstClusterer:
             time_diff = abs(photo.timestamp - prev_photo.timestamp)
             hash_dist = self.hamming_distance(photo.image_hash, prev_photo.image_hash)
 
-            if time_diff <= self.time_threshold_seconds and hash_dist <= self.hash_distance_threshold:
+            if (
+                time_diff <= self.time_threshold_seconds
+                and hash_dist <= self.hash_distance_threshold
+            ):
                 current_cluster.append(photo)
             else:
                 clusters.append(current_cluster)

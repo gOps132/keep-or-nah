@@ -5,8 +5,8 @@ from pathlib import Path
 from photo_groups import PhotoGroup, build_photo_groups, discover_extensions
 from photo_metadata import pillow_previewable_extensions
 from photo_triage import (
-    ActionMode,
     EMPTY_EXTENSION_SELECTION_MESSAGE,
+    ActionMode,
     PhotoSessionError,
 )
 
@@ -46,9 +46,7 @@ class SessionState:
         )
         self.available_extensions: tuple[str, ...] = tuple(available_extensions)
         self.enabled_extensions: set[str] = (
-            set(enabled_extensions)
-            if enabled_extensions is not None
-            else set(available_extensions)
+            set(enabled_extensions) if enabled_extensions is not None else set(available_extensions)
         )
         self.queue: list[PhotoGroup] = self._project_pending_groups()
         self.active_index: int = active_index
@@ -171,17 +169,13 @@ class SessionState:
             self.active_index,
         )
         effective_enabled = {
-            extension.lower()
-            for extension in enabled
-            if extension.lower() in set(available)
+            extension.lower() for extension in enabled if extension.lower() in set(available)
         }
         if not effective_enabled:
             raise PhotoSessionError(EMPTY_EXTENSION_SELECTION_MESSAGE)
         if reconciled_groups is not None:
             self.pending_groups = [
-                group
-                for group in reconciled_groups
-                if group.stem not in self.completed_stems
+                group for group in reconciled_groups if group.stem not in self.completed_stems
             ]
         self.available_extensions = available
         self.enabled_extensions = effective_enabled
@@ -193,19 +187,14 @@ class SessionState:
             self.active_index = 0
         else:
             retained_index = next(
-                (
-                    index
-                    for index, group in enumerate(rebuilt)
-                    if group.stem == previous_stem
-                ),
+                (index for index, group in enumerate(rebuilt) if group.stem == previous_stem),
                 None,
             )
             if retained_index is not None:
                 self.active_index = retained_index
             else:
                 all_positions = {
-                    group.stem: index
-                    for index, group in enumerate(self.pending_groups)
+                    group.stem: index for index, group in enumerate(self.pending_groups)
                 }
                 self.active_index = min(
                     range(len(rebuilt)),
@@ -237,9 +226,7 @@ class SessionState:
         if self.source_dir is None:
             raise PhotoSessionError("Choose a source folder before loading photos.")
         if not self.source_dir.is_dir():
-            raise PhotoSessionError(
-                f"Source folder does not exist: {self.source_dir}"
-            )
+            raise PhotoSessionError(f"Source folder does not exist: {self.source_dir}")
         return self.source_dir
 
     def set_active_index(self, index: int) -> Path | None:
@@ -255,9 +242,7 @@ class SessionState:
 
     def remove_queue_item(self, index: int) -> PhotoGroup:
         removed = self._as_group(self.queue.pop(index))
-        self.pending_groups = [
-            group for group in self.pending_groups if group.stem != removed.stem
-        ]
+        self.pending_groups = [group for group in self.pending_groups if group.stem != removed.stem]
         if self.queue:
             self.active_index = min(index, len(self.queue) - 1)
         else:
@@ -270,11 +255,7 @@ class SessionState:
         self.pending_groups.sort(key=lambda item: (item.stem.lower(), item.stem))
         self.queue = self._project_pending_groups()
         self.active_index = next(
-            (
-                index
-                for index, item in enumerate(self.queue)
-                if item.stem == group.stem
-            ),
+            (index for index, item in enumerate(self.queue) if item.stem == group.stem),
             0,
         )
 

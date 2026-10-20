@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
-from photo_groups import build_photo_groups, discover_extensions
+from photo_groups import PhotoGroup, build_photo_groups, discover_extensions
 from photo_metadata import SUPPORTED_IMAGE_EXTENSIONS, pillow_previewable_extensions
-from photo_triage import ActionRecord, FileOperation
+from photo_triage import ActionRecord
 
 if TYPE_CHECKING:
     from photo_session import PhotoSession
@@ -62,11 +63,7 @@ def from_legacy_snapshot(
         return None
 
     active_index = next(
-        (
-            index
-            for index, group in enumerate(queue)
-            if group.stem == active_stem
-        ),
+        (index for index, group in enumerate(queue) if group.stem == active_stem),
         None,
     )
     if active_index is None:
@@ -78,9 +75,7 @@ def from_legacy_snapshot(
             ),
         )
         active_index = next(
-            index
-            for index, group in enumerate(queue)
-            if group.stem == nearest_path.stem
+            index for index, group in enumerate(queue) if group.stem == nearest_path.stem
         )
 
     total_loaded = snapshot_helpers._snapshot_int(
@@ -140,7 +135,6 @@ def legacy_history_from_snapshot(
                 source_dir=source_dir,
                 destination_root=destination_root,
             )
-            from photo_groups import PhotoGroup
             group = PhotoGroup(
                 operation.source.stem,
                 (operation.source,),
