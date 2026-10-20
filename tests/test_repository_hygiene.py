@@ -12,10 +12,13 @@ pre-commit hook or the CI job.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CHECK_SCRIPT = REPO_ROOT / "scripts" / "agent" / "check-artifacts.sh"
@@ -27,7 +30,8 @@ GIT = shutil.which("git") or "git"
 
 def test_the_artifact_check_script_exists() -> None:
     assert CHECK_SCRIPT.is_file(), f"Expected {CHECK_SCRIPT} to exist"
-    assert CHECK_SCRIPT.stat().st_mode & 0o111, "The artifact check must be executable"
+    if os.name == "posix":
+        assert CHECK_SCRIPT.stat().st_mode & 0o111, "The artifact check must be executable"
 
 
 def test_no_tracked_file_lives_in_a_build_or_cache_directory() -> None:
@@ -64,6 +68,7 @@ def test_no_tracked_file_lives_in_a_build_or_cache_directory() -> None:
     assert not offenders, f"Tracked build artifacts: {offenders}"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="the artifact check is a bash script")
 def test_the_ignore_rules_cover_every_known_artifact() -> None:
     result = subprocess.run(  # noqa: S603, PLW1510
         [str(CHECK_SCRIPT)],

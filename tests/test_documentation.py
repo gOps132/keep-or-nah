@@ -19,6 +19,7 @@ check that gets deleted, so each assertion targets something concrete.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -182,7 +183,10 @@ def test_readme_documents_the_verification_entrypoint() -> None:
     text = README.read_text(encoding="utf-8")
     assert "scripts/verify.sh" in text, "The README must document scripts/verify.sh"
     assert Path("scripts/verify.sh").exists()
-    assert Path("scripts/verify.sh").stat().st_mode & 0o111, "scripts/verify.sh must be executable"
+    if os.name == "posix":
+        assert Path("scripts/verify.sh").stat().st_mode & 0o111, (
+            "scripts/verify.sh must be executable"
+        )
 
 
 def test_platform_notes_omit_the_retired_fallback() -> None:

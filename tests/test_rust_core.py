@@ -398,9 +398,15 @@ class RustFileOpsTests(unittest.TestCase):
         identity = tuple(keep_or_nah_core.file_identity(str(real)))
         real_stat = os.stat(real)
         self.assertEqual(len(identity), 5)
-        self.assertEqual(identity[:2], (real_stat.st_dev, real_stat.st_ino))
+        # The size and the change time have the same meaning on every
+        # platform. The device and the inode do not: on Windows the native
+        # core reports the volume serial number and the file index from the
+        # Windows API, while `os.stat` reports the drive number and its own
+        # inode.
         self.assertEqual(identity[2], real_stat.st_size)
-        self.assertEqual(identity[3], int(real_stat.st_ctime))
+        self.assertAlmostEqual(identity[3], int(real_stat.st_ctime), delta=1)
+        if os.name != "nt":
+            self.assertEqual(identity[:2], (real_stat.st_dev, real_stat.st_ino))
 
 
 class RustGroupingSessionIntegrationTests(unittest.TestCase):
