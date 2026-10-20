@@ -180,6 +180,11 @@ def remove_published_entry(path: Path, recorded_identity: FileIdentity) -> None:
     remove_owned_path(path, current)
 
 
+def identity_matches_recorded(path: Path, expected: FileIdentity) -> bool:
+    """Whether a path still carries the recorded identity."""
+    return identity_matches(read_identity(path, expected), expected)
+
+
 def expected_identity_arguments(identity: FileIdentity | None) -> dict[str, int]:
     """The native stage function's expected-identity keywords for a record."""
     if identity is None:

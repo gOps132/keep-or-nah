@@ -39,12 +39,13 @@ class FileCoordinator:
         return file_identity.path_occupied(path)
 
     @staticmethod
-    def _validate_basename(name: str) -> None:
-        file_identity.validate_basename(name)
-
-    @staticmethod
     def _path_identity(path: Path) -> tuple[int, ...]:
         return file_identity.path_identity(path)
+
+    @staticmethod
+    def _recorded_identity(path: Path, operation: FileOperation) -> tuple[int, ...]:
+        """The current identity of a path, read in the terms its record uses."""
+        return file_identity.read_identity(path, operation.destination_identity)
 
     @staticmethod
     def _directory_identity(path: Path) -> tuple[int, int]:
@@ -62,14 +63,6 @@ class FileCoordinator:
     def _remove_owned_path(cls, path: Path, expected_identity: tuple[int, ...]) -> None:
         file_identity.remove_owned_path(path, expected_identity)
 
-    @classmethod
-    def _published_identity(cls, path: Path, recorded_identity: tuple[int, ...]) -> tuple[int, ...]:
-        return file_identity.published_identity(path, recorded_identity)
-
-    @classmethod
-    def _remove_published_entry(cls, path: Path, recorded_identity: tuple[int, ...]) -> None:
-        file_identity.remove_published_entry(path, recorded_identity)
-
     @staticmethod
     def _validate_destination_parent(path: Path, destination_root: Path) -> None:
         file_identity.validate_destination_parent(path, destination_root)
@@ -77,10 +70,6 @@ class FileCoordinator:
     @classmethod
     def _validate_destination(cls, path: Path, destination_root: Path) -> None:
         file_identity.validate_destination(path, destination_root)
-
-    @staticmethod
-    def _is_direct_child(path: Path, root: Path) -> bool:
-        return file_identity.is_direct_child(path, root)
 
     @staticmethod
     def _publish_hard_link(source: Path, destination: Path) -> None:
@@ -175,7 +164,7 @@ class FileCoordinator:
                     cleanup_errors.append(cleanup_error)
             if not temporary_consumed:
                 try:
-                    self._remove_published_entry(temporary_path, temporary_identity)
+                    file_identity.remove_published_entry(temporary_path, temporary_identity)
                 except Exception as cleanup_error:
                     cleanup_errors.append(cleanup_error)
             if cleanup_errors:
@@ -190,7 +179,9 @@ class FileCoordinator:
                 # Removing the staged entry changed the link count of the
                 # published file, and the link count is part of its change
                 # time, so the published identity is read again.
-                published_identity = self._published_identity(destination, published_identity)
+                published_identity = file_identity.published_identity(
+                    destination, published_identity
+                )
             return published_identity
 
     def _move_path_exclusive(
@@ -322,7 +313,7 @@ class FileCoordinator:
                     "All files in an action must share the same recorded destination folder."
                 )
             try:
-                cls._validate_basename(operation.destination.name)
+                file_identity.validate_basename(operation.destination.name)
             except OSError as error:
                 raise PhotoSessionError(
                     f"A recorded undo destination is unsafe: {error}",
@@ -334,11 +325,10 @@ class FileCoordinator:
             for operation in record.files:
                 cls._validate_destination_parent(operation.destination, destination_root)
                 recorded_destination = destination_root / operation.destination.name
-                if cls._path_occupied(recorded_destination) and not file_identity.identity_matches(
-                    file_identity.read_identity(
-                        recorded_destination, operation.destination_identity
-                    ),
-                    operation.destination_identity,
+                if not cls._path_occupied(recorded_destination):
+                    continue
+                if not file_identity.identity_matches_recorded(
+                    recorded_destination, operation.destination_identity
                 ):
                     raise PhotoSessionError(
                         "A recorded destination identity no longer matches the action-owned file."
@@ -375,12 +365,7 @@ class FileCoordinator:
                 self._require_owned_path(recorded_destination, operation.destination_identity)
             if destination_occupied and not source_occupied:
                 pending.append(
-                    (
-                        operation,
-                        file_identity.read_identity(
-                            recorded_destination, operation.destination_identity
-                        ),
-                    )
+                    (operation, self._recorded_identity(recorded_destination, operation))
                 )
             elif source_occupied and not destination_occupied:
                 continue
@@ -440,12 +425,7 @@ class FileCoordinator:
             if self._path_occupied(recorded_destination):
                 self._require_owned_path(recorded_destination, operation.destination_identity)
                 pending.append(
-                    (
-                        operation,
-                        file_identity.read_identity(
-                            recorded_destination, operation.destination_identity
-                        ),
-                    )
+                    (operation, self._recorded_identity(recorded_destination, operation))
                 )
             elif operation not in partial_copy_undo:
                 raise PhotoSessionError(
