@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Protocol
-from tkinter import filedialog
 import sys
+from pathlib import Path
+from tkinter import filedialog
+from typing import Protocol
 
 
 class StartupSessionApp(Protocol):
@@ -44,7 +44,13 @@ def preview_paths_for(session):
 def choose_source_directory(app, dialog=None) -> bool:
     """Run native folder picker, then replace and automatically load its source."""
     ask_directory = dialog or filedialog.askdirectory
-    path = ask_directory(title="Choose Source Folder", initialdir=app.get_initial_directory())
+    kwargs = {"title": "Choose Source Folder", "initialdir": app.get_initial_directory()}
+    if getattr(app, "winfo_exists", None) and app.winfo_exists():
+        kwargs["parent"] = app
+    try:
+        path = ask_directory(**kwargs)
+    except Exception:
+        return False
     if not path:
         return False
     app.replace_source_folder(path)

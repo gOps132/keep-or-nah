@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sys
 import tkinter as tk
+from pathlib import Path
 
 
 def bundle_root() -> Path:
@@ -34,4 +34,4 @@ def apply_window_icon(window: tk.Misc) -> None:
     except tk.TclError:
         return
 
-    setattr(window, "_app_icon_image", icon_image)
+    window._app_icon_image = icon_image

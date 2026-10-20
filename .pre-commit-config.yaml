@@ -1,0 +1,43 @@
+# keep or nah - pre-commit hooks
+#
+# The hooks run the same deterministic checks as scripts/verify.sh, but only
+# against the files that are actually staged. A full verification run still
+# happens in CI and before any completion claim.
+#
+# Install once per clone:
+#   uv run pre-commit install
+#
+# See docs/agents/pipeline.md for the agent pipeline contract.
+
+default_language_version:
+  python: python3.12
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.1
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --manifest-path crates/keep_or_nah_core/Cargo.toml --check
+        language: system
+        files: ^crates/keep_or_nah_core/.*\.rs$
+        pass_filenames: false
+
+      - id: architecture-invariants
+        name: architecture invariants
+        entry: uv run pytest tests/test_domain_modules.py -q
+        language: system
+        pass_filenames: false
+        files: ^(photo_session|photo_session_properties|session_state|photo_triage|file_coordinator|file_identity|photo_metadata|session_snapshot|snapshot_validators|legacy_snapshot)\.py$|^ui/.*\.py$
+
+      - id: no-junk-artifacts
+        name: no build artifacts staged
+        entry: scripts/agent/check-artifacts.sh
+        language: system
+        pass_filenames: false

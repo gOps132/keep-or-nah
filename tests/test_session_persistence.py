@@ -1,14 +1,13 @@
 import json
-from pathlib import Path
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
-import warnings
 
-from photo_groups import PhotoGroup
-from photo_session import ActionRecord, FileOperation, PhotoSession
 from app_settings import resolve_settings_path
+from photo_groups import PhotoGroup
+from photo_session import PhotoSession
 from session_persistence import SessionLifecycle, SessionPersistence, resolve_session_path
 from session_startup import (
     choose_source_directory,
@@ -66,9 +65,7 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
                         {
                             "source": str(operation.source),
                             "destination": str(operation.destination),
-                            "destination_identity": list(
-                                operation.destination_identity
-                            ),
+                            "destination_identity": list(operation.destination_identity),
                         }
                         for operation in record.files
                     ],
@@ -178,9 +175,7 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             for completed_stems in invalid_values:
                 with self.subTest(completed_stems=completed_stems):
                     self.assertIsNone(
-                        PhotoSession.from_snapshot(
-                            {**snapshot, "completed_stems": completed_stems}
-                        )
+                        PhotoSession.from_snapshot({**snapshot, "completed_stems": completed_stems})
                     )
 
     def test_reload_counts_hidden_pending_group_and_round_trips_snapshot(self):
@@ -229,9 +224,7 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             )
             for group in unsafe_groups:
                 with self.subTest(group=group):
-                    self.assertIsNone(
-                        PhotoSession.from_snapshot({**snapshot, "queue": [group]})
-                    )
+                    self.assertIsNone(PhotoSession.from_snapshot({**snapshot, "queue": [group]}))
 
     def test_version_two_rejects_pending_group_member_outside_source(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -372,9 +365,7 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             restored = PhotoSession.from_snapshot(snapshot)
 
             self.assertFalse(restored.can_undo)
-            self.assertTrue(
-                all(operation.destination.exists() for operation in result.files)
-            )
+            self.assertTrue(all(operation.destination.exists() for operation in result.files))
 
     def test_version_two_drops_compound_history_with_duplicate_source_path(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -392,16 +383,14 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             session.load_queue()
             result = session.decide("keep")
             snapshot = self._version_two_snapshot(session)
-            snapshot["history"][0]["files"][1]["source"] = snapshot[
-                "history"
-            ][0]["files"][0]["source"]
+            snapshot["history"][0]["files"][1]["source"] = snapshot["history"][0]["files"][0][
+                "source"
+            ]
 
             restored = PhotoSession.from_snapshot(snapshot)
 
             self.assertFalse(restored.can_undo)
-            self.assertTrue(
-                all(operation.destination.exists() for operation in result.files)
-            )
+            self.assertTrue(all(operation.destination.exists() for operation in result.files))
 
     def test_version_two_drops_compound_history_with_duplicate_destination_identity(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -424,9 +413,7 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             second_destination.unlink()
             os.link(first_destination, second_destination)
             duplicate_identity = list(result.files[0].destination_identity)
-            snapshot["history"][0]["files"][1][
-                "destination_identity"
-            ] = duplicate_identity
+            snapshot["history"][0]["files"][1]["destination_identity"] = duplicate_identity
 
             restored = PhotoSession.from_snapshot(snapshot)
 
@@ -620,17 +607,19 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
                 "total_loaded": 2,
                 "keep_count": 1,
                 "nah_count": 0,
-                "history": [{
-                    "decision": "keep",
-                    "action_mode": "copy",
-                    "source": str(processed),
-                    "destination": str(destination),
-                    "destination_identity": [
-                        destination_stat.st_dev,
-                        destination_stat.st_ino,
-                    ],
-                    "index": 0,
-                }],
+                "history": [
+                    {
+                        "decision": "keep",
+                        "action_mode": "copy",
+                        "source": str(processed),
+                        "destination": str(destination),
+                        "destination_identity": [
+                            destination_stat.st_dev,
+                            destination_stat.st_ino,
+                        ],
+                        "index": 0,
+                    }
+                ],
             }
 
             restored = PhotoSession.from_snapshot(legacy)
@@ -658,9 +647,7 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             )
             for field, value in invalid_fields:
                 with self.subTest(field=field, value=value):
-                    self.assertIsNone(
-                        PhotoSession.from_snapshot({**snapshot, field: value})
-                    )
+                    self.assertIsNone(PhotoSession.from_snapshot({**snapshot, field: value}))
 
     def test_version_two_rejects_unknown_version_and_malformed_extensions(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -673,13 +660,9 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             snapshot = self._version_two_snapshot(session)
             self.assertIsNotNone(PhotoSession.from_snapshot(snapshot))
 
+            self.assertIsNone(PhotoSession.from_snapshot({**snapshot, "snapshot_version": 99}))
             self.assertIsNone(
-                PhotoSession.from_snapshot({**snapshot, "snapshot_version": 99})
-            )
-            self.assertIsNone(
-                PhotoSession.from_snapshot(
-                    {**snapshot, "enabled_extensions": ["../jpg"]}
-                )
+                PhotoSession.from_snapshot({**snapshot, "enabled_extensions": ["../jpg"]})
             )
 
     def test_legacy_snapshot_rebuilds_groups_and_preserves_active_stem_and_filter(self):
@@ -729,14 +712,16 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
                 "source_dir": str(source),
                 "keep_dir": str(keep),
                 "queue": [str(remaining)],
-                "history": [{
-                    "decision": "keep",
-                    "action_mode": "move",
-                    "source": str(source / "done.jpg"),
-                    "destination": str(destination),
-                    "destination_identity": list(identity),
-                    "index": 0,
-                }],
+                "history": [
+                    {
+                        "decision": "keep",
+                        "action_mode": "move",
+                        "source": str(source / "done.jpg"),
+                        "destination": str(destination),
+                        "destination_identity": list(identity),
+                        "index": 0,
+                    }
+                ],
             }
 
             restored = PhotoSession.from_snapshot(legacy)
@@ -754,9 +739,16 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             valid.touch()
             invalid.touch()
             snapshot = {
-                "source_dir": str(source), "keep_dir": None, "nah_dir": None,
-                "action_mode": "move", "queue": [str(source / "missing.jpg"), str(invalid), str(valid)],
-                "active_index": 99, "total_loaded": 3, "keep_count": 1, "nah_count": 1, "history": [],
+                "source_dir": str(source),
+                "keep_dir": None,
+                "nah_dir": None,
+                "action_mode": "move",
+                "queue": [str(source / "missing.jpg"), str(invalid), str(valid)],
+                "active_index": 99,
+                "total_loaded": 3,
+                "keep_count": 1,
+                "nah_count": 1,
+                "history": [],
             }
 
             restored = PhotoSession.from_snapshot(snapshot)
@@ -858,12 +850,14 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             photo.touch()
             store = SessionPersistence(root / "session.json")
             store.path.write_text(
-                json.dumps({
-                    "source_dir": str(source),
-                    "queue": [str(photo)],
-                    "active_index": 1e309,
-                    "history": [],
-                }),
+                json.dumps(
+                    {
+                        "source_dir": str(source),
+                        "queue": [str(photo)],
+                        "active_index": 1e309,
+                        "history": [],
+                    }
+                ),
                 encoding="utf-8",
             )
 
@@ -994,13 +988,15 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
                 "source_dir": str(source),
                 "keep_dir": str(keep),
                 "queue": [str(remaining)],
-                "history": [{
-                    "decision": "keep",
-                    "action_mode": "copy",
-                    "source": str(source / "processed.jpg"),
-                    "destination": str(arbitrary),
-                    "index": 0,
-                }],
+                "history": [
+                    {
+                        "decision": "keep",
+                        "action_mode": "copy",
+                        "source": str(source / "processed.jpg"),
+                        "destination": str(arbitrary),
+                        "index": 0,
+                    }
+                ],
             }
 
             restored = PhotoSession.from_snapshot(snapshot)
@@ -1050,7 +1046,8 @@ class SessionPersistenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "session.json"
             store = SessionPersistence(path)
-            payload = {"source_dir": "/tmp/source", "queue": ["/tmp/a.jpg"]}
+            source = Path(temp) / "source"
+            payload = {"source_dir": str(source), "queue": [str(Path(temp) / "a.jpg")]}
             store.save(payload)
             self.assertEqual(store.load(), payload)
             self.assertFalse(path.with_suffix(".json.tmp").exists())
@@ -1145,15 +1142,28 @@ class StartupCoordinatorTests(unittest.TestCase):
     def test_restored_session_initializes_pipeline_and_preview(self):
         class Calls:
             restored_startup_session = True
-            session = type("Session", (), {"source_dir": Path("/photos"), "queue": [Path("a.jpg")]})()
+            session = type(
+                "Session", (), {"source_dir": Path("/photos"), "queue": [Path("a.jpg")]}
+            )()
             last_browsed_dir = None
             pipeline_queue = None
             previewed = False
             refreshed = False
-            preview_pipeline = type("Pipeline", (), {"reset": lambda owner, queue: setattr(app, "pipeline_queue", queue)})()
-            def refresh_ui(self): self.refreshed = True
-            def refresh_preview(self): self.previewed = True
-            def choose_source_folder(self): self.fail = True
+            preview_pipeline = type(
+                "Pipeline",
+                (),
+                {"reset": lambda owner, queue: setattr(app, "pipeline_queue", queue)},
+            )()
+
+            def refresh_ui(self):
+                self.refreshed = True
+
+            def refresh_preview(self):
+                self.previewed = True
+
+            def choose_source_folder(self):
+                self.fail = True
+
         app = Calls()
         initialize_gui_session(app)
         self.assertEqual(app.pipeline_queue, app.session.queue)
@@ -1164,7 +1174,10 @@ class StartupCoordinatorTests(unittest.TestCase):
         class Calls:
             restored_startup_session = False
             picked = False
-            def choose_source_folder(self): self.picked = True
+
+            def choose_source_folder(self):
+                self.picked = True
+
         app = Calls()
         initialize_gui_session(app)
         self.assertTrue(app.picked)
@@ -1185,131 +1198,136 @@ class StartupCoordinatorTests(unittest.TestCase):
 
 
 class FrontendIntegrationTests(unittest.TestCase):
-    def test_both_frontends_delegate_source_picker_to_shared_coordinator(self):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            from classic_gui import ClassicApp
-            from gui_app import App
+    def test_frontend_delegates_source_picker_to_shared_coordinator(self):
+        from gui_app import App
 
-        for module_name, app_class in (("classic_gui", ClassicApp), ("gui_app", App)):
-            fake = object()
-            with self.subTest(frontend=app_class.__name__), patch(
-                f"{module_name}.choose_source_directory"
-            ) as coordinator:
-                app_class.choose_source_folder(fake)
-                coordinator.assert_called_once_with(fake)
+        fake = object()
+        with (
+            self.subTest(frontend=App.__name__),
+            patch("gui_app.choose_source_directory") as coordinator,
+        ):
+            App.choose_source_folder(fake)
+            coordinator.assert_called_once_with(fake)
 
-    def test_both_frontends_persist_after_successful_load(self):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            from classic_gui import ClassicApp
-            from gui_app import App
+    def test_frontend_persists_after_successful_load(self):
+        from gui_app import App
 
         class Session:
-            queue = [Path("photo.jpg")]
-            def load_queue(self): return 1
+            def __init__(self):
+                self.queue = [Path("photo.jpg")]
+
+            def load_queue(self):
+                return 1
 
         class Pipeline:
-            def reset(self, queue): self.queue = queue
+            def reset(self, queue):
+                self.queue = queue
 
-        for app_class in (ClassicApp, App):
-            fake = Mock()
-            fake.session = Session()
-            fake.preview_pipeline = Pipeline()
-            fake.preview_source_path = Path("old.jpg")
-            fake.preview_source_image = object()
-            with self.subTest(frontend=app_class.__name__):
-                app_class.load_queue(fake)
-                fake.persist_session.assert_called_once_with()
+        fake = Mock()
+        fake.session = Session()
+        fake.preview_pipeline = Pipeline()
+        fake.preview_source_path = Path("old.jpg")
+        fake.preview_source_image = object()
+        with self.subTest(frontend=App.__name__):
+            App.load_queue(fake)
+            fake.persist_session.assert_called_once_with()
 
-    def test_both_frontends_persist_mode_navigation_decision_and_undo(self):
-        from classic_gui import ClassicApp
+    def test_frontend_persists_mode_navigation_decision_and_undo(self):
         from gui_app import App
 
         class Session:
-            queue = [Path("photo.jpg")]
+            def __init__(self):
+                self.queue = [Path("photo.jpg")]
+
             can_undo = True
-            def set_action_mode(self, mode): self.action_mode = mode
-            def set_active_index(self, index): return self.queue[0]
-            def move_active(self, offset): return self.queue[0]
-            def decide(self, decision): self.decision = decision
-            def undo(self): self.undone = True
+
+            def set_action_mode(self, mode):
+                self.action_mode = mode
+
+            def set_active_index(self, index):
+                return self.queue[0]
+
+            def move_active(self, offset):
+                return self.queue[0]
+
+            def decide(self, decision):
+                self.decision = decision
+
+            def undo(self):
+                self.undone = True
 
         class Pipeline:
-            def reset(self, queue): self.queue = queue
+            def reset(self, queue):
+                self.queue = queue
 
-        for app_class in (ClassicApp, App):
-            fake = Mock()
-            fake.session = Session()
-            fake.preview_pipeline = Pipeline()
-            fake.action_mode_var.get.return_value = "copy"
-            mutations = [
-                lambda: app_class.select_photo_at_index(fake, 0),
-                lambda: app_class.navigate_selection(fake, 1),
-                lambda: app_class.sort_current_photo(fake, "keep"),
-                lambda: app_class.undo_last_action(fake),
-            ]
-            mutations.insert(
-                0,
-                (lambda: app_class.handle_action_mode_change(fake))
-                if app_class is ClassicApp
-                else (lambda: app_class.handle_action_mode_change(fake, "copy")),
-            )
-            for mutation in mutations:
-                fake.persist_session.reset_mock()
-                mutation()
-                with self.subTest(frontend=app_class.__name__, mutation=mutation):
-                    fake.persist_session.assert_called_once_with()
-
-    def test_both_frontends_refresh_after_decision_when_persistence_fails(self):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            from classic_gui import ClassicApp
-            from gui_app import App
-
-        class Session:
-            queue = []
-            def decide(self, _decision): return None
-
-        for app_class in (ClassicApp, App):
-            fake = Mock()
-            fake.session = Session()
-            fake.persist_session.side_effect = lambda: False
-            with self.subTest(frontend=app_class.__name__):
-                app_class.sort_current_photo(fake, "keep")
+        fake = Mock()
+        fake.session = Session()
+        fake.preview_pipeline = Pipeline()
+        fake.action_mode_var.get.return_value = "copy"
+        mutations = [
+            lambda: App.select_photo_at_index(fake, 0),
+            lambda: App.navigate_selection(fake, 1),
+            lambda: App.sort_current_photo(fake, "keep"),
+            lambda: App.undo_last_action(fake),
+        ]
+        mutations.insert(
+            0,
+            lambda: App.handle_action_mode_change(fake, "copy"),
+        )
+        for mutation in mutations:
+            fake.persist_session.reset_mock()
+            mutation()
+            with self.subTest(frontend=App.__name__, mutation=mutation):
                 fake.persist_session.assert_called_once_with()
-                fake.refresh_ui.assert_called_once_with()
-                fake.refresh_preview.assert_called_once_with()
 
-    def test_both_frontends_refresh_after_undo_when_persistence_fails(self):
-        from classic_gui import ClassicApp
+    def test_frontend_refreshes_after_decision_when_persistence_fails(self):
         from gui_app import App
 
         class Session:
-            queue = [Path("photo.jpg")]
+            def __init__(self):
+                self.queue = []
+
+            def decide(self, _decision):
+                return None
+
+        fake = Mock()
+        fake.session = Session()
+        fake.persist_session.side_effect = lambda: False
+        with self.subTest(frontend=App.__name__):
+            App.sort_current_photo(fake, "keep")
+            fake.persist_session.assert_called_once_with()
+            fake.refresh_ui.assert_called_once_with()
+            fake.refresh_preview.assert_called_once_with()
+
+    def test_frontend_refreshes_after_undo_when_persistence_fails(self):
+        from gui_app import App
+
+        class Session:
+            def __init__(self):
+                self.queue = [Path("photo.jpg")]
+
             can_undo = True
-            def undo(self): return None
 
-        for app_class in (ClassicApp, App):
-            fake = Mock()
-            fake.session = Session()
-            fake.persist_session.return_value = False
-            with self.subTest(frontend=app_class.__name__):
-                app_class.undo_last_action(fake)
-                fake.refresh_ui.assert_called_once_with()
-                fake.refresh_preview.assert_called_once_with()
+            def undo(self):
+                return None
 
-    def test_both_frontends_close_even_when_persistence_fails(self):
-        from classic_gui import ClassicApp
+        fake = Mock()
+        fake.session = Session()
+        fake.persist_session.return_value = False
+        with self.subTest(frontend=App.__name__):
+            App.undo_last_action(fake)
+            fake.refresh_ui.assert_called_once_with()
+            fake.refresh_preview.assert_called_once_with()
+
+    def test_frontend_closes_even_when_persistence_fails(self):
         from gui_app import App
 
-        for app_class in (ClassicApp, App):
-            fake = Mock()
-            fake.persist_session.return_value = False
-            with self.subTest(frontend=app_class.__name__):
-                app_class.handle_window_close(fake)
-                fake.persist_session.assert_called_once_with()
-                fake.destroy.assert_called_once_with()
+        fake = Mock()
+        fake.persist_session.return_value = False
+        with self.subTest(frontend=App.__name__):
+            App.handle_window_close(fake)
+            fake.persist_session.assert_called_once_with()
+            fake.destroy.assert_called_once_with()
 
 
 if __name__ == "__main__":

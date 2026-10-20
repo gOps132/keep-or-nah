@@ -1,3 +1,10 @@
+[build-system]
+requires = ["maturin>=1.15.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+manifest-path = "crates/keep_or_nah_core/Cargo.toml"
+
 [project]
 name = "keep-or-nah"
 version = "0.1.0"
@@ -11,7 +18,83 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-build = ["pyinstaller>=6.14.0"]
+build = [
+  "pyinstaller>=6.14.0",
+  "maturin>=1.15.0",
+]
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+    "maturin>=1.15.0",
+    "pre-commit>=4.0.0",
+    "pytest>=9.1.1",
+    "ruff>=0.9.0",
+]
+
+# Ruff configuration is committed explicitly on purpose. Ruff's implicit default
+# rule set changes between releases, which would make the lint gate a moving
+# target: a green run on one machine could fail on another after a dependency
+# bump. Pinning `select` here keeps `scripts/verify.sh` and CI deterministic.
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# `docs` holds historical plan and spec documents whose embedded Python
+# snippets are illustrative, not source. Ruff would otherwise reformat those
+# snippets and churn documents that are already shipped.
+extend-exclude = ["crates", "build", "dist", ".venv", ".agents", "docs"]
+
+[tool.ruff.lint]
+select = [
+    "F",    # pyflakes: undefined names, unused imports and variables
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "I",    # isort: import ordering
+    "B",    # flake8-bugbear: real bug patterns
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade: modern syntax for the target version
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific rules
+    "PL",   # pylint
+    "S",    # bandit: security
+    "TRY",  # tryceratops: exception handling correctness
+    "ASYNC",
+    "EXE",
+]
+ignore = [
+    "E501",    # line length is owned by the formatter
+    "E402",    # module-level import not at top of file (bootstrap modules)
+    "B008",    # function call in default argument (Tk callback pattern)
+    "BLE001",  # blind except: the GUI shows an error dialog, that is the handler
+    "S110",    # try-except-pass: the GUI swallows Tk callback errors on purpose
+    "PLR0911", # too many return statements: the snapshot codec dispatches on shape
+    "PLR0912", # too many branches: same as PLR0911
+    "PLR0913", # too many arguments: Tk callback signatures are fixed
+    "PLR0915", # too many statements: the GUI controllers are dispatch tables
+    "PLR0917", # too many positional arguments: the pipeline API is positional
+    "PLR2004", # magic value comparison: noisy in UI layout code
+    "PLC0414", # import alias does not rename: conflicts with explicit re-exports
+    "SIM108",  # ternary: explicit if/else reads better in UI code
+    "TRY003",  # long messages outside the exception class
+    "TRY300",  # consider-else: not always clearer
+    "TRY301",  # raise-within-try: used to attach cleanup context
+]
+
+# `PLC0414` is disabled deliberately. It flags `from x import y as y`, which is
+# the explicit re-export convention ruff's own F401 implementation relies on to
+# recognise a re-exported name as used. This repo re-exports the core facade
+# surface from `photo_session` with that convention on purpose, so the two
+# rules cannot both be enabled.
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert constantly (that is the point), import inside test bodies to
+# exercise import-time behaviour, and shadow names on purpose.
+"tests/**" = ["ARG", "F401", "PLR2004", "S101", "PLC0415", "SIM117", "B011"]
+# Entry points and startup bootstrap import lazily on purpose.
+"main.py" = ["PLC0415"]
+"session_startup.py" = ["PLC0415"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["keep_or_nah_core"]

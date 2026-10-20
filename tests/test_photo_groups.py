@@ -1,6 +1,6 @@
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from photo_groups import PhotoGroup, build_photo_groups, discover_extensions
 
@@ -48,7 +48,9 @@ class PhotoGroupTests(unittest.TestCase):
 
             groups = build_photo_groups(source, {".jpg"}, {".JPG"})
 
-            self.assertEqual([(group.stem, group.representative) for group in groups], [("Photo", upper)])
+            self.assertEqual(
+                [(group.stem, group.representative) for group in groups], [("Photo", upper)]
+            )
 
     def test_representative_prefers_previewable_enabled_member_then_extension_and_filename(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -94,7 +96,9 @@ class PhotoGroupTests(unittest.TestCase):
             groups = build_photo_groups(source, {".jpg", ".cr3"}, {".jpg"})
 
             self.assertEqual(discover_extensions(source), (".jpg",))
-            self.assertEqual(groups, [PhotoGroup("photo", (source / "photo.jpg",), source / "photo.jpg")])
+            self.assertEqual(
+                groups, [PhotoGroup("photo", (source / "photo.jpg",), source / "photo.jpg")]
+            )
 
     def test_photo_group_is_immutable(self):
         group = PhotoGroup("A", (Path("A.jpg"),), Path("A.jpg"))

@@ -3,5 +3,14 @@
 .pyinstaller/
 .pycache-tmp/
 __pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 build/
 dist/
+target/
+crates/**/target/
+*.so
+*.dylib
+*.pyd
+freebuff-chat-*.md

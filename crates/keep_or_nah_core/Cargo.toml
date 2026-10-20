@@ -1,0 +1,78 @@
+[package]
+name = "keep_or_nah_core"
+version = "0.1.0"
+edition = "2021"
+authors = ["Keep or Nah Authors"]
+description = "Native high-performance core engine for Keep or Nah photo triage"
+build = "build.rs"
+
+[lib]
+name = "keep_or_nah_core"
+crate-type = ["cdylib", "rlib"]
+
+# `extension-module` is the switch that turns this crate into a Python
+# extension module. It enables PyO3's own `extension-module` feature, which
+# tells PyO3 not to emit a `-lpythonX.Y` link argument: the shared object
+# leaves the CPython symbols unresolved and the host interpreter provides them
+# when the module is imported.
+#
+# Maturin enables a crate feature named `extension-module` automatically when
+# it builds a wheel, so the packaging path needs no extra configuration. It is
+# a default feature as well so that a plain `cargo build` produces the same
+# shared object `maturin develop` installs.
+#
+# The Rust unit tests run with `--no-default-features`, see the
+# `[dev-dependencies]` section below for how they link without libpython.
+[features]
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+# `abi3-py312` builds against CPython's stable ABI, with the floor set to
+# the oldest Python the project supports. The floor is deliberate: it keeps
+# the wheel tag (`cp312-abi3`) consistent with the application's own
+# `requires-python = ">=3.12,<3.14"`, so the artifact does not claim
+# compatibility with interpreters the project has never been tested against.
+# See docs/adr/0006-stable-abi-for-the-native-core.md.
+#
+# It is also the feature PyO3 insists on when it is told to build without an
+# interpreter, which is how the Rust test suite runs on a machine that has no
+# Python installation at all.
+pyo3 = { version = "0.23", features = ["abi3-py312"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff", "rayon"] }
+fast_image_resize = { version = "5", features = ["image"] }
+kamadak-exif = "0.6"
+filetime = "0.2"
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+lru = "0.13"
+
+# The stable `std::os::windows::fs::MetadataExt` cannot read the volume
+# serial number and the file index of a file: those methods are still
+# behind the unstable `windows_by_handle` feature, and the crate has to
+# build on stable Rust. The Windows API returns both from an open handle.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+
+[dev-dependencies]
+# The test harness has to link without libpython:
+#
+#   * `extension-module` keeps PyO3 from emitting a `-lpythonX.Y` link
+#     argument, so the test binary has no CPython symbol left to resolve.
+#   * `abi3-py312` (from `[dependencies]`) is what PyO3 requires when it is
+#     told to build without an interpreter.
+#
+# Cargo unifies the features of a dependency and its dev-dependency for the
+# test target, so the `pyo3` build the test harness links against carries
+# `extension-module`, while the release build maturin drives does not depend
+# on the dev-dependency at all.
+pyo3 = { version = "0.23", features = ["extension-module"] }
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

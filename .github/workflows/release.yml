@@ -1,0 +1,205 @@
+name: Release
+
+# Turns a `v*` tag into a published release with downloadable macOS and
+# Windows artifacts. The build itself is delegated to scripts/build.py so the
+# local and the CI packaging paths cannot drift apart.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (without the leading v)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+# The verification scripts are bash. Windows runners default to PowerShell,
+# which cannot execute them, so every step runs under bash everywhere.
+defaults:
+  run:
+    shell: bash
+
+env:
+  UV_PYTHON: "3.12"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      # uv's managed CPython builds for Linux omit Tk, and the verification
+      # gate runs the GUI test suite. Build the virtualenv from the system
+      # interpreter, which can have Tk.
+      - name: Install Tk for the system Python
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+          /usr/bin/python3 -c "import tkinter; print('system tkinter', tkinter.TkVersion)"
+
+      - name: Read the pinned Rust toolchain
+        id: rust
+        run: echo "version=$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          components: rustfmt, clippy
+
+      - name: Sync the Python environment
+        run: |
+          uv sync --all-groups --python /usr/bin/python3
+          echo "UV_PYTHON=/usr/bin/python3" >> "$GITHUB_ENV"
+
+      - name: Run the full verification gate
+        run: scripts/verify.sh
+
+  macos:
+    name: macos
+    needs: verify
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Read the pinned Rust toolchain
+        id: rust
+        run: echo "version=$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "crates/keep_or_nah_core"
+
+      - name: Build the macOS app bundle
+        run: uv run python scripts/build.py macos
+
+      - name: Upload the macOS app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: keep-or-nah-macos
+          path: dist/macos/
+          if-no-files-found: error
+
+  windows:
+    name: windows
+    needs: verify
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+
+      - name: Read the pinned Rust toolchain
+        id: rust
+        run: echo "version=$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "crates/keep_or_nah_core"
+
+      - name: Build the Windows executable
+        run: uv run python scripts/build.py windows
+
+      - name: Upload the Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: keep-or-nah-windows
+          path: dist/windows/
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download the macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: keep-or-nah-macos
+          path: dist/macos
+
+      - name: Download the Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: keep-or-nah-windows
+          path: dist/windows
+
+      - name: Collect the release notes
+        run: |
+          previous_tag="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          if [ -n "$previous_tag" ]; then
+            range="${previous_tag}..${GITHUB_SHA}"
+          else
+            range="${GITHUB_SHA}"
+          fi
+          {
+            echo "## Changes"
+            echo
+            git log --pretty=format:'- %s (%h)' "$range"
+            echo
+            echo
+            echo "## Notes"
+            echo
+            echo "- The macOS app bundle is unsigned. macOS will quarantine the download on first launch."
+            echo "- The Windows executable is unsigned. Windows SmartScreen will warn on first launch."
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Keep or Nah ${{ inputs.tag || github.ref_name }}
+          body_path: release-notes.md
+          files: |
+            dist/macos/**
+            dist/windows/**

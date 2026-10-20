@@ -1,0 +1,204 @@
+name: CI
+
+# The gate that every pull request must pass. It calls the same scripts a
+# developer runs locally (scripts/verify.sh), so a green CI run and a green
+# local run are the same set of commands. Do not duplicate the checks here.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# The verification scripts are bash. Windows runners default to PowerShell,
+# which cannot execute them, so every step runs under bash everywhere.
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Read the pinned Rust toolchain
+        id: rust
+        run: echo "version=$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          components: rustfmt, clippy
+
+      - name: Sync the Python environment
+        run: uv sync --all-groups
+
+      - name: Python lint
+        run: scripts/verify.sh --stage lint-python
+
+      - name: Python format
+        run: scripts/verify.sh --stage format-python
+
+      - name: Rust format
+        run: scripts/verify.sh --stage format-rust
+
+      - name: Rust clippy
+        run: scripts/verify.sh --stage lint-rust
+
+  rust:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+
+      - name: Read the pinned Rust toolchain
+        id: rust
+        run: echo "version=$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "crates/keep_or_nah_core"
+
+      - name: Sync the Python environment
+        run: uv sync --all-groups
+
+      - name: Rust tests
+        run: scripts/verify.sh --stage test-rust
+
+  test:
+    name: test (${{ matrix.os }}, python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds its virtualenv from the system Python, because uv's
+          # managed Linux builds of CPython do not ship Tk and the GUI tests
+          # import it. The system Python can have Tk, so the Linux legs use
+          # it and the 3.13 leg lives on the other platforms.
+          - os: ubuntu-latest
+            python-version: "3.12"
+            system-python: true
+          - os: macos-latest
+            python-version: "3.12"
+          - os: macos-latest
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: ${{ matrix.python-version }}
+
+      # uv's managed CPython builds for Linux omit Tk: it is a large system
+      # dependency and the standalone builds do not bundle it. The GUI tests
+      # import tkinter through customtkinter, so on Linux the virtualenv is
+      # built from the system interpreter, which can have Tk.
+      - name: Install Tk for the system Python
+        if: matrix.system-python
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+          /usr/bin/python3 -c "import tkinter; print('system tkinter', tkinter.TkVersion)"
+          /usr/bin/python3 -c "
+          import sys
+          assert (3, 12) <= sys.version_info[:2] < (3, 14), sys.version
+          print('system python', sys.version.split()[0])
+          "
+
+      - name: Read the pinned Rust toolchain
+        id: rust
+        run: echo "version=$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "crates/keep_or_nah_core"
+
+      - name: Sync the Python environment
+        run: |
+          if [ "${{ matrix.system-python }}" = "true" ]; then
+            uv sync --all-groups --python /usr/bin/python3
+            echo "UV_PYTHON=/usr/bin/python3" >> "$GITHUB_ENV"
+          else
+            uv sync --all-groups --python ${{ matrix.python-version }}
+          fi
+
+      - name: Build the native module
+        run: scripts/verify.sh --stage build
+
+      - name: Python tests
+        run: scripts/verify.sh --stage test-python
+
+  artifacts:
+    name: artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Sync the Python environment
+        run: uv sync --all-groups
+
+      - name: Check the repository has no stray build artifacts
+        run: scripts/agent/check-artifacts.sh

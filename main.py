@@ -1,25 +1,14 @@
-import os
-import tkinter as tk
+from __future__ import annotations
 
-
-FORCE_CLASSIC_ENV_VAR = "KEEP_OR_NAH_FORCE_CLASSIC_UI"
+import gui_app
 
 
 def resolve_app_class():
-    force_classic = os.environ.get(FORCE_CLASSIC_ENV_VAR) == "1"
-    if force_classic or tk.TkVersion < 8.6:
-        from classic_gui import ClassicApp
-
-        return ClassicApp
-
-    from gui_app import App
-
-    return App
+    return gui_app.App
 
 
 def main():
-    app_class = resolve_app_class()
-    app = app_class()
+    app = resolve_app_class()()
     app.mainloop()
 
 

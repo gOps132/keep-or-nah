@@ -1,0 +1,14 @@
+# The Rust toolchain is pinned for the same reason the Ruff configuration is
+# pinned: an unpinned toolchain makes the lint gate a moving target. Clippy
+# gains lints between releases, so a green run on one machine can fail on
+# another after a toolchain bump, with no way to tell whether the code
+# regressed or the linter did.
+#
+# Raising the minimum supported Rust version is a deliberate act: change the
+# channel here, then fix whatever the new clippy finds. The CI workflow reads
+# this file rather than naming a version of its own, so there is one source of
+# truth.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
