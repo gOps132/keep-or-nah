@@ -182,7 +182,26 @@ stage_test_rust() {
   # The crate is built for CPython's stable ABI, so the test harness links
   # without libpython and needs no interpreter at all. PYO3_NO_PYTHON tells
   # PyO3 not to go looking for one. See ADR-0006.
-  if ! PYO3_NO_PYTHON=1 cargo test --manifest-path "$CRATE_DIR/Cargo.toml" --no-default-features; then
+  #
+  # Windows is the exception: PyO3 always links the interpreter's import
+  # library there, because a Windows extension module resolves the CPython
+  # symbols through that library rather than leaving them for the host to
+  # provide. So on Windows the interpreter has to be present and has to be
+  # pointed at, and the test binary needs it at run time as well.
+  local test_cmd=(cargo test --manifest-path "$CRATE_DIR/Cargo.toml" --no-default-features)
+  if [[ "$(uname -s 2>/dev/null || echo unknown)" == MINGW* || "${OS:-}" == "Windows_NT" ]]; then
+    if command -v uv >/dev/null 2>&1; then
+      local windows_python
+      windows_python="$(uv python find 2>/dev/null || true)"
+      if [[ -n "$windows_python" ]]; then
+        export PYO3_PYTHON="$windows_python"
+      fi
+    fi
+  else
+    export PYO3_NO_PYTHON=1
+  fi
+
+  if ! "${test_cmd[@]}"; then
     echo >&2
     echo "The Rust test suite could not run." >&2
     echo "If the failure is a link error mentioning __Py_ symbols, the crate" >&2
