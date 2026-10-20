@@ -75,6 +75,34 @@ def path_identity(path: Path) -> FileIdentity:
     return tuple(native_file_identity(str(path)))
 
 
+def legacy_path_identity(path: Path) -> tuple[int, int]:
+    """The identity of a path in the terms a legacy identity was recorded in.
+
+    A session saved before the identity was extended holds the device and
+    the inode that `os.lstat` reports. On Windows the native core reports
+    the volume serial number and the file index from the Windows API, and
+    the volume serial number is not the drive number that `os.lstat`
+    reports: the two are different numbers in different namespaces. A
+    legacy identity therefore has to be compared against a legacy reading,
+    or a session saved on Windows would lose its history for no good reason.
+    """
+    path_stat = path.lstat()
+    if path.is_symlink() or not stat.S_ISREG(path_stat.st_mode):
+        raise OSError(f"Owned path is no longer a regular file: {path}")
+    return path_stat.st_dev, path_stat.st_ino
+
+
+def read_identity(path: Path, expected: FileIdentity | None = None) -> FileIdentity:
+    """The identity of a path, read in the terms the expected identity uses.
+
+    A legacy identity is read the legacy way. A full identity is read the
+    native way.
+    """
+    if expected is not None and len(expected) == LEGACY_IDENTITY_COMPONENT_COUNT:
+        return legacy_path_identity(path)
+    return path_identity(path)
+
+
 def directory_identity(path: Path) -> tuple[int, int]:
     path_stat = path.lstat()
     if path.is_symlink() or not stat.S_ISDIR(path_stat.st_mode):
@@ -103,12 +131,21 @@ def identity_matches(current: FileIdentity, expected: FileIdentity) -> bool:
 
 
 def require_owned_path(path: Path, expected_identity: FileIdentity) -> None:
-    if not identity_matches(path_identity(path), expected_identity):
+    if not identity_matches(read_identity(path, expected_identity), expected_identity):
         raise OSError(f"Refusing to remove a replaced path: {path}")
 
 
 def remove_owned_path(path: Path, expected_identity: FileIdentity) -> None:
     remove_fn = _get_remove_fn()
+    if len(expected_identity) == LEGACY_IDENTITY_COMPONENT_COUNT:
+        # A legacy identity is verified in the namespace it was recorded in,
+        # and the native removal is handed the identity it can check for
+        # itself. The native removal re-reads the identity and refuses to
+        # remove a path that changed in between.
+        if not identity_matches(legacy_path_identity(path), expected_identity):
+            raise OSError(f"Refusing to remove a replaced path: {path}")
+        remove_fn(str(path), *path_identity(path))
+        return
     remove_fn(str(path), *expected_identity)
 
 

@@ -365,7 +365,9 @@ class ViewFilterApplicationTests(unittest.TestCase):
                     show_error,
                 )
                 self.assertFalse(saved)
-                self.assertIn("No such file", show_error.call_args.args[1])
+                # The wording of the operating system's error differs
+                # between platforms; the path it names does not.
+                self.assertIn("source", show_error.call_args.args[1])
                 fake.apply_preview_settings.assert_not_called()
 
 

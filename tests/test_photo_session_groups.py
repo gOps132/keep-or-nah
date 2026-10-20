@@ -739,11 +739,16 @@ class PhotoSessionGroupTests(unittest.TestCase):
         self.assertIsNotNone(identity)
         self.assertEqual(len(identity), 5)
         published = result.files[0].destination.stat()
-        self.assertEqual(identity[:2], (published.st_dev, published.st_ino))
+        # The size and the change time mean the same thing on every
+        # platform. The device and the inode do not: on Windows the native
+        # core reports the volume serial number and the file index from the
+        # Windows API, while `os.stat` reports the drive number.
         self.assertEqual(identity[2], published.st_size)
         self.assertGreater(identity[3], 0)
         self.assertGreaterEqual(identity[4], 0)
         self.assertLess(identity[4], 1_000_000_000)
+        if os.name != "nt":
+            self.assertEqual(identity[:2], (published.st_dev, published.st_ino))
 
     def test_a_session_saved_with_a_legacy_identity_is_still_undoable(self):
         """A session saved before the identity was extended stays usable.

@@ -303,7 +303,14 @@ class RustFileOpsTests(unittest.TestCase):
         staged_stat = staged_path.stat()
         self.assertEqual(stat.S_IMODE(staged_stat.st_mode), stat.S_IMODE(source.stat().st_mode))
         self.assertEqual(staged_stat.st_mtime_ns, source.stat().st_mtime_ns)
-        self.assertEqual((staged.dev, staged.ino), (staged_stat.st_dev, staged_stat.st_ino))
+        # The native core reports the volume serial number and the file
+        # index from the Windows API, which are not the drive number and
+        # the inode that `os.stat` reports. The file index is the same
+        # number on both.
+        if os.name == "nt":
+            self.assertEqual(staged.ino, staged_stat.st_ino)
+        else:
+            self.assertEqual((staged.dev, staged.ino), (staged_stat.st_dev, staged_stat.st_ino))
 
     def test_stage_regular_file_refuses_symlink_and_directory_sources(self) -> None:
         real = self.write_source("IMG.jpg", b"raw")

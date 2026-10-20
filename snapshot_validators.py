@@ -108,8 +108,9 @@ def _is_regular_file(path: Path) -> bool:
         return False
 
 
-def _path_identity(path: Path) -> tuple[int, ...]:
-    return file_identity.path_identity(path)
+def _path_identity(path: Path, expected: tuple[int, ...] | None = None) -> tuple[int, ...]:
+    """The identity of a path, read in the terms the expected identity uses."""
+    return file_identity.read_identity(path, expected)
 
 
 def _source_path_from_snapshot(
@@ -177,7 +178,9 @@ def _file_operation_from_snapshot(
     if destination.is_symlink() or not _is_regular_file(destination):
         raise ValueError("Snapshot destination is not an owned regular file")
     destination_identity = _snapshot_identity(value["destination_identity"])
-    if not file_identity.identity_matches(_path_identity(destination), destination_identity):
+    if not file_identity.identity_matches(
+        _path_identity(destination, destination_identity), destination_identity
+    ):
         raise ValueError("Snapshot destination ownership has changed")
     return FileOperation(source, destination, destination_identity)
 
