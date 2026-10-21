@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from photo_groups import PhotoGroup
-from photo_triage import ActionMode, ActionRecord, FileOperation
+from photo_triage import ActionMode, ActionRecord, Decision, FileOperation
 
 if TYPE_CHECKING:
     from photo_triage import PhotoTriage
@@ -150,10 +150,20 @@ class PhotoSessionProperties:
 
     @property
     def remaining_count(self) -> int:
-        return self._state.remaining_count
+        """The Photo Groups that are still waiting for a triage decision.
+
+        A Photo Group that carries a Staged Decision is still in the source
+        folder, so it is no longer waiting for one.
+        """
+        return self._state.remaining_count - len(self._staged_manager.staged)
 
     @property
     def pending_count(self) -> int:
+        """The Photo Groups the session holds, decided or not.
+
+        A Photo Group with a Staged Decision is still in the source folder and
+        still in the session, so the session is worth recovering.
+        """
         return self._state.pending_count
 
     @property
@@ -192,11 +202,24 @@ class PhotoSessionProperties:
 
     @property
     def flag_count(self) -> int:
-        return (
-            sum(1 for r in self._triage.history if r.decision == "flag")
-            + self.staged_summary.flag_count
-        )
+        return sum(1 for r in self._triage.history if r.decision == "flag")
 
     @property
     def processed_count(self) -> int:
         return self.keep_count + self.nah_count
+
+    def staged_decisions_by_path(self) -> dict[Path, Decision]:
+        """The Staged Decision of every Photo Group that has one, by Representative.
+
+        The Thumbnail Strip draws one entry per Photo Group, and a Photo Group
+        is identified there by the path of its Representative.
+        """
+        decisions = {item.stem: item.decision for item in self._staged_manager.staged}
+        if not decisions:
+            return {}
+        staged_by_path: dict[Path, Decision] = {}
+        for group in self._state.queue:
+            decision = decisions.get(group.stem)
+            if decision is not None:
+                staged_by_path[getattr(group, "representative", group)] = decision
+        return staged_by_path

@@ -16,6 +16,8 @@ from pathlib import Path
 
 import customtkinter as ctk
 
+from ui.decision_style import DECISION_COLORS, DECISION_HOVER_COLORS
+
 
 class LayoutMixin:
     """Construction of the `App` widget tree."""
@@ -192,8 +194,8 @@ class LayoutMixin:
         self.nah_button = ctk.CTkButton(
             self.footer_frame,
             text="Nah",
-            fg_color="#b42318",
-            hover_color="#912018",
+            fg_color=DECISION_COLORS["nah"],
+            hover_color=DECISION_HOVER_COLORS["nah"],
             height=54,
             command=lambda: self.sort_current_photo("nah"),
         )
@@ -202,8 +204,8 @@ class LayoutMixin:
         self.flag_button = ctk.CTkButton(
             self.footer_frame,
             text="Flag",
-            fg_color="#d97706",
-            hover_color="#b45309",
+            fg_color=DECISION_COLORS["flag"],
+            hover_color=DECISION_HOVER_COLORS["flag"],
             height=54,
             command=lambda: self.sort_current_photo("flag"),
         )
@@ -212,8 +214,8 @@ class LayoutMixin:
         self.keep_button = ctk.CTkButton(
             self.footer_frame,
             text="Keep",
-            fg_color="#157f3b",
-            hover_color="#126532",
+            fg_color=DECISION_COLORS["keep"],
+            hover_color=DECISION_HOVER_COLORS["keep"],
             height=54,
             command=lambda: self.sort_current_photo("keep"),
         )

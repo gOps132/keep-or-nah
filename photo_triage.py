@@ -8,6 +8,7 @@ from photo_groups import PhotoGroup
 
 Decision = Literal["keep", "nah", "flag"]
 ActionMode = Literal["move", "copy"]
+DECISIONS: tuple[Decision, ...] = ("keep", "nah", "flag")
 EMPTY_EXTENSION_SELECTION_MESSAGE = "Choose at least one file extension."
 
 

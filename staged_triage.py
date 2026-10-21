@@ -109,6 +109,13 @@ class StagedTriageManager:
         self.staged.append(staged_item)
         return staged_item
 
+    def decision_for(self, stem: str) -> Decision | None:
+        """The decision staged for this stem, if the Photo Group has one."""
+        for item in self.staged:
+            if item.stem == stem:
+                return item.decision
+        return None
+
     def unstage(self, stem: str) -> StagedDecision | None:
         for idx, item in enumerate(self.staged):
             if item.stem == stem:

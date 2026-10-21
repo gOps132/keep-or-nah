@@ -232,6 +232,161 @@ def test_photo_session_staged_mode(tmp_path: Path) -> None:
     assert session.staged_summary.total_count == 0
 
 
+def test_a_staged_photo_group_stays_in_the_queue(tmp_path: Path) -> None:
+    """A Photo Group with a Staged Decision is still in the source folder.
+
+    It stays in the Photo Session's queue so the Thumbnail Strip can show what
+    was decided, and it stops counting as one that is waiting for a decision.
+    """
+    from photo_session import PhotoSession
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "a.jpg").write_bytes(b"data-a")
+    (src_dir / "b.jpg").write_bytes(b"data-b")
+
+    session = PhotoSession(source_dir=src_dir, staged_mode=True)
+    session.load_queue()
+
+    session.decide("keep")
+
+    assert [group.stem for group in session.queue] == ["a", "b"]
+    assert [group.stem for group in session.pending_groups] == ["a", "b"]
+    assert session.remaining_count == 1
+    assert session.pending_count == 2
+    assert [item.stem for item in session.staged_decisions] == ["a"]
+
+
+def test_the_active_photo_group_moves_to_the_next_one_without_a_decision(tmp_path: Path) -> None:
+    from photo_session import PhotoSession
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    for stem in ("a", "b", "c"):
+        (src_dir / f"{stem}.jpg").write_bytes(b"data")
+
+    session = PhotoSession(source_dir=src_dir, staged_mode=True)
+    session.load_queue()
+
+    session.decide("keep")
+
+    assert session.active_group is not None
+    assert session.active_group.stem == "b"
+
+
+def test_deciding_again_on_a_staged_photo_group_revises_the_decision(tmp_path: Path) -> None:
+    from photo_session import PhotoSession
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "a.jpg").write_bytes(b"data-a")
+    (src_dir / "b.jpg").write_bytes(b"data-b")
+
+    session = PhotoSession(source_dir=src_dir, staged_mode=True)
+    session.load_queue()
+    session.decide("keep")
+
+    session.set_active_index(0)
+    session.decide("nah")
+
+    assert len(session.staged_decisions) == 1
+    assert session.staged_decisions[0].stem == "a"
+    assert session.staged_decisions[0].decision == "nah"
+    assert session.staged_summary.keep_count == 0
+    assert session.staged_summary.nah_count == 1
+
+
+def test_deciding_again_when_every_photo_group_has_a_decision_revises_it(tmp_path: Path) -> None:
+    """With nothing left to triage, the focus stays where the decision was made.
+
+    There is no undecided Photo Group to move on to, so the decision key
+    revises the decision the photographer is looking at.
+    """
+    from photo_session import PhotoSession
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "a.jpg").write_bytes(b"data-a")
+
+    session = PhotoSession(source_dir=src_dir, staged_mode=True)
+    session.load_queue()
+
+    session.decide("keep")
+
+    assert session.remaining_count == 0
+    assert session.active_group is not None
+    assert session.active_group.stem == "a"
+
+    session.decide("nah")
+
+    assert len(session.staged_decisions) == 1
+    assert session.staged_decisions[0].decision == "nah"
+
+
+def test_undoing_a_staged_decision_clears_it_and_refocuses_the_photo_group(tmp_path: Path) -> None:
+    from photo_session import PhotoSession
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "a.jpg").write_bytes(b"data-a")
+    (src_dir / "b.jpg").write_bytes(b"data-b")
+
+    session = PhotoSession(source_dir=src_dir, staged_mode=True)
+    session.load_queue()
+    session.decide("keep")
+
+    undo = session.undo()
+
+    assert undo.decision == "keep"
+    assert session.staged_decisions == []
+    assert session.remaining_count == 2
+    assert [group.stem for group in session.queue] == ["a", "b"]
+    assert session.active_group is not None
+    assert session.active_group.stem == "a"
+
+
+def test_a_committed_batch_takes_the_photo_groups_out_of_the_queue(tmp_path: Path) -> None:
+    from photo_session import PhotoSession
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "a.jpg").write_bytes(b"data-a")
+    (src_dir / "b.jpg").write_bytes(b"data-b")
+    keep_dir = tmp_path / "keep"
+    keep_dir.mkdir()
+
+    session = PhotoSession(source_dir=src_dir, keep_dir=keep_dir, staged_mode=True)
+    session.load_queue()
+    session.decide("keep")
+
+    session.commit_staged_batch()
+
+    assert session.staged_decisions == []
+    assert [group.stem for group in session.queue] == ["b"]
+    assert [group.stem for group in session.pending_groups] == ["b"]
+    assert session.completed_stems == {"a"}
+    assert session.keep_count == 1
+
+
+def test_the_staged_decision_of_a_photo_group_is_reachable_by_its_representative(
+    tmp_path: Path,
+) -> None:
+    from photo_session import PhotoSession
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "a.jpg").write_bytes(b"data-a")
+    (src_dir / "b.jpg").write_bytes(b"data-b")
+
+    session = PhotoSession(source_dir=src_dir, staged_mode=True)
+    session.load_queue()
+    session.decide("keep")
+
+    staged = session.staged_decisions_by_path()
+
+    assert staged == {session.queue[0].representative: "keep"}
+
+
 def test_photo_session_staged_snapshot_persistence(tmp_path: Path) -> None:
     from photo_session import PhotoSession
 

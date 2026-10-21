@@ -7,7 +7,30 @@ and the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- The Thumbnail Strip renders the Staged Decision of a decided Photo Group,
+  as ADR-0004 requires: a badge that names the decision and repeats its
+  colour. ADR-0008.
+
+### Changed
+
+- A Photo Group that carries a Staged Decision stays in the Photo Session
+  and on the Thumbnail Strip. It is still in the source folder, so the
+  session is an honest picture of the folder and the photographer can see
+  what they have already decided. ADR-0008.
+- Deciding again about a Photo Group that already carries a Staged Decision
+  revises that decision instead of recording a second one.
+- The keep and nah counts are the decisions that reached the disk. A staged
+  decision is counted by the batch summary until the batch is committed.
+
+### Fixed
+
+- **The staged decisions of a session were lost when the photographer
+  staged every photo and quit.** A session with nothing left to triage was
+  not written to disk, so the decisions the photographer had not committed
+  yet were gone. A session with staged decisions is now always worth
+  recovering.
 
 ## [0.1.0] - 2026-10-21
 
