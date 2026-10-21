@@ -28,33 +28,10 @@ class ReviewCommitController:
         return self.session.staged_summary
 
     def revise_decision(self, stem: str, new_decision: Decision) -> StagedDecision | None:
-        if new_decision == "keep":
-            dest = self.session.keep_dir
-        elif new_decision == "nah":
-            dest = self.session.nah_dir
-        else:
-            dest = self.session.flag_dir
-
-        try:
-            return self.session._staged_manager.revise(stem, new_decision, dest)
-        except (KeyError, IndexError):
-            return None
+        return self.session.revise_staged_decision(stem, new_decision)
 
     def unstage_item(self, stem: str) -> StagedDecision | None:
-        staged = self.session._staged_manager.unstage(stem)
-        if staged is not None:
-            self.session.completed_stems.discard(staged.stem)
-            self.session.pending_groups.append(staged.group)
-            self.session.pending_groups.sort(key=lambda g: (g.stem.lower(), g.stem))
-            self.session.queue = self.session._project_pending_groups()
-            self.session.active_index = next(
-                (i for i, g in enumerate(self.session.queue) if g.stem == staged.stem), 0
-            )
-            if staged.decision == "keep":
-                self.session.keep_count -= 1
-            elif staged.decision == "nah":
-                self.session.nah_count -= 1
-        return staged
+        return self.session.unstage(stem)
 
     def discard_all(self) -> int:
         return self.session.undo_all_staged()
@@ -210,6 +187,11 @@ class ReviewCommitModal(ctk.CTkToplevel):
             def _on_change(val: str, stem=item.stem):
                 self.controller.revise_decision(stem, val.lower())
                 self._refresh_summary()
+                # The Thumbnail Strip badges the decision, so it has to redraw.
+                # The full refresh is not used here: it takes the focus away
+                # from the modal the photographer is working in.
+                if hasattr(self.parent, "refresh_thumbnail_strip"):
+                    self.parent.refresh_thumbnail_strip()
 
             decision_seg = ctk.CTkSegmentedButton(
                 row_frame,

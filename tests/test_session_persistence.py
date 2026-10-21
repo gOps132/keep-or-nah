@@ -152,6 +152,34 @@ class PhotoSessionSnapshotTests(unittest.TestCase):
             restored.apply_extension_filter({".jpg"})
             self.assertEqual([group.stem for group in restored.queue], ["B"])
 
+    def test_a_session_whose_every_photo_is_staged_is_still_recovered(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "source"
+            keep = root / "keep"
+            source.mkdir()
+            keep.mkdir()
+            (source / "A.jpg").write_bytes(b"jpg")
+            (source / "B.jpg").write_bytes(b"jpg")
+
+            session = PhotoSession(staged_mode=True)
+            session.set_source_dir(source)
+            session.set_keep_dir(keep)
+            session.load_queue()
+            session.decide("keep")
+            session.decide("nah")
+
+            self.assertEqual(session.remaining_count, 0)
+
+            store = SessionPersistence(root / "session.json")
+            self.assertTrue(SessionLifecycle(store).persist(session))
+            self.assertTrue(store.path.exists())
+
+            restored = SessionLifecycle(store).restore()
+            self.assertIsNotNone(restored)
+            self.assertEqual([item.stem for item in restored.staged_decisions], ["A", "B"])
+            self.assertTrue(session_has_pending_photos(restored))
+
     def test_version_two_rejects_invalid_or_pending_completed_stems(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "source"

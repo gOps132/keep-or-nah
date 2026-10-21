@@ -158,7 +158,8 @@ class App(
         self.thumbnail_work_queue: queue.Queue | None = None
         self.thumbnail_result_queue: queue.Queue | None = None
         self.thumbnail_poll_job = None
-        self.thumbnail_signature: tuple[Path, ...] = ()
+        # The paths the strip shows, and the staged decisions it badges.
+        self.thumbnail_signature: tuple[tuple[Path, ...], tuple[tuple[str, str], ...]] = ()
         self.thumbnail_canvas_width = 0
         self.thumbnail_canvas_height = 108
         self.rendered_thumbnail_range = (-1, -1)

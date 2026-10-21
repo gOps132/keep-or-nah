@@ -12,12 +12,12 @@ from file_coordinator import FileCoordinator
 from file_identity import FileIdentity
 from keep_or_nah_core import remove_verified_file as remove_verified_file
 from keep_or_nah_core import stage_regular_file as stage_regular_file
-from photo_groups import PhotoGroup
+from photo_groups import PhotoGroup, stem_order
 from photo_metadata import SUPPORTED_IMAGE_EXTENSIONS as SUPPORTED_IMAGE_EXTENSIONS
 from photo_metadata import pillow_previewable_extensions as pillow_previewable_extensions
 from photo_session_properties import PhotoSessionProperties
-from photo_triage import EMPTY_EXTENSION_SELECTION_MESSAGE as EMPTY_EXTENSION_SELECTION_MESSAGE
 from photo_triage import (
+    DECISIONS,
     ActionMode,
     ActionRecord,
     Decision,
@@ -27,6 +27,7 @@ from photo_triage import (
     PhotoTriage,
     UndoResult,
 )
+from photo_triage import EMPTY_EXTENSION_SELECTION_MESSAGE as EMPTY_EXTENSION_SELECTION_MESSAGE
 from session_state import SessionState
 from staged_triage import (
     StagedDecision,
@@ -82,14 +83,10 @@ class PhotoSession(PhotoSessionProperties, FileCoordinator):
         self.staged_mode: bool = staged_mode
         self.flag_dir: Path | None = Path(flag_dir) if flag_dir is not None else None
         self._staged_manager = StagedTriageManager(staged=staged_decisions)
-        self.keep_count: int = (
-            sum(1 for r in self._triage.history if r.decision == "keep")
-            + self.staged_summary.keep_count
-        )
-        self.nah_count: int = (
-            sum(1 for r in self._triage.history if r.decision == "nah")
-            + self.staged_summary.nah_count
-        )
+        # A Staged Decision has not been executed yet, so it is not counted
+        # here. The count is the number of decisions that reached the disk.
+        self.keep_count: int = sum(1 for r in self._triage.history if r.decision == "keep")
+        self.nah_count: int = sum(1 for r in self._triage.history if r.decision == "nah")
 
     # --- Navigation & Queue Methods ---
 
@@ -179,7 +176,7 @@ class PhotoSession(PhotoSessionProperties, FileCoordinator):
     # --- Triage Actions: decide and undo ---
 
     def decide(self, decision: Decision) -> DecisionResult:
-        if decision not in {"keep", "nah", "flag"}:
+        if decision not in DECISIONS:
             raise PhotoSessionError(f"Unsupported decision: {decision}")
         group = self.active_group
         if group is None:
@@ -201,27 +198,10 @@ class PhotoSession(PhotoSessionProperties, FileCoordinator):
             )
             group = PhotoGroup(group.stem, remaining_members, representative)
 
-        if decision == "keep":
-            destination_dir = self.keep_dir
-        elif decision == "nah":
-            destination_dir = self.nah_dir
-        else:
-            destination_dir = self.flag_dir
+        destination_dir = self.destination_dir_for(decision)
 
         if self.staged_mode:
-            staged = self._staged_manager.stage(
-                group,
-                decision,
-                self.action_mode,
-                destination_dir,
-                current_index,
-            )
-            self._remove_queue_item(current_index)
-            self.completed_stems.add(group.stem)
-            if decision == "keep":
-                self.keep_count += 1
-            elif decision == "nah":
-                self.nah_count += 1
+            staged = self._stage_decision(group, decision, current_index)
             return DecisionResult(
                 decision,
                 self.action_mode,
@@ -269,22 +249,92 @@ class PhotoSession(PhotoSessionProperties, FileCoordinator):
 
         return DecisionResult(decision, self.action_mode, group, operations, self.remaining_count)
 
+    def destination_dir_for(self, decision: Decision) -> Path | None:
+        """The folder a decision sends its Photo Group to."""
+        if decision == "keep":
+            return self.keep_dir
+        if decision == "nah":
+            return self.nah_dir
+        return self.flag_dir
+
+    def _stage_decision(
+        self,
+        group: PhotoGroup,
+        decision: Decision,
+        index: int,
+    ) -> StagedDecision:
+        """Record the decision for a Photo Group, revising it if it already has one.
+
+        A staged Photo Group stays in the queue: it is still in the source
+        folder, and the Thumbnail Strip shows what was decided about it. The
+        focus moves on to the next Photo Group that is still waiting for a
+        decision.
+        """
+        destination_dir = self.destination_dir_for(decision)
+        if self._staged_manager.decision_for(group.stem) is not None:
+            staged = self._staged_manager.revise(group.stem, decision, destination_dir)
+        else:
+            staged = self._staged_manager.stage(
+                group,
+                decision,
+                self.action_mode,
+                destination_dir,
+                index,
+            )
+        self._focus_next_undecided(index)
+        return staged
+
+    def _focus_next_undecided(self, current_index: int) -> None:
+        """Move the focus to the next Photo Group that is waiting for a decision."""
+        queue = self._state.queue
+        if len(queue) < 2:
+            return
+        decided = {item.stem for item in self._staged_manager.staged}
+        for offset in range(1, len(queue)):
+            candidate = (current_index + offset) % len(queue)
+            if queue[candidate].stem not in decided:
+                self.active_index = candidate
+                return
+
+    def revise_staged_decision(self, stem: str, decision: Decision) -> StagedDecision | None:
+        """Change the Staged Decision of a Photo Group that already carries one."""
+        try:
+            return self._staged_manager.revise(stem, decision, self.destination_dir_for(decision))
+        except KeyError:
+            return None
+
+    def unstage(self, stem: str) -> StagedDecision | None:
+        """Drop the Staged Decision of a Photo Group so it waits for one again."""
+        staged = self._staged_manager.unstage(stem)
+        if staged is None:
+            return None
+        self._restore_pending_group(staged.group)
+        self._focus_group(staged.stem)
+        return staged
+
+    def _restore_pending_group(self, group: PhotoGroup) -> None:
+        """Put a Photo Group back in the pending list if it is not there already.
+
+        A staged Photo Group stays in the pending list, so this only has work
+        to do for a session that was saved before it did.
+        """
+        if any(item.stem == group.stem for item in self.pending_groups):
+            return
+        self.pending_groups.append(group)
+        self.pending_groups.sort(key=stem_order)
+        self.queue = self._project_pending_groups()
+
+    def _focus_group(self, stem: str) -> None:
+        """Move the focus to the Photo Group with this stem."""
+        self.active_index = next((i for i, group in enumerate(self.queue) if group.stem == stem), 0)
+
     def undo(self) -> UndoResult:
         if self.staged_mode and not self._staged_manager.is_empty:
             staged = self._staged_manager.undo()
             if staged is None:
                 raise PhotoSessionError("There is nothing to undo.")
-            self.completed_stems.discard(staged.stem)
-            self.pending_groups.append(staged.group)
-            self.pending_groups.sort(key=lambda group: (group.stem.lower(), group.stem))
-            self.queue = self._project_pending_groups()
-            self.active_index = next(
-                (i for i, g in enumerate(self.queue) if g.stem == staged.stem), 0
-            )
-            if staged.decision == "keep":
-                self.keep_count -= 1
-            elif staged.decision == "nah":
-                self.nah_count -= 1
+            self._restore_pending_group(staged.group)
+            self._focus_group(staged.stem)
             return UndoResult(
                 staged.decision,
                 staged.action_mode,
@@ -334,7 +384,38 @@ class PhotoSession(PhotoSessionProperties, FileCoordinator):
             self, on_progress=on_progress, cancel_token=cancel_token
         )
         self.history.extend(records)
+        self._retire_committed_groups(records)
         return records
+
+    def _retire_committed_groups(self, records: tuple[ActionRecord, ...]) -> None:
+        """Take the committed Photo Groups out of the pending list.
+
+        Their decision has been carried out, so the Thumbnail Strip must not
+        keep offering them for triage.
+        """
+        for record in records:
+            self.completed_stems.add(record.group.stem)
+            if record.decision == "keep":
+                self.keep_count += 1
+            elif record.decision == "nah":
+                self.nah_count += 1
+        if not records:
+            return
+        committed = {record.group.stem for record in records}
+        self.pending_groups = [
+            group for group in self.pending_groups if group.stem not in committed
+        ]
+        self._restore_active_group()
+
+    def _restore_active_group(self) -> None:
+        """Keep the focus on the same Photo Group after the queue is rebuilt."""
+        previous_index = self.active_index
+        active_stem = self.active_group.stem if self.active_group is not None else None
+        self.queue = self._project_pending_groups()
+        self.active_index = next(
+            (i for i, group in enumerate(self.queue) if group.stem == active_stem),
+            min(previous_index, max(len(self.queue) - 1, 0)),
+        )
 
     def undo_all_staged(self) -> int:
         count = 0
@@ -355,7 +436,31 @@ class PhotoSession(PhotoSessionProperties, FileCoordinator):
 
     @classmethod
     def from_snapshot(cls, data: object) -> PhotoSession | None:
-        return session_snapshot.from_snapshot(data, cls._from_snapshot_factory)
+        session = session_snapshot.from_snapshot(data, cls._from_snapshot_factory)
+        if session is not None:
+            session._adopt_staged_groups()
+        return session
+
+    def _adopt_staged_groups(self) -> None:
+        """Bring the Photo Groups that carry a Staged Decision back into the pending list.
+
+        A session saved before the Thumbnail Strip rendered Staged Decisions
+        took a staged Photo Group out of the pending list, because the group
+        left the queue the moment it was staged. A staged Photo Group is still
+        in the source folder, so it is a pending Photo Group that carries a
+        decision.
+        """
+        adopted = [
+            item.group
+            for item in self._staged_manager.staged
+            if not any(group.stem == item.stem for group in self.pending_groups)
+        ]
+        if not adopted:
+            return
+        self.pending_groups.extend(adopted)
+        self.pending_groups.sort(key=stem_order)
+        self.completed_stems.difference_update(item.stem for item in self._staged_manager.staged)
+        self._restore_active_group()
 
     @classmethod
     def _from_snapshot_factory(cls, **kwargs: object) -> PhotoSession:

@@ -19,6 +19,11 @@ class PhotoGroup:
     representative: Path
 
 
+def stem_order(group: PhotoGroup) -> tuple[str, str]:
+    """The order Photo Groups are listed in: by stem, ignoring case."""
+    return (group.stem.lower(), group.stem)
+
+
 try:
     from keep_or_nah_core import (
         build_photo_groups as _rust_build_photo_groups,

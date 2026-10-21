@@ -8,7 +8,7 @@ import legacy_snapshot
 import snapshot_validators
 from photo_groups import PhotoGroup
 from photo_metadata import pillow_previewable_extensions
-from photo_triage import FileOperation
+from photo_triage import DECISIONS, FileOperation
 from staged_triage import StagedDecision, StagedTriageManager
 
 if TYPE_CHECKING:
@@ -259,6 +259,8 @@ def _from_grouped_snapshot(
             if staged_group is None:
                 continue
             decision = item.get("decision", "keep")
+            if decision not in DECISIONS:
+                continue
             action_mode = item.get("action_mode", "move")
             dest_dir = Path(item["destination_dir"]) if item.get("destination_dir") else None
             idx = int(item.get("index", 0))
@@ -280,9 +282,11 @@ def _from_grouped_snapshot(
                 )
             )
 
-    staged_stems = {s.stem for s in restored_staged}
     session.completed_stems = declared_completed
-    if not (history_stems | staged_stems).issubset(session.completed_stems):
+    # A Photo Group that carries a Staged Decision is a pending Photo Group: it
+    # is still in the source folder, and the Thumbnail Strip shows what was
+    # decided about it. Only a decision that reached the disk completes one.
+    if not history_stems.issubset(session.completed_stems):
         return None
     if {group.stem for group in session.pending_groups} & session.completed_stems:
         return None

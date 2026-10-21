@@ -18,7 +18,9 @@ import tkinter as tk
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from photo_triage import Decision
 from session_startup import preview_paths_for
+from ui.decision_style import DECISION_COLORS, DECISION_LETTERS
 from ui.gui_targets import gui_module
 
 if TYPE_CHECKING:
@@ -203,7 +205,8 @@ class ThumbnailStripMixin:
             self.thumbnail_canvas.configure(scrollregion=(0, 0, canvas_width, canvas_height))
             return
 
-        signature_changed = paths != self.thumbnail_signature
+        signature = (paths, self.staged_decision_signature())
+        signature_changed = signature != self.thumbnail_signature
         width_changed = (
             canvas_width != self.thumbnail_canvas_width
             or canvas_height != self.thumbnail_canvas_height
@@ -211,7 +214,7 @@ class ThumbnailStripMixin:
         region_width = self.get_thumbnail_region_width(len(paths), canvas_width)
 
         self.thumbnail_canvas.configure(scrollregion=(0, 0, region_width, canvas_height))
-        self.thumbnail_signature = paths
+        self.thumbnail_signature = signature
         self.thumbnail_canvas_width = canvas_width
         self.thumbnail_canvas_height = canvas_height
 
@@ -246,6 +249,41 @@ class ThumbnailStripMixin:
         end = min(int(offset_right // self.thumbnail_pitch) + self.thumbnail_buffer + 2, item_count)
         return (start, max(start, end))
 
+    def staged_decision_signature(self) -> tuple[tuple[str, str], ...]:
+        """The staged decisions, so the strip redraws when one of them changes."""
+        return tuple((item.stem, item.decision) for item in self.session.staged_decisions)
+
+    def draw_staged_decision_badge(self, decision: Decision, center_x: float, tag: str) -> None:
+        """Draw the indicator that says which decision a Photo Group carries.
+
+        The letter names the decision and the colour repeats it, so the
+        indicator reads the same way for a decision the photographer cannot
+        distinguish by colour.
+        """
+        letter = DECISION_LETTERS.get(decision)
+        color = DECISION_COLORS.get(decision)
+        if letter is None or color is None:
+            return
+        left = center_x - (self.thumbnail_size / 2) + 3
+        top = self.thumbnail_top_padding + 3
+        self.thumbnail_canvas.create_rectangle(
+            left,
+            top,
+            left + 16,
+            top + 16,
+            fill=color,
+            outline="",
+            tags=(tag, "thumbnail", "staged-decision"),
+        )
+        self.thumbnail_canvas.create_text(
+            left + 8,
+            top + 8,
+            text=letter,
+            fill="#ffffff",
+            font=("SF Pro Text", 9, "bold"),
+            tags=(tag, "thumbnail", "staged-decision"),
+        )
+
     def redraw_thumbnail_strip(self, paths: tuple[Path, ...], visible_range: tuple[int, int]):
         self.thumbnail_canvas.delete("all")
         self.thumbnail_refs = []
@@ -253,6 +291,7 @@ class ThumbnailStripMixin:
         thumb_center_y = self.thumbnail_top_padding + (self.thumbnail_size / 2)
         marker_y = self.thumbnail_top_padding + self.thumbnail_size + 10
         start, end = visible_range
+        staged_decisions = self.session.staged_decisions_by_path()
 
         self.request_missing_strip_thumbnails(paths, visible_range)
 
@@ -280,6 +319,10 @@ class ThumbnailStripMixin:
                     font=("SF Pro Display", 18, "bold"),
                     tags=(tag, "thumbnail"),
                 )
+
+            decision = staged_decisions.get(path)
+            if decision is not None:
+                self.draw_staged_decision_badge(decision, center_x, tag)
 
             best_shots = getattr(self, "best_shots", ())
             if path in best_shots:

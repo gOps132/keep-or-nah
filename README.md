@@ -23,10 +23,11 @@ and the thumbnail.
 - **Staged Triage** — decisions are recorded in memory as **Staged
   Decisions** instead of touching the filesystem. This is the default; the
   View menu and the settings dialog switch to immediate mode, and the choice
-  persists. The **Review Batch** button shows how many are outstanding, and
-  the review modal lists every Staged Decision with its size alongside the
-  Keep, Nah, and total counts and the disk space reclaimed, before anything is
-  executed.
+  persists. A staged Photo Group stays on the Thumbnail Strip with a badge
+  that says which decision it carries. The **Review Batch** button shows how
+  many are outstanding, and the review modal lists every Staged Decision with
+  its size alongside the Keep, Nah, and total counts and the disk space
+  reclaimed, before anything is executed.
 - **Batch Commit** — all Staged Decisions are executed together from the review
   modal, with automatic rollback if any part of the batch fails.
 - **Split Comparison** — a 2-up view of two Photo Groups with synchronized zoom
@@ -40,8 +41,8 @@ and the thumbnail.
   transactional record. Undo reverses the last action and verifies file
   identity before it touches anything.
 - **Thumbnail Strip** — asynchronously decoded thumbnails of the Photo Groups
-  in the active Photo Session, with a selection indicator and the Best Shot
-  badge.
+  in the active Photo Session, with a selection indicator, the Best Shot
+  badge, and a badge for the Staged Decision of a decided Photo Group.
 - **Native Rust core** (`keep_or_nah_core`, bound with PyO3 and maturin) handles
   directory scanning, same-stem grouping, SIMD Lanczos3 thumbnail generation,
   EXIF-aware preview rendering, atomic file operations, sharpness scoring, and
