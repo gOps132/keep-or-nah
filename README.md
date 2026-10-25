@@ -118,7 +118,24 @@ To get a local development environment up and running, follow these simple steps
   * **Linux**: `build-essential`, `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`
   * **Windows**: Microsoft Edge WebView2 and C++ Build Tools
 
-### Installation
+### Download Pre-built App
+
+Pre-compiled desktop releases are available on the [Releases page](https://github.com/gOps132/keep-or-nah/releases).
+
+#### 🍎 macOS Gatekeeper Note
+Because this open-source build is not signed with a paid Apple Developer Program certificate ($99/yr), macOS Gatekeeper quarantines downloaded files by default (displaying *"keep-or-nah is damaged and can't be opened"*).
+
+To run the app:
+1. Download **`Keep-or-Nah-macos-arm64.dmg`**, open it, and drag **`keep-or-nah`** into `/Applications`.
+2. Open Terminal and run:
+   ```bash
+   xattr -cr /Applications/keep-or-nah.app
+   ```
+   *(Alternatively, go to **System Settings > Privacy & Security**, scroll down to the Security section, and click **Open Anyway**).*
+
+---
+
+### Installation from Source
 
 1. Clone the repository:
    ```sh
