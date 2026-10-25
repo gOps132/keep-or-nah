@@ -54,6 +54,12 @@ pub fn compute_sharpness(rgba: &[u8], width: u32, height: u32) -> f32 {
     variance.max(0.0) as f32
 }
 
+/// Convenience function for compute_sharpness returning f64 sharpness score.
+#[inline]
+pub fn sharpness_score_f64(rgba: &[u8], width: u32, height: u32) -> f64 {
+    compute_sharpness(rgba, width, height) as f64
+}
+
 /// Compute a 64-bit difference hash (dHash) for perceptual similarity comparison.
 /// Downsamples the image to a 9x8 luminance grid and compares adjacent horizontal pixels.
 pub fn compute_image_hash(rgba: &[u8], width: u32, height: u32) -> u64 {
@@ -109,6 +115,12 @@ pub fn compute_image_hash(rgba: &[u8], width: u32, height: u32) -> u64 {
     }
 
     hash
+}
+
+/// Convenience alias for compute_image_hash returning 64-bit perceptual difference hash.
+#[inline]
+pub fn difference_hash_64(rgba: &[u8], width: u32, height: u32) -> u64 {
+    compute_image_hash(rgba, width, height)
 }
 
 #[cfg(test)]
