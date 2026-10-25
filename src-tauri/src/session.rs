@@ -89,6 +89,81 @@ pub struct CommitResultDto {
     pub errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ExecutedOp {
+    Moved { source: PathBuf, destination: PathBuf },
+    Copied { destination: PathBuf },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryJournal {
+    pub timestamp_epoch_sec: u64,
+    pub session_dir: String,
+    pub unreversed_ops: Vec<ExecutedOp>,
+    pub rollback_errors: Vec<String>,
+}
+
+fn rollback_ops(ops: Vec<ExecutedOp>, session_dir: &Path) -> Result<(), String> {
+    let mut rollback_errors = Vec::new();
+    let mut unreversed_ops = Vec::new();
+
+    for op in ops.into_iter().rev() {
+        match &op {
+            ExecutedOp::Moved { source, destination } => {
+                if destination.exists() {
+                    if let Err(e) = fs::rename(destination, source) {
+                        rollback_errors.push(format!(
+                            "Failed to restore {} to {}: {}",
+                            destination.display(),
+                            source.display(),
+                            e
+                        ));
+                        unreversed_ops.push(op);
+                    }
+                }
+            }
+            ExecutedOp::Copied { destination } => {
+                if destination.exists() {
+                    if let Err(e) = fs::remove_file(destination) {
+                        rollback_errors.push(format!(
+                            "Failed to clean up copied file {}: {}",
+                            destination.display(),
+                            e
+                        ));
+                        unreversed_ops.push(op);
+                    }
+                }
+            }
+        }
+    }
+
+    if !rollback_errors.is_empty() {
+        let journal = RecoveryJournal {
+            timestamp_epoch_sec: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            session_dir: session_dir.to_string_lossy().to_string(),
+            unreversed_ops,
+            rollback_errors: rollback_errors.clone(),
+        };
+        let journal_path = session_dir.join(format!(
+            "_emergency_recovery_{}.json",
+            journal.timestamp_epoch_sec
+        ));
+        if let Ok(json) = serde_json::to_string_pretty(&journal) {
+            let _ = fs::write(&journal_path, json);
+        }
+        return Err(format!(
+            "Rollback errors encountered (recovery journal saved to {}):\n{}",
+            journal_path.display(),
+            rollback_errors.join("\n")
+        ));
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Default)]
 pub struct SessionState {
     pub source_dir: Option<String>,
@@ -202,14 +277,15 @@ impl SessionState {
             .as_ref()
             .ok_or_else(|| "No active session source directory".to_string())?;
 
+        let session_path = Path::new(source_root);
         let keep_destination = keep_dir_override
             .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(source_root).join("keep"));
+            .unwrap_or_else(|| session_path.join("keep"));
         let nah_destination = nah_dir_override
             .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(source_root).join("trash"));
+            .unwrap_or_else(|| session_path.join("trash"));
 
-        let mut executed_ops: Vec<(PathBuf, PathBuf, bool)> = Vec::new(); // (source, dest, is_move)
+        let mut executed_ops: Vec<ExecutedOp> = Vec::new();
         let mut committed_stems = Vec::new();
         let mut errors = Vec::new();
 
@@ -251,33 +327,83 @@ impl SessionState {
                 };
                 let target_file = dest_folder.join(file_name);
 
-                let op_result = if is_move {
-                    fs::rename(member, &target_file)
-                } else {
-                    fs::copy(member, &target_file).map(|_| ())
-                };
-
-                match op_result {
-                    Ok(_) => {
-                        group_ops.push((member.clone(), target_file, is_move));
+                if is_move {
+                    // Try atomic filesystem rename first
+                    match fs::rename(member, &target_file) {
+                        Ok(_) => {
+                            group_ops.push(ExecutedOp::Moved {
+                                source: member.clone(),
+                                destination: target_file,
+                            });
+                        }
+                        Err(rename_err) => {
+                            // If cross-device or permission, fallback to verified stage_copy + remove_verified
+                            let source_ident = match keep_or_nah_core::fileops::identity_of(member) {
+                                Ok(id) => id,
+                                Err(e) => {
+                                    errors.push(format!(
+                                        "Failed to read source identity for {} ({rename_err}): {e}",
+                                        member.display()
+                                    ));
+                                    group_failed = true;
+                                    break;
+                                }
+                            };
+                            match keep_or_nah_core::fileops::stage_copy(member, dest_folder, Some(&source_ident.components())) {
+                                Ok(staged) => {
+                                    let staged_p = Path::new(&staged.path);
+                                    if let Err(e) = fs::rename(staged_p, &target_file) {
+                                        let _ = fs::remove_file(staged_p);
+                                        errors.push(format!("Failed to publish staged file for {}: {e}", member.display()));
+                                        group_failed = true;
+                                        break;
+                                    }
+                                    // Remove source with identity verification
+                                    if let Err(e) = keep_or_nah_core::fileops::remove_verified(member, &source_ident.components()) {
+                                        let _ = fs::remove_file(&target_file);
+                                        errors.push(format!("Failed to verified-remove source {}: {e}", member.display()));
+                                        group_failed = true;
+                                        break;
+                                    }
+                                    group_ops.push(ExecutedOp::Moved {
+                                        source: member.clone(),
+                                        destination: target_file,
+                                    });
+                                }
+                                Err(e) => {
+                                    errors.push(format!("Failed to move {} ({rename_err}): {e}", member.display()));
+                                    group_failed = true;
+                                    break;
+                                }
+                            }
+                        }
                     }
-                    Err(e) => {
-                        errors.push(format!("Failed to transfer {}: {e}", member.display()));
-                        group_failed = true;
-                        break;
+                } else {
+                    // ActionMode::Copy
+                    match keep_or_nah_core::fileops::stage_copy(member, dest_folder, None) {
+                        Ok(staged) => {
+                            let staged_p = Path::new(&staged.path);
+                            if let Err(e) = fs::rename(staged_p, &target_file) {
+                                let _ = fs::remove_file(staged_p);
+                                errors.push(format!("Failed to publish staged copy for {}: {e}", member.display()));
+                                group_failed = true;
+                                break;
+                            }
+                            group_ops.push(ExecutedOp::Copied {
+                                destination: target_file,
+                            });
+                        }
+                        Err(e) => {
+                            errors.push(format!("Failed to stage copy for {}: {e}", member.display()));
+                            group_failed = true;
+                            break;
+                        }
                     }
                 }
             }
 
             if group_failed {
-                // Roll back current group operations
-                for (src, dest, was_move) in group_ops.into_iter().rev() {
-                    if was_move {
-                        let _ = fs::rename(&dest, &src);
-                    } else {
-                        let _ = fs::remove_file(&dest);
-                    }
-                }
+                executed_ops.extend(group_ops);
                 break;
             } else {
                 executed_ops.extend(group_ops);
@@ -286,13 +412,10 @@ impl SessionState {
         }
 
         if !errors.is_empty() {
-            // Roll back all executed operations on batch failure
-            for (src, dest, was_move) in executed_ops.into_iter().rev() {
-                if was_move {
-                    let _ = fs::rename(&dest, &src);
-                } else {
-                    let _ = fs::remove_file(&dest);
-                }
+            // Deduplicated rollback execution with emergency recovery journal
+            let rollback_res = rollback_ops(executed_ops, session_path);
+            if let Err(rollback_err) = rollback_res {
+                errors.push(rollback_err);
             }
             return Err(errors.join("\n"));
         }
@@ -376,5 +499,97 @@ mod tests {
 
         // Staged state is now clean
         assert_eq!(session.decisions.len(), 0);
+    }
+
+    #[test]
+    fn test_commit_batch_copies_files_and_preserves_source() {
+        let temp = TempDir::new().unwrap();
+        let src = temp.path().join("source");
+        fs::create_dir(&src).unwrap();
+
+        let file1 = src.join("A01.JPG");
+        fs::write(&file1, b"hello copy").unwrap();
+
+        let mut session = SessionState::new();
+        session.reset_with_dir(src.to_string_lossy().to_string());
+        session.group_members.insert("A01".to_string(), vec![file1.clone()]);
+        session.stage_decision("A01".to_string(), Decision::Keep);
+
+        let result = session.commit_staged_batch(None, None, ActionMode::Copy).unwrap();
+        assert_eq!(result.successful_groups, 1);
+        assert_eq!(result.successful_files, 1);
+
+        // Source file preserved, target file created
+        assert!(file1.exists());
+        assert!(src.join("keep").join("A01.JPG").exists());
+        assert_eq!(session.decisions.len(), 0);
+    }
+
+    #[test]
+    fn test_commit_batch_rolls_back_on_failure() {
+        let temp = TempDir::new().unwrap();
+        let src = temp.path().join("source");
+        fs::create_dir(&src).unwrap();
+
+        let file1 = src.join("A01.JPG");
+        let file2 = src.join("A02.JPG");
+        fs::write(&file1, b"first").unwrap();
+        // file2 is intentionally NOT written to disk, so moving file2 will fail!
+
+        let mut session = SessionState::new();
+        session.reset_with_dir(src.to_string_lossy().to_string());
+        session.group_members.insert("A01".to_string(), vec![file1.clone()]);
+        session.group_members.insert("A02".to_string(), vec![file2.clone()]);
+
+        session.stage_decision("A01".to_string(), Decision::Keep);
+        session.stage_decision("A02".to_string(), Decision::Keep);
+
+        let result = session.commit_staged_batch(None, None, ActionMode::Move);
+        assert!(result.is_err());
+
+        // Because batch failed on A02, A01 must have been rolled back to source!
+        assert!(file1.exists(), "A01 should be restored to its source path after rollback");
+        assert!(!src.join("keep").join("A01.JPG").exists(), "Keep destination should not have A01");
+
+        // Staged decisions should still be retained because commit failed
+        assert_eq!(session.decisions.len(), 2);
+    }
+
+    #[test]
+    fn test_rollback_creates_emergency_recovery_journal_on_unresolvable_error() {
+        let temp = TempDir::new().unwrap();
+        let session_dir = temp.path().join("session");
+        fs::create_dir(&session_dir).unwrap();
+
+        let src_path = session_dir.join("original.jpg");
+        let dest_path = session_dir.join("moved.jpg");
+        fs::write(&dest_path, b"data").unwrap();
+
+        // Simulate that moving back to source will fail because src_path is a directory
+        fs::create_dir(&src_path).unwrap();
+
+        let op = ExecutedOp::Moved {
+            source: src_path.clone(),
+            destination: dest_path.clone(),
+        };
+
+        let result = rollback_ops(vec![op], &session_dir);
+        assert!(result.is_err());
+
+        // Check that an emergency recovery file was written
+        let mut found_journal = false;
+        for entry in fs::read_dir(&session_dir).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("_emergency_recovery_") && name.ends_with(".json") {
+                found_journal = true;
+                let content = fs::read_to_string(entry.path()).unwrap();
+                let journal: RecoveryJournal = serde_json::from_str(&content).unwrap();
+                assert_eq!(journal.unreversed_ops.len(), 1);
+                assert_eq!(journal.rollback_errors.len(), 1);
+                break;
+            }
+        }
+        assert!(found_journal, "Emergency recovery journal file should be created");
     }
 }
