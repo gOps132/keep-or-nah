@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { FolderOpen, Sparkles, Undo2, CheckSquare, Square, Columns2 } from "lucide-react";
+import { FolderOpen, Sparkles, Undo2, CheckSquare, Square, Columns2, Settings } from "lucide-react";
 import {
   PhotoGroup,
   ThumbnailData,
@@ -15,8 +15,11 @@ import { ThumbnailStrip } from "./ThumbnailStrip";
 import { PreviewViewport, ViewMode, isViewableFormat, isRawFile } from "./PreviewViewport";
 import { ActionHud } from "./ActionHud";
 import { ReviewCommitModal } from "./ReviewCommitModal";
+import { SettingsModal, loadStoredSettings, AppSettings } from "./SettingsModal";
 
 export default function App() {
+  const [appSettings, setAppSettings] = useState<AppSettings>(loadStoredSettings);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
   const [photoGroups, setPhotoGroups] = useState<PhotoGroup[]>([]);
   const [activeIndex, setActiveIndex] = useState<number>(0);
@@ -26,7 +29,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [bestShotStems, setBestShotStems] = useState<Set<string>>(new Set());
   const [burstClusterMap, setBurstClusterMap] = useState<Record<string, string>>({});
-  const [viewMode, setViewMode] = useState<ViewMode>("1-up");
+  const [viewMode, setViewMode] = useState<ViewMode>(() => loadStoredSettings().defaultViewMode);
   const [compareTarget, setCompareTarget] = useState<"photo" | "format">("photo");
   const [activeMemberOverride, setActiveMemberOverride] = useState<Record<string, string>>({});
   const [comparisonMemberOverride, setComparisonMemberOverride] = useState<Record<string, string>>({});
@@ -343,7 +346,7 @@ export default function App() {
         return;
       }
 
-      if (photoGroups.length === 0 || isModalOpen) return;
+      if (photoGroups.length === 0 || isModalOpen || isSettingsOpen) return;
 
       if (e.key === "ArrowLeft") {
         e.preventDefault();
@@ -391,6 +394,7 @@ export default function App() {
     photoGroups.length,
     stagedDecisions,
     isModalOpen,
+    isSettingsOpen,
     activeGroup,
     activeMemberOverride,
     hasMultipleFormats,
@@ -582,6 +586,15 @@ export default function App() {
           )}
 
           <button
+            onClick={() => setIsSettingsOpen(true)}
+            data-testid="settings-open-btn"
+            title="Preferences"
+            className="p-2 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition border border-white/[0.06] active:scale-95 cursor-pointer"
+          >
+            <Settings className="w-3.5 h-3.5" />
+          </button>
+
+          <button
             onClick={handleOpenFolder}
             disabled={isLoading}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium transition-all duration-150 border border-white/[0.06] active:scale-95 cursor-pointer"
@@ -663,6 +676,14 @@ export default function App() {
         onClose={() => setIsModalOpen(false)}
         summary={batchSummary}
         onConfirmCommit={handleConfirmCommit}
+      />
+
+      {/* Settings Preferences Modal */}
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        settings={appSettings}
+        onUpdateSettings={setAppSettings}
       />
 
       {/* Studio Footer Status */}

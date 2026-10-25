@@ -306,4 +306,21 @@ describe("App Integration Tests", () => {
       expect(screen.queryByText("Format Compare")).toBeNull();
     });
   });
+
+  it("opens and closes settings modal via header button", async () => {
+    render(<App />);
+
+    expect(screen.queryByTestId("settings-modal")).toBeNull();
+
+    // Click settings button
+    const settingsBtn = screen.getByTestId("settings-open-btn");
+    fireEvent.click(settingsBtn);
+
+    expect(screen.getByTestId("settings-modal")).toBeDefined();
+    expect(screen.getByText("Preferences")).toBeDefined();
+
+    // Close settings modal
+    fireEvent.click(screen.getByTestId("settings-close-btn"));
+    expect(screen.queryByTestId("settings-modal")).toBeNull();
+  });
 });
