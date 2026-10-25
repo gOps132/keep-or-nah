@@ -2010,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "keep-or-nah-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "image",
@@ -2027,7 +2027,7 @@ dependencies = [
 
 [[package]]
 name = "keep_or_nah_core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossbeam-channel",
  "fast_image_resize",

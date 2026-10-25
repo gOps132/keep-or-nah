@@ -1,6 +1,6 @@
 [package]
 name = "keep-or-nah-app"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop photo triage application"
 authors = ["Keep or Nah Authors"]
 edition = "2021"

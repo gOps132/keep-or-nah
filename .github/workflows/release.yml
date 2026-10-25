@@ -160,8 +160,11 @@ jobs:
       - name: Package the Windows executable
         shell: pwsh
         run: |
-          $msi = Get-ChildItem -Path src-tauri/target/release/bundle/msi/*.msi | Select-Object -First 1
-          Compress-Archive -Path $msi.FullName -DestinationPath Keep-or-Nah-windows.zip
+          $installer = Get-ChildItem -Path src-tauri/target/release/bundle/*/*.exe, src-tauri/target/release/bundle/*/*.msi -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $installer) {
+            $installer = Get-Item -Path src-tauri/target/release/keep-or-nah-app.exe
+          }
+          Compress-Archive -Path $installer.FullName -DestinationPath Keep-or-Nah-windows.zip
 
       - name: Upload the Windows executable
         uses: actions/upload-artifact@v4
@@ -224,6 +227,7 @@ jobs:
           name: Keep or Nah ${{ inputs.tag || github.ref_name }}
           tag_name: ${{ inputs.tag || github.ref_name }}
           body_path: release-notes.md
+          make_latest: true
           files: |
             Keep-or-Nah-macos.zip
             Keep-or-Nah-windows.zip
