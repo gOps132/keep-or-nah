@@ -104,17 +104,23 @@ jobs:
       - name: Build macOS app bundle
         run: npx --prefix frontend tauri build
 
-      - name: Package the macOS app bundle
+      - name: Package macOS app and DMG
         run: |
           cd src-tauri/target/release/bundle/macos
           zip -r "$GITHUB_WORKSPACE/Keep-or-Nah-macos.zip" "keep-or-nah.app" -x '*.DS_Store'
           cd "$GITHUB_WORKSPACE"
+          dmg_file=$(ls src-tauri/target/release/bundle/dmg/*.dmg 2>/dev/null | head -n 1)
+          if [ -n "$dmg_file" ]; then
+            cp "$dmg_file" "$GITHUB_WORKSPACE/Keep-or-Nah-macos.dmg"
+          fi
 
-      - name: Upload the macOS app bundle
+      - name: Upload the macOS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: keep-or-nah-macos
-          path: Keep-or-Nah-macos.zip
+          path: |
+            Keep-or-Nah-macos.zip
+            Keep-or-Nah-macos.dmg
           if-no-files-found: error
 
   windows:
@@ -216,8 +222,19 @@ jobs:
             echo
             echo "## Notes"
             echo
-            echo "- The macOS app bundle is unsigned. macOS will quarantine the download on first launch."
-            echo "- The Windows executable is unsigned. Windows SmartScreen will warn on first launch."
+            echo "### 🍎 macOS Gatekeeper Notice"
+            echo "Because this open-source build is not signed with a paid Apple Developer certificate, macOS Gatekeeper quarantines downloaded files by default (displaying 'keep-or-nah is damaged and can\'t be opened')."
+            echo
+            echo "**How to open:**"
+            echo "1. Download \`Keep-or-Nah-macos.dmg\`, open it, and drag \`keep-or-nah\` into your \`/Applications\` folder."
+            echo "2. In Terminal, run:"
+            echo "   \`\`\`bash"
+            echo "   xattr -cr /Applications/keep-or-nah.app"
+            echo "   \`\`\`"
+            echo "   *(Or go to **System Settings > Privacy & Security** and click **Open Anyway**).*"
+            echo
+            echo "### 🪟 Windows SmartScreen Notice"
+            echo "The Windows executable is unsigned. Click **More info** -> **Run anyway** if prompted."
           } > release-notes.md
           cat release-notes.md
 
@@ -230,4 +247,5 @@ jobs:
           make_latest: true
           files: |
             Keep-or-Nah-macos.zip
+            Keep-or-Nah-macos.dmg
             Keep-or-Nah-windows.zip
