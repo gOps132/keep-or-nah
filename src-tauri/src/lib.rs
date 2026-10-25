@@ -309,6 +309,88 @@ pub mod commands {
         }
     }
 
+    /// Resolves a full-resolution demosaiced RAW render for display.
+    ///
+    /// If the path is a RAW format (e.g. .arw), demosaics the true sensor data
+    /// (via native hardware demosaicing in keep_or_nah_core) and caches it to disk
+    /// in `app_cache_dir/raw_full_renders/<key>.jpg`.
+    /// If the path is not a RAW format, returns the original path.
+    #[tauri::command]
+    pub async fn resolve_full_raw_render(app: AppHandle, path: String) -> Result<String, String> {
+        let file_path = PathBuf::from(&path);
+        if !file_path.exists() {
+            return Err(format!("File does not exist: {path}"));
+        }
+
+        if !keep_or_nah_core::raw_extractor::is_raw_file(&file_path) {
+            return Ok(path);
+        }
+
+        let cache_dir = app
+            .path()
+            .app_cache_dir()
+            .unwrap_or_else(|_| std::env::temp_dir().join("keep_or_nah_cache"))
+            .join("raw_full_renders");
+
+        let _ = std::fs::create_dir_all(&cache_dir);
+
+        // Offload heavy demosaicing and encoding to a blocking background thread
+        tauri::async_runtime::spawn_blocking(move || {
+            resolve_full_raw_render_sync(&file_path, &cache_dir)
+        })
+        .await
+        .map_err(|e| format!("Failed to spawn blocking demosaic task: {e}"))?
+    }
+
+    /// Synchronous helper for resolving and caching full RAW demosaic.
+    pub fn resolve_full_raw_render_sync(
+        file_path: &Path,
+        cache_dir: &Path,
+    ) -> Result<String, String> {
+        let mtime = std::fs::metadata(file_path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&(file_path.to_string_lossy(), mtime, size), &mut hasher);
+        let cache_key = format!("{:016x}", std::hash::Hasher::finish(&hasher));
+        let cache_file = cache_dir.join(format!("{cache_key}.jpg"));
+
+        if cache_file.exists()
+            && std::fs::metadata(&cache_file)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false)
+        {
+            return Ok(cache_file.to_string_lossy().to_string());
+        }
+
+        let decoded = keep_or_nah_core::raw_demosaic::decode_raw_image(file_path)
+            .map_err(|e| format!("RAW demosaicing failed: {e}"))?;
+
+        let temp_cache_file = cache_dir.join(format!("{cache_key}.tmp"));
+        {
+            let file = std::fs::File::create(&temp_cache_file)
+                .map_err(|e| format!("Failed to create temporary cache file: {e}"))?;
+            let mut writer = std::io::BufWriter::new(file);
+            let mut encoder = JpegEncoder::new_with_quality(&mut writer, 95);
+            encoder
+                .encode(
+                    decoded.to_rgb8().as_raw(),
+                    decoded.width(),
+                    decoded.height(),
+                    image::ExtendedColorType::Rgb8,
+                )
+                .map_err(|e| format!("Failed to encode demosaiced JPEG: {e}"))?;
+        }
+
+        let _ = std::fs::rename(&temp_cache_file, &cache_file);
+        Ok(cache_file.to_string_lossy().to_string())
+    }
+
     /// Asynchronously streams progressive thumbnail generation via Tauri IPC events.
     #[tauri::command]
     pub fn start_thumbnail_stream(
@@ -454,6 +536,7 @@ pub fn run() {
             commands::compute_burst_clusters,
             commands::read_exif_metadata,
             commands::resolve_photo_preview,
+            commands::resolve_full_raw_render,
             commands::check_core_status
         ])
         .run(tauri::generate_context!())
@@ -586,5 +669,36 @@ mod tests {
         assert_eq!(dto.width, 40);
         assert_eq!(dto.height, 30);
         assert!(std::path::Path::new(&dto.cache_path).exists());
+    }
+
+    #[test]
+    fn test_resolve_full_raw_render_sync_caching() {
+        use image::{ImageBuffer, Rgb};
+        let temp = TempDir::new().unwrap();
+        let cache_dir = temp.path().join("full_cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        // Create a real JPEG buffer to embed into raw
+        let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(64, 48, Rgb([200, 100, 50]));
+        let mut jpeg_bytes = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut jpeg_bytes);
+        img.write_to(&mut cursor, image::ImageFormat::Jpeg).unwrap();
+
+        let raw_path = temp.path().join("DSC_7777.ARW");
+        let mut raw_container = vec![0x49, 0x49, 0x2A, 0x00];
+        raw_container.extend_from_slice(&[0u8; 100]);
+        raw_container.extend_from_slice(&jpeg_bytes);
+        raw_container.extend_from_slice(&[0u8; 100]);
+        std::fs::write(&raw_path, &raw_container).unwrap();
+
+        let cached_path =
+            super::commands::resolve_full_raw_render_sync(&raw_path, &cache_dir).unwrap();
+        assert!(std::path::Path::new(&cached_path).exists());
+
+        // Calling again should return the exact same cached path without error
+        let cached_again =
+            super::commands::resolve_full_raw_render_sync(&raw_path, &cache_dir).unwrap();
+        assert_eq!(cached_path, cached_again);
     }
 }
