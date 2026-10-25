@@ -9,7 +9,10 @@ __pycache__/
 .mypy_cache/
 build/
 dist/
+frontend/dist/
+frontend/node_modules/
 target/
+src-tauri/target/
 crates/**/target/
 *.so
 *.dylib
