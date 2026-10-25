@@ -276,4 +276,34 @@ describe("App Integration Tests", () => {
       expect(activePill.className).toContain("bg-accent");
     });
   });
+
+  it("toggles intra-group format comparison in 2-Up mode with shortcut X", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText("Choose Photo Folder"));
+
+    await waitFor(() => {
+      expect(screen.getByText("DSC_0001")).toBeDefined();
+    });
+
+    // Enter 2-Up mode via C
+    fireEvent.keyDown(window, { key: "c" });
+    await waitFor(() => {
+      expect(screen.getByTestId("split-right-pane")).toBeDefined();
+    });
+
+    // Initially compares adjacent photo (DSC_0002) in 2-Up
+    expect(screen.getAllByText("DSC_0002").length).toBeGreaterThanOrEqual(1);
+
+    // Press X to switch to format comparison (JPG vs ARW for DSC_0001)
+    fireEvent.keyDown(window, { key: "x" });
+    await waitFor(() => {
+      expect(screen.getByText("Format Compare")).toBeDefined();
+    });
+
+    // Press X again to toggle back to adjacent photo
+    fireEvent.keyDown(window, { key: "x" });
+    await waitFor(() => {
+      expect(screen.queryByText("Format Compare")).toBeNull();
+    });
+  });
 });

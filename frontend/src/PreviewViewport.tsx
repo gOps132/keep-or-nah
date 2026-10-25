@@ -130,6 +130,9 @@ interface PreviewViewportProps {
   viewMode?: ViewMode;
   primary?: PhotoViewItem;
   comparison?: PhotoViewItem | null;
+  compareTarget?: "photo" | "format";
+  onToggleCompareTarget?: (target: "photo" | "format") => void;
+  hasMultipleFormats?: boolean;
 }
 
 export const PreviewViewport: React.FC<PreviewViewportProps> = ({
@@ -139,6 +142,9 @@ export const PreviewViewport: React.FC<PreviewViewportProps> = ({
   viewMode = "1-up",
   primary,
   comparison,
+  compareTarget = "photo",
+  onToggleCompareTarget,
+  hasMultipleFormats = false,
 }) => {
   const activePrimary: PhotoViewItem = primary || {
     filePath: filePath || "",
@@ -311,7 +317,11 @@ export const PreviewViewport: React.FC<PreviewViewportProps> = ({
             <div className="absolute top-4 left-4 z-20 flex flex-wrap items-center gap-2">
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-950/80 backdrop-blur-md border border-white/[0.08] shadow-lg text-[11px] font-mono text-zinc-300">
                 <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-semibold text-[10px]">
-                  {comparison.isBestShot ? "★ Best Shot" : "Compare"}
+                  {compareTarget === "format"
+                    ? "Format Compare"
+                    : comparison.isBestShot
+                    ? "★ Best Shot"
+                    : "Compare"}
                 </span>
                 <span className="font-semibold text-zinc-200">{comparison.stem}</span>
                 {comparison.burstTag && (
@@ -325,6 +335,38 @@ export const PreviewViewport: React.FC<PreviewViewportProps> = ({
                   </span>
                 )}
               </div>
+              {hasMultipleFormats && (
+                <div
+                  data-testid="compare-target-toggle"
+                  className="flex items-center gap-1 p-0.5 rounded-lg bg-zinc-950/80 backdrop-blur-md border border-white/[0.08] text-[10px] font-mono z-20"
+                >
+                  <button
+                    type="button"
+                    data-testid="compare-adjacent-btn"
+                    onClick={() => onToggleCompareTarget?.("photo")}
+                    className={`px-2 py-0.5 rounded font-semibold transition cursor-pointer select-none ${
+                      compareTarget === "photo"
+                        ? "bg-accent text-white"
+                        : "text-zinc-400 hover:text-zinc-200"
+                    }`}
+                  >
+                    Adjacent
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="compare-format-btn"
+                    title="Compare Formats (X)"
+                    onClick={() => onToggleCompareTarget?.("format")}
+                    className={`px-2 py-0.5 rounded font-semibold transition cursor-pointer select-none ${
+                      compareTarget === "format"
+                        ? "bg-accent text-white"
+                        : "text-zinc-400 hover:text-zinc-200"
+                    }`}
+                  >
+                    Formats (X)
+                  </button>
+                </div>
+              )}
               <FormatPills
                 members={comparison.members}
                 selectedMember={comparison.selectedMember}

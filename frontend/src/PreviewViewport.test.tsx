@@ -119,4 +119,39 @@ describe("PreviewViewport Component", () => {
     fireEvent.click(screen.getByTestId("format-pill-arw"));
     expect(selected).toBe("/photos/DSC_001.ARW");
   });
+
+  it("renders format comparison toggle in 2-Up mode and triggers onToggleCompareTarget", () => {
+    let toggled: "photo" | "format" | null = null;
+    render(
+      <PreviewViewport
+        viewMode="2-up"
+        hasMultipleFormats={true}
+        compareTarget="format"
+        onToggleCompareTarget={(t) => {
+          toggled = t;
+        }}
+        primary={{
+          filePath: "/photos/DSC_001.JPG",
+          stem: "DSC_001",
+          exif: null,
+          members: ["/photos/DSC_001.JPG", "/photos/DSC_001.ARW"],
+          selectedMember: "/photos/DSC_001.JPG",
+        }}
+        comparison={{
+          filePath: "/photos/DSC_001.ARW",
+          stem: "DSC_001",
+          exif: null,
+          members: ["/photos/DSC_001.JPG", "/photos/DSC_001.ARW"],
+          selectedMember: "/photos/DSC_001.ARW",
+        }}
+      />
+    );
+
+    expect(screen.getByTestId("compare-target-toggle")).toBeDefined();
+    expect(screen.getByText("Format Compare")).toBeDefined();
+
+    // Click Adjacent button
+    fireEvent.click(screen.getByTestId("compare-adjacent-btn"));
+    expect(toggled).toBe("photo");
+  });
 });
