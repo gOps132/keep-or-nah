@@ -7,6 +7,7 @@ export type ViewMode = "1-up" | "2-up";
 
 export interface PhotoViewItem {
   filePath: string;
+  sourcePath?: string;
   stem: string;
   exif: ExifMetadataDto | null;
   isBestShot?: boolean;
@@ -14,6 +15,7 @@ export interface PhotoViewItem {
   members?: string[];
   selectedMember?: string;
   onSelectMember?: (memberPath: string) => void;
+  rawStatus?: "fast" | "full" | "loading" | null;
 }
 
 const VIEWABLE_EXTENSIONS = new Set([
@@ -75,8 +77,11 @@ export const FormatPills: React.FC<{
   members?: string[];
   selectedMember?: string;
   onSelectMember?: (path: string) => void;
-}> = ({ members, selectedMember, onSelectMember }) => {
+  rawStatus?: "fast" | "full" | "loading" | null;
+}> = ({ members, selectedMember, onSelectMember, rawStatus }) => {
   if (!members || members.length <= 1) return null;
+
+  const isSelectedRaw = selectedMember && isRawFile(selectedMember);
 
   return (
     <div
@@ -119,6 +124,29 @@ export const FormatPills: React.FC<{
           </button>
         );
       })}
+
+      {isSelectedRaw && rawStatus && (
+        <span
+          data-testid="raw-status-badge"
+          className={`px-1.5 py-0.5 rounded text-[9px] font-semibold ml-1 select-none flex items-center gap-1 border ${
+            rawStatus === "full"
+              ? "text-emerald-400 bg-emerald-950/80 border-emerald-500/30"
+              : "text-amber-400 bg-amber-950/80 border-amber-500/30"
+          }`}
+          title={
+            rawStatus === "full"
+              ? "True 14-bit hardware-accelerated RAW demosaic active"
+              : "Fast embedded preview active while RAW demosaicing in background"
+          }
+        >
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${
+              rawStatus === "full" ? "bg-emerald-400" : "bg-amber-400 animate-pulse"
+            }`}
+          />
+          {rawStatus === "full" ? "RAW (Full)" : "RAW (Fast)"}
+        </span>
+      )}
     </div>
   );
 };
@@ -163,10 +191,14 @@ export const PreviewViewport: React.FC<PreviewViewportProps> = ({
     setPan({ x: 0, y: 0 });
   }, []);
 
-  // Reset zoom on photo change
+  // Reset zoom only on photo change (tracked by sourcePath or stem), NOT on hot-swap of render path!
   useEffect(() => {
     resetView();
-  }, [activePrimary.filePath, comparison?.filePath, resetView]);
+  }, [
+    activePrimary.sourcePath || activePrimary.stem,
+    comparison?.sourcePath || comparison?.stem,
+    resetView,
+  ]);
 
   // Handle keyboard shortcut '0' for reset view
   useEffect(() => {
@@ -292,6 +324,7 @@ export const PreviewViewport: React.FC<PreviewViewportProps> = ({
                 members={activePrimary.members}
                 selectedMember={activePrimary.selectedMember}
                 onSelectMember={activePrimary.onSelectMember}
+                rawStatus={activePrimary.rawStatus}
               />
             </div>
 
@@ -371,6 +404,7 @@ export const PreviewViewport: React.FC<PreviewViewportProps> = ({
                 members={comparison.members}
                 selectedMember={comparison.selectedMember}
                 onSelectMember={comparison.onSelectMember}
+                rawStatus={comparison.rawStatus}
               />
             </div>
 
@@ -425,6 +459,7 @@ export const PreviewViewport: React.FC<PreviewViewportProps> = ({
               members={activePrimary.members}
               selectedMember={activePrimary.selectedMember}
               onSelectMember={activePrimary.onSelectMember}
+              rawStatus={activePrimary.rawStatus}
             />
           </div>
 

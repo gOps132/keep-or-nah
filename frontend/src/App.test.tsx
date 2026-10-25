@@ -40,6 +40,8 @@ vi.mock("@tauri-apps/api/core", () => ({
         return null;
       case "resolve_photo_preview":
         return args.path;
+      case "resolve_full_raw_render":
+        return args.path;
       case "read_exif_metadata":
         return {
           camera_model: "Sony A7IV",
