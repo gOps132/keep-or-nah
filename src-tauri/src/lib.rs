@@ -12,7 +12,7 @@ pub mod commands {
     use tauri::{AppHandle, State};
     use tauri_plugin_dialog::DialogExt;
 
-    use crate::session::{Decision, SessionState};
+    use crate::session::{BatchSummaryDto, CommitResultDto, Decision, SessionState};
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
     pub struct PhotoGroupDto {
@@ -75,14 +75,10 @@ pub mod commands {
             return Err(format!("Path is not a directory: {path}"));
         }
 
-        if let Ok(mut state) = session_state.lock() {
-            state.reset_with_dir(path.clone());
-        }
-
         let extensions = keep_or_nah_core::scan::discover_extensions(dir);
         let groups = keep_or_nah_core::scan::build_photo_groups(dir, &extensions, &extensions);
 
-        let dtos = groups
+        let dtos: Vec<PhotoGroupDto> = groups
             .into_iter()
             .enumerate()
             .map(|(index, group)| PhotoGroupDto {
@@ -92,6 +88,11 @@ pub mod commands {
                 index,
             })
             .collect();
+
+        if let Ok(mut state) = session_state.lock() {
+            state.reset_with_dir(path.clone());
+            state.register_groups(&dtos);
+        }
 
         Ok(dtos)
     }
@@ -136,6 +137,34 @@ pub mod commands {
             .map_err(|_| "Failed to lock session state".to_string())?;
 
         Ok(state.get_decisions_map())
+    }
+
+    /// Calculates summary information for all staged decisions before commit.
+    #[tauri::command]
+    pub fn get_batch_summary(
+        session_state: State<'_, Mutex<SessionState>>,
+    ) -> Result<BatchSummaryDto, String> {
+        let state = session_state
+            .lock()
+            .map_err(|_| "Failed to lock session state".to_string())?;
+
+        Ok(state.calculate_batch_summary())
+    }
+
+    /// Executes atomic batch moves or copies of all staged files with rollback on error.
+    #[tauri::command]
+    pub fn commit_batch(
+        keep_dir: Option<String>,
+        nah_dir: Option<String>,
+        action_mode: Option<String>,
+        session_state: State<'_, Mutex<SessionState>>,
+    ) -> Result<CommitResultDto, String> {
+        let mut state = session_state
+            .lock()
+            .map_err(|_| "Failed to lock session state".to_string())?;
+
+        let mode = action_mode.unwrap_or_else(|| "move".to_string());
+        state.commit_staged_batch(keep_dir, nah_dir, &mode)
     }
 
     /// Generates an oriented, scaled thumbnail for a photo and computes its sharpness score.
@@ -247,6 +276,8 @@ pub fn run() {
             commands::stage_decision,
             commands::undo_decision,
             commands::get_staged_decisions,
+            commands::get_batch_summary,
+            commands::commit_batch,
             commands::get_thumbnail,
             commands::read_exif_metadata,
             commands::check_core_status

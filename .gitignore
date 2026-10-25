@@ -20,3 +20,4 @@ crates/**/target/
 freebuff-chat-*.md
 .agents/ui_ux_tester/shots/
 .agents/ui_ux_tester/report.md
+*.tsbuildinfo

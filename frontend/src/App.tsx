@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Sparkles, Undo2 } from "lucide-react";
-import { PhotoGroup, ThumbnailData, ExifMetadataDto } from "./types";
+import { FolderOpen, Sparkles, Undo2, CheckSquare } from "lucide-react";
+import { PhotoGroup, ThumbnailData, ExifMetadataDto, BatchSummaryDto, CommitResultDto } from "./types";
 import { PhotoStrip } from "./PhotoStrip";
 import { PreviewViewport } from "./PreviewViewport";
 import { ActionHud } from "./ActionHud";
+import { ReviewCommitModal } from "./ReviewCommitModal";
 
 export default function App() {
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
@@ -15,6 +16,18 @@ export default function App() {
   const [stagedDecisions, setStagedDecisions] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [bestShotStems, setBestShotStems] = useState<Set<string>>(new Set());
+
+  // Review modal state
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [batchSummary, setBatchSummary] = useState<BatchSummaryDto>({
+    total_groups: 0,
+    keep_count: 0,
+    nah_count: 0,
+    flag_count: 0,
+    total_files: 0,
+    total_reclaimed_bytes: 0,
+    items: [],
+  });
 
   // Load directory items and trigger scan
   const loadFolder = useCallback(async (folderPath: string) => {
@@ -104,6 +117,38 @@ export default function App() {
     }
   }, [photoGroups]);
 
+  // Open the review batch commit modal
+  const handleOpenReviewModal = useCallback(async () => {
+    try {
+      const summary = await invoke<BatchSummaryDto>("get_batch_summary");
+      setBatchSummary(summary);
+      setIsModalOpen(true);
+    } catch (err) {
+      console.error("Failed to fetch batch summary:", err);
+    }
+  }, []);
+
+  // Execute batch commit
+  const handleConfirmCommit = async (actionMode: "move" | "copy") => {
+    try {
+      const result = await invoke<CommitResultDto>("commit_batch", {
+        actionMode,
+      });
+
+      if (result.errors.length > 0) {
+        alert(`Batch commit encountered errors:\n${result.errors.join("\n")}`);
+      } else {
+        // Re-scan directory to update queue
+        if (selectedFolder) {
+          await loadFolder(selectedFolder);
+        }
+      }
+    } catch (err) {
+      alert(`Commit error: ${err}`);
+      console.error("Failed to execute batch commit:", err);
+    }
+  };
+
   // Load EXIF metadata for active photo
   useEffect(() => {
     if (!activeGroup) return;
@@ -127,6 +172,15 @@ export default function App() {
   // Global Keyboard Navigation & Hotkeys
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // ⌘↵ / Ctrl+Enter: Review Batch Modal
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        if (Object.keys(stagedDecisions).length > 0) {
+          handleOpenReviewModal();
+        }
+        return;
+      }
+
       // Undo: ⌘Z / Ctrl+Z
       if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z")) {
         e.preventDefault();
@@ -134,7 +188,7 @@ export default function App() {
         return;
       }
 
-      if (photoGroups.length === 0) return;
+      if (photoGroups.length === 0 || isModalOpen) return;
 
       if (e.key === "ArrowLeft") {
         e.preventDefault();
@@ -156,7 +210,7 @@ export default function App() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [photoGroups.length, handleStageDecision, handleUndo]);
+  }, [photoGroups.length, stagedDecisions, isModalOpen, handleStageDecision, handleUndo, handleOpenReviewModal]);
 
   // Determine best shots based on sharpness in clusters
   useEffect(() => {
@@ -202,7 +256,7 @@ export default function App() {
           )}
         </div>
 
-        {/* Right: Staged Counts, Undo, and Actions */}
+        {/* Right: Staged Counts, Undo, Review Batch, and Actions */}
         <div className="flex items-center gap-2">
           {totalStaged > 0 && (
             <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-zinc-900 border border-white/[0.08] text-xs font-mono">
@@ -221,6 +275,20 @@ export default function App() {
             <Undo2 className="w-3.5 h-3.5" />
             <span>Undo</span>
           </button>
+
+          {totalStaged > 0 && (
+            <button
+              onClick={handleOpenReviewModal}
+              title="Review and commit batch (⌘↵ / Ctrl+Enter)"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-accent hover:bg-accent-hover text-white text-xs font-semibold shadow-md shadow-accent/20 transition active:scale-95 cursor-pointer"
+            >
+              <CheckSquare className="w-3.5 h-3.5" />
+              <span>Review Batch ({totalStaged})</span>
+              <kbd className="px-1.5 py-0.5 rounded bg-black/25 text-blue-200 text-[10px] font-mono leading-none">
+                ⌘↵
+              </kbd>
+            </button>
+          )}
 
           <button
             onClick={handleOpenFolder}
@@ -291,12 +359,20 @@ export default function App() {
         bestShotStems={bestShotStems}
       />
 
+      {/* Review & Batch Commit Modal Sheet */}
+      <ReviewCommitModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        summary={batchSummary}
+        onConfirmCommit={handleConfirmCommit}
+      />
+
       {/* Studio Footer Status */}
       <footer className="h-7 bg-panel border-t border-white/[0.06] flex items-center justify-between px-3 text-[11px] text-zinc-500 select-none shrink-0 font-mono">
         <div className="flex items-center gap-3">
           <span>Tauri v2 · Native Desktop</span>
           {photoGroups.length > 0 && (
-            <span>Shortcuts: 1 Keep · 2 Nah · F Flag · ⌘Z Undo · ⌘+Wheel Zoom · 0 Fit</span>
+            <span>Shortcuts: 1 Keep · 2 Nah · F Flag · ⌘Z Undo · ⌘↵ Review Batch · 0 Fit</span>
           )}
         </div>
         <span>
