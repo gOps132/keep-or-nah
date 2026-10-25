@@ -3,6 +3,7 @@ pub mod cache;
 pub mod fileops;
 pub mod image_loader;
 pub mod pipeline;
+pub mod raw_extractor;
 pub mod scan;
 
 pub fn version() -> &'static str {

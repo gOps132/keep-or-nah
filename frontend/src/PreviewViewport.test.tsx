@@ -87,4 +87,71 @@ describe("PreviewViewport Component", () => {
     fireEvent.click(fitBtn);
     expect(screen.getByText("100%")).toBeDefined();
   });
+
+  it("renders format pills and handles format selection", () => {
+    let selected: string | null = null;
+    render(
+      <PreviewViewport
+        viewMode="1-up"
+        primary={{
+          filePath: "/photos/DSC_001.JPG",
+          stem: "DSC_001",
+          exif: null,
+          members: [
+            "/photos/DSC_001.JPG",
+            "/photos/DSC_001.ARW",
+            "/photos/DSC_001.xmp",
+          ],
+          selectedMember: "/photos/DSC_001.JPG",
+          onSelectMember: (p) => {
+            selected = p;
+          },
+        }}
+      />
+    );
+
+    expect(screen.getByTestId("format-pills")).toBeDefined();
+    expect(screen.getByTestId("format-pill-jpg")).toBeDefined();
+    expect(screen.getByTestId("format-pill-arw")).toBeDefined();
+    expect(screen.getByTestId("format-pill-xmp")).toBeDefined();
+
+    // Click ARW pill
+    fireEvent.click(screen.getByTestId("format-pill-arw"));
+    expect(selected).toBe("/photos/DSC_001.ARW");
+  });
+
+  it("renders format comparison toggle in 2-Up mode and triggers onToggleCompareTarget", () => {
+    let toggled: "photo" | "format" | null = null;
+    render(
+      <PreviewViewport
+        viewMode="2-up"
+        hasMultipleFormats={true}
+        compareTarget="format"
+        onToggleCompareTarget={(t) => {
+          toggled = t;
+        }}
+        primary={{
+          filePath: "/photos/DSC_001.JPG",
+          stem: "DSC_001",
+          exif: null,
+          members: ["/photos/DSC_001.JPG", "/photos/DSC_001.ARW"],
+          selectedMember: "/photos/DSC_001.JPG",
+        }}
+        comparison={{
+          filePath: "/photos/DSC_001.ARW",
+          stem: "DSC_001",
+          exif: null,
+          members: ["/photos/DSC_001.JPG", "/photos/DSC_001.ARW"],
+          selectedMember: "/photos/DSC_001.ARW",
+        }}
+      />
+    );
+
+    expect(screen.getByTestId("compare-target-toggle")).toBeDefined();
+    expect(screen.getByText("Format Compare")).toBeDefined();
+
+    // Click Adjacent button
+    fireEvent.click(screen.getByTestId("compare-adjacent-btn"));
+    expect(toggled).toBe("photo");
+  });
 });
