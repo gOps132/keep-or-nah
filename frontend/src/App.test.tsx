@@ -325,4 +325,33 @@ describe("App Integration Tests", () => {
     fireEvent.click(screen.getByTestId("settings-close-btn"));
     expect(screen.queryByTestId("settings-modal")).toBeNull();
   });
+
+  it("renders JPG vs true demosaiced RAW in format split comparison with RAW status badge", async () => {
+    render(<App />);
+
+    // Open directory
+    fireEvent.click(screen.getByText("Choose Photo Folder"));
+    await waitFor(() => {
+      expect(screen.getByText("DSC_0001")).toBeDefined();
+    });
+
+    // Enter 2-Up mode
+    fireEvent.keyDown(window, { key: "c" });
+    await waitFor(() => {
+      expect(screen.getByTestId("split-right-pane")).toBeDefined();
+    });
+
+    // Switch to format comparison
+    fireEvent.keyDown(window, { key: "x" });
+    await waitFor(() => {
+      expect(screen.getByText("Format Compare")).toBeDefined();
+    });
+
+    // The companion pane should display the RAW status badge for the ARW member
+    await waitFor(() => {
+      const rawBadge = screen.getByTestId("raw-status-badge");
+      expect(rawBadge).toBeDefined();
+      expect(rawBadge.textContent).toContain("RAW");
+    });
+  });
 });
