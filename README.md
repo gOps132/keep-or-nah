@@ -1,123 +1,306 @@
-# Keep or Nah
+<!-- Improved compatibility of back to top link: See: https://github.com/othneildrew/Best-README-Template/pull/73 -->
+<a id="readme-top"></a>
 
-Desktop photo triage application for photographers. Load a folder of photos,
-then review, compare, and organize one **Photo Session** at a time.
+<!-- PROJECT SHIELDS -->
+<!--
+*** Reference links are enclosed in brackets [ ] instead of parentheses ( ).
+*** See the bottom of this document for the declaration of reference variables.
+*** https://www.markdownguide.org/basic-syntax/#reference-style-links
+-->
 
-A **Photo Group** is every file in the source folder that shares the exact same
-filename stem — a RAW, its JPEG, and its XMP sidecar are one unit and are never
-separated. One file in the group, the **Representative**, renders the preview
-and the thumbnail.
+<div style="display:flex; justify-content: center;">
 
-## Current Features
+[![Contributors][contributors-shield]][contributors-url]
+[![Forks][forks-shield]][forks-url]
+[![Stargazers][stars-shield]][stars-url]
+[![Issues][issues-shield]][issues-url]
+[![MIT License][license-shield]][license-url]
+</div>
 
-- **Photo Groups** — same-stem files are grouped atomically during the native
-  directory scan, and a group is always triaged, moved, and reversed as a
-  whole.
-- **Representative** — the best previewable member of a Photo Group drives the
-  preview and the thumbnail.
-- **Triage** — every Photo Group gets a **Keep**, **Nah**, or **Flag** decision.
-  Keep and Nah send the group's files to their destination folders; Flag sets
-  the group aside for later re-examination.
-- **Action Mode** — a segmented control switches between moving files out of
-  the source folder and copying them.
-- **Staged Triage** — decisions are recorded in memory as **Staged
-  Decisions** instead of touching the filesystem. This is the default; the
-  View menu and the settings dialog switch to immediate mode, and the choice
-  persists. A staged Photo Group stays on the Thumbnail Strip with a badge
-  that says which decision it carries. The **Review Batch** button shows how
-  many are outstanding, and the review modal lists every Staged Decision with
-  its size alongside the Keep, Nah, and total counts and the disk space
-  reclaimed, before anything is executed.
-- **Batch Commit** — all Staged Decisions are executed together from the review
-  modal, with automatic rollback if any part of the batch fails.
-- **Split Comparison** — a 2-up view of two Photo Groups with synchronized zoom
-  and pan, for judging near-identical frames. `1` and `2` triage the left or
-  the right photo in one keystroke.
-- **Burst Clustering** — photos taken in rapid succession are grouped into a
-  **Burst Cluster** using timestamp proximity and perceptual difference
-  hashing. The sharpest frame is the **Best Shot**, chosen by Laplacian
-  variance sharpness analysis, and it is badged in the **Thumbnail Strip**.
-- **Undo Journal** — every executed file operation is written to a persistent,
-  transactional record. Undo reverses the last action and verifies file
-  identity before it touches anything.
-- **Thumbnail Strip** — asynchronously decoded thumbnails of the Photo Groups
-  in the active Photo Session, with a selection indicator, the Best Shot
-  badge, and a badge for the Staged Decision of a decided Photo Group.
-- **Native Rust core** (`keep_or_nah_core`) handles
-  directory scanning, same-stem grouping, SIMD Lanczos3 thumbnail generation,
-  EXIF-aware preview rendering, atomic file operations, sharpness scoring, and
-  perceptual hashing.
-- **Tauri Desktop Application** — high-performance native Rust desktop backend
-  with React + TypeScript frontend, hardware-accelerated rendering, and
-  consistent cross-platform keyboard shortcuts.
-- **Session recovery** — the active Photo Session, including Staged Decisions
-  and the Undo Journal, is written to disk and restored on the next launch.
+<!-- PROJECT LOGO -->
+<br />
+<div align="center">
+  <a href="https://github.com/gOps132/keep-or-nah">
+    <img src="public/logo.png" alt="Logo" width="100" height="100">
+  </a>
 
-## Setup
+  <h3 align="center">Keep or Nah</h3>
 
-Requires Node.js 20+ and a Rust toolchain (`cargo`).
+  <p align="center">
+    High-performance desktop photo triage and culling application for photographers.
+    <br />
+    <a href="https://github.com/gOps132/keep-or-nah"><strong>Explore the docs »</strong></a>
+    <br />
+    <br />
+    <a href="https://github.com/gOps132/keep-or-nah/issues">Report Bug</a>
+    &middot;
+    <a href="https://github.com/gOps132/keep-or-nah/issues">Request Feature</a>
+  </p>
+</div>
 
-```bash
-npm --prefix frontend install
-```
+<!-- TABLE OF CONTENTS -->
+<details>
+  <summary>Table of Contents</summary>
+  <ol>
+    <li>
+      <a href="#about-the-project">About The Project</a>
+      <ul>
+        <li><a href="#key-features">Key Features</a></li>
+        <li><a href="#built-with">Built With</a></li>
+      </ul>
+    </li>
+    <li>
+      <a href="#getting-started">Getting Started</a>
+      <ul>
+        <li><a href="#prerequisites">Prerequisites</a></li>
+        <li><a href="#installation">Installation</a></li>
+      </ul>
+    </li>
+    <li>
+      <a href="#usage">Usage</a>
+      <ul>
+        <li><a href="#triage-workflow">Triage Workflow</a></li>
+        <li><a href="#keyboard-shortcuts">Keyboard Shortcuts</a></li>
+        <li><a href="#verification-pipeline">Verification Pipeline</a></li>
+      </ul>
+    </li>
+    <li><a href="#roadmap">Roadmap</a></li>
+    <li><a href="#contributing">Contributing</a></li>
+    <li><a href="#license">License</a></li>
+    <li><a href="#contact">Contact</a></li>
+    <li><a href="#acknowledgments">Acknowledgments</a></li>
+  </ol>
+</details>
 
-## Run the App
+<!-- ABOUT THE PROJECT -->
+## About The Project
 
-```bash
-npm run dev
-```
+Photographers often return from a shoot facing thousands of images: rapid-fire burst sequences, RAW + JPEG pairs, and XMP metadata sidecars. Existing photo management software is either bogged down by heavy database imports and catalog synchronizations, or limited to bare-bones file viewers that lack atomic file safety, high-speed inspection, and comparison tools.
 
-## Test and Verify
+**Keep or Nah** is an ultra-fast, focused desktop photo triage and culling application engineered to review, compare, and organize one **Photo Session** at a time. It treats same-stem files atomically, provides non-destructive staged decision-making with batch execution, synchronizes side-by-side frame comparisons, and automatically flags the sharpest shot in burst sequences—all backed by a transactional undo journal.
 
-`scripts/verify.sh` is the single verification gate. CI calls the same script,
-so a green local run and a green CI run execute identical commands.
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-```bash
-scripts/verify.sh            # full gate
-scripts/verify.sh --fast     # skip release desktop packaging
-```
+### Key Features
 
-Per-role helpers live under `scripts/agent/`:
+* **Atomic File Pairing** — RAW, JPEG, and XMP sidecars share decisions and never get separated.
+* **Rapid Keyboard Triage** — Triage in seconds with Keep (`D`), Nah (`A`), or Flag (`F`).
+* **Staged Batch Commit** — Review decisions and reclaimed disk space before applying changes to disk.
+* **Side-by-Side Comparison** — Synchronized 2-up zoom and pan with quick-pick keys (`1` and `2`).
+* **Burst Detection & Best Shot** — Groups rapid bursts and badges the sharpest frame.
+* **Safe Undo** — Transactional undo journal allows instant, verified reversals.
 
-```bash
-scripts/agent/doctor.sh      # diagnose the local toolchain
-scripts/agent/lint.sh        # cargo fmt, cargo clippy, frontend check
-scripts/agent/test.sh        # Rust core & Tauri tests + frontend Vitest suite
-scripts/agent/build.sh       # build standalone desktop application
-```
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-To run only the frontend Vitest suite:
+### Built With
 
-```bash
-npm --prefix frontend test
-```
+<div style="display:flex;justify-content:center;">
 
-## Keyboard Shortcuts
+[![Tauri][Tauri]][Tauri-url] [![Rust][Rust]][Rust-url] [![React][React.js]][React-url] [![TypeScript][TypeScript]][TypeScript-url] [![Vite][Vite]][Vite-url] [![Tailwind CSS][TailwindCSS]][Tailwind-url]
+</div>
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- GETTING STARTED -->
+## Getting Started
+
+To get a local development environment up and running, follow these simple steps.
+
+### Prerequisites
+
+* **Node.js** (v20 or higher) and **npm**
+* **Rust** (stable toolchain with `cargo`)
+  ```sh
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  ```
+* **Tauri System Dependencies** (Platform specific):
+  * **macOS**: Xcode Command Line Tools (`xcode-select --install`)
+  * **Linux**: `build-essential`, `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`
+  * **Windows**: Microsoft Edge WebView2 and C++ Build Tools
+
+### Installation
+
+1. Clone the repository:
+   ```sh
+   git clone https://github.com/gOps132/keep-or-nah.git
+   cd keep-or-nah
+   ```
+2. Diagnose your local toolchain:
+   ```sh
+   scripts/agent/doctor.sh
+   ```
+3. Install frontend dependencies:
+   ```sh
+   npm --prefix frontend install
+   ```
+4. Start the application in development mode:
+   ```sh
+   npm run dev
+   ```
+5. Build the standalone desktop application executable:
+   ```sh
+   npm run build:app
+   ```
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- USAGE EXAMPLES -->
+## Usage
+
+### Triage Workflow
+
+1. **Open a Photo Session**: Click **Open Folder** to select a directory containing your photos. Keep or Nah natively scans the directory, groups same-stem files into **Photo Groups**, and populates the **Thumbnail Strip**.
+2. **Make Triage Decisions**: Navigate through photos using the keyboard. For each Photo Group, assign:
+   * **Keep** (`D` or `Space`): Marks the group to be kept and routed to your designated keep destination.
+   * **Nah** (`A` or `Del`): Marks the group to be discarded to the trash folder or system trash.
+   * **Flag** (`F`): Sets the group aside for later re-examination without moving it.
+3. **Compare Close Frames**: Press `C` to enter **Split Comparison** mode. Pan and zoom simultaneously across both frames to inspect focus. Press `1` to keep the left photo (marking right as Nah) or `2` to keep the right photo (marking left as Nah).
+4. **Choose Action Mode**: Toggle between **Move** (moves files out of the source directory) and **Copy** (duplicates files to the destination while preserving the originals).
+5. **Review and Batch Commit**: Click the **Review Batch** button to inspect staged decisions, total photo counts, and disk space to be reclaimed. Click **Commit Batch** to apply all file operations atomically with rollback on error.
+6. **Undo Anytime**: Made a mistake? Press `Cmd+Z` (`Ctrl+Z` on Windows/Linux) to reverse operations using the transactional **Undo Journal**.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### Keyboard Shortcuts
+
+Keep or Nah is designed for fluid, mouse-free triage:
 
 | Key | Action |
 | --- | --- |
 | `Left` | Previous Photo Group |
 | `Right` | Next Photo Group |
-| `A` | Nah |
+| `A` | Nah (discard) |
 | `D` | Keep |
-| `F` | Flag |
+| `F` | Flag (defer) |
 | `Space` | Keep |
-| `Del` | Nah |
-| `C` | Toggle Split Comparison |
-| `1` | Split Comparison: keep the left photo, the right one becomes Nah |
-| `2` | Split Comparison: keep the right photo, the left one becomes Nah |
-| `Cmd+Z` (`Ctrl+Z` elsewhere) | Undo the last action through the Undo Journal |
-| `Cmd+-` / `Ctrl+-` | Zoom out |
+| `Del` | Nah (discard) |
+| `C` | Toggle Split Comparison mode |
+| `1` | Split Comparison: Keep left photo, mark right as Nah |
+| `2` | Split Comparison: Keep right photo, mark left as Nah |
+| `Cmd+Z` / `Ctrl+Z` | Undo last file operation via Undo Journal |
 | `Cmd+=` / `Ctrl+=` | Zoom in |
+| `Cmd+-` / `Ctrl+-` | Zoom out |
 | `Cmd+0` / `Ctrl+0` | Reset zoom to fit |
-| `Cmd+,` / `Ctrl+,` | Preview settings |
+| `Cmd+,` / `Ctrl+,` | Open Preferences / Settings |
 
-The triage keys behave identically in Staged Triage mode, where they record a
-Staged Decision instead of writing to disk, and in immediate mode, where they
-write to disk directly. Shortcuts are ignored while a text entry has focus.
+*Note: Keyboard shortcuts are inactive while a text entry field has focus.*
 
-## Build Application
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+### Verification Pipeline
+
+Keep or Nah maintains a strict verification gate. No work is complete without a green verification run:
 
 ```bash
-npm run build:app
+# Full verification gate (doctor, formatting, lints, tests, build)
+scripts/verify.sh
+
+# Fast gate (skips packaging build)
+scripts/verify.sh --fast
+
+# List all pipeline stages
+scripts/verify.sh --list
 ```
+
+Per-role helper scripts:
+
+| Script | Purpose |
+| --- | --- |
+| `scripts/agent/doctor.sh` | Diagnoses the local toolchain (`cargo`, `node`, `npm`, manifests) |
+| `scripts/agent/lint.sh` | Runs `cargo fmt`, `cargo clippy -D warnings`, and frontend lint/typechecks |
+| `scripts/agent/test.sh` | Runs Rust core & Tauri tests + frontend Vitest test suite |
+| `scripts/agent/build.sh` | Builds the standalone desktop executable |
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- ROADMAP -->
+## Roadmap
+
+- [x] Native Rust core engine (`keep_or_nah_core`) for high-throughput I/O
+- [x] Atomic same-stem Photo Grouping (RAW + JPEG + XMP)
+- [x] SIMD-accelerated Lanczos3 thumbnail and preview generation
+- [x] Staged Triage with atomic Batch Commit and rollback safety
+- [x] Split Comparison mode with synchronized 2-up pan and zoom
+- [x] Burst Clustering via perceptual hashing (`dHash`) and Laplacian sharpness scoring
+- [x] Transactional Undo Journal with identity verification
+- [x] Cross-platform desktop release packaging via Tauri v2
+- [ ] Color profile and HDR preview calibration
+
+See the [open issues](https://github.com/gOps132/keep-or-nah/issues) for proposed features and active tracks.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- CONTRIBUTING -->
+## Contributing
+
+Contributions are what make the open source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
+
+If you have a suggestion that would make this better, please fork the repo and create a pull request. You can also simply open an issue with the tag "enhancement".
+
+1. Fork the Project
+2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
+3. Ensure the verification gate passes:
+   ```sh
+   scripts/verify.sh --fast
+   ```
+4. Commit your Changes using Conventional Commits (`git commit -m 'feat: add some amazing feature'`)
+5. Push to the Branch (`git push origin feature/AmazingFeature`)
+6. Open a Pull Request
+
+### Top contributors:
+
+<a href="https://github.com/gOps132/keep-or-nah/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=gOps132/keep-or-nah" alt="contrib.rocks image" />
+</a>
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- LICENSE -->
+## License
+
+Distributed under the MIT License. See `LICENSE` for more information.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- CONTACT -->
+## Contact
+
+Project Link: [https://github.com/gOps132/keep-or-nah](https://github.com/gOps132/keep-or-nah)
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- ACKNOWLEDGMENTS -->
+## Acknowledgments
+
+* [Tauri](https://tauri.app/) — Lightweight, memory-efficient desktop application framework
+* [fast_image_resize](https://github.com/Cykooz/fast_image_resize) — High-performance SIMD image resizing
+* [kamadak-exif](https://github.com/kamadak/exif-rs) — Native EXIF parsing for Rust
+* [Lucide Icons](https://lucide.dev/) — Clean, consistent icon system
+* [Best-README-Template](https://github.com/othneildrew/Best-README-Template) — The foundational template for this README
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- MARKDOWN LINKS & IMAGES -->
+<!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
+[contributors-shield]: https://img.shields.io/github/contributors/gOps132/keep-or-nah.svg?style=for-the-badge
+[contributors-url]: https://github.com/gOps132/keep-or-nah/graphs/contributors
+[forks-shield]: https://img.shields.io/github/forks/gOps132/keep-or-nah.svg?style=for-the-badge
+[forks-url]: https://github.com/gOps132/keep-or-nah/network/members
+[stars-shield]: https://img.shields.io/github/stars/gOps132/keep-or-nah.svg?style=for-the-badge
+[stars-url]: https://github.com/gOps132/keep-or-nah/stargazers
+[issues-shield]: https://img.shields.io/github/issues/gOps132/keep-or-nah.svg?style=for-the-badge
+[issues-url]: https://github.com/gOps132/keep-or-nah/issues
+[license-shield]: https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge
+[license-url]: https://github.com/gOps132/keep-or-nah
+[Tauri]: https://img.shields.io/badge/Tauri-24C8D8?style=for-the-badge&logo=tauri&logoColor=white
+[Tauri-url]: https://tauri.app/
+[Rust]: https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white
+[Rust-url]: https://www.rust-lang.org/
+[React.js]: https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB
+[React-url]: https://reactjs.org/
+[TypeScript]: https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white
+[TypeScript-url]: https://www.typescriptlang.org/
+[Vite]: https://img.shields.io/badge/Vite-646CFF?style=for-the-badge&logo=vite&logoColor=white
+[Vite-url]: https://vitejs.dev/
+[TailwindCSS]: https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white
+[Tailwind-url]: https://tailwindcss.com/
