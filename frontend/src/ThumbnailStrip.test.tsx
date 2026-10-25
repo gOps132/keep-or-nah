@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
-import { ThumbnailStrip } from "./ThumbnailStrip";
+import { ThumbnailStrip, resolveThumbnailUrl } from "./ThumbnailStrip";
 import { PhotoGroup } from "./types";
 
 const mockGroups: PhotoGroup[] = [
@@ -52,5 +52,30 @@ describe("ThumbnailStrip Component", () => {
     expect(screen.getByTestId("burst-tag-DSC_1002").textContent).toBe("B1");
     expect(screen.getByTestId("best-shot-badge-DSC_1001")).toBeDefined();
     expect(screen.queryByTestId("best-shot-badge-DSC_1002")).toBeNull();
+  });
+
+  it("resolves thumbnail url prioritizing binary cache path over base64 data url", () => {
+    expect(resolveThumbnailUrl(undefined)).toBeUndefined();
+
+    // Cache path without base64 data_url
+    const cachedThumb = {
+      path: "/photos/DSC_001.JPG",
+      cache_path: "/tmp/cache/thumb_001.jpg",
+      src_url: "asset://localhost/tmp/cache/thumb_001.jpg",
+      sharpness: 42.0,
+      width: 160,
+      height: 120,
+    };
+    expect(resolveThumbnailUrl(cachedThumb)).toBe("asset://localhost/tmp/cache/thumb_001.jpg");
+
+    // Fallback to data_url if present
+    const legacyThumb = {
+      path: "/photos/DSC_002.JPG",
+      data_url: "data:image/jpeg;base64,abc",
+      sharpness: 10.0,
+      width: 160,
+      height: 120,
+    };
+    expect(resolveThumbnailUrl(legacyThumb)).toBe("data:image/jpeg;base64,abc");
   });
 });

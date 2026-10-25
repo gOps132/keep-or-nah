@@ -2,15 +2,13 @@ pub mod burst;
 pub mod session;
 
 pub mod commands {
-    use base64::prelude::*;
     use image::codecs::jpeg::JpegEncoder;
     use image::ColorType;
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
-    use std::io::Cursor;
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
-    use tauri::{AppHandle, State};
+    use tauri::{AppHandle, Emitter, State};
     use tauri_plugin_dialog::DialogExt;
 
     use crate::burst::{BurstCluster, BurstClusterer, PhotoBurstInfo};
@@ -27,7 +25,9 @@ pub mod commands {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct ThumbnailDto {
         pub path: String,
-        pub data_url: String,
+        pub cache_path: String,
+        pub src_url: String,
+        pub data_url: Option<String>,
         pub sharpness: f64,
         pub image_hash: u64,
         pub timestamp: f64,
@@ -175,13 +175,15 @@ pub mod commands {
     }
 
     /// Generates an oriented, scaled thumbnail for a photo and computes its sharpness score.
-    #[tauri::command]
-    pub fn get_thumbnail(path: String, max_edge: Option<u32>) -> Result<ThumbnailDto, String> {
-        let file_path = Path::new(&path);
+    pub fn generate_thumbnail_dto(
+        path: &str,
+        edge: u32,
+        cache_dir: &Path,
+    ) -> Result<ThumbnailDto, String> {
+        let file_path = Path::new(path);
         let loaded = keep_or_nah_core::image_loader::load_and_orient(file_path)
             .map_err(|e| format!("Failed to load image for thumbnail: {e}"))?;
 
-        let edge = max_edge.unwrap_or(160);
         let (target_w, target_h) = if loaded.width >= loaded.height {
             let h = ((loaded.height as f64 / loaded.width as f64) * edge as f64).round() as u32;
             (edge, h.max(1))
@@ -211,29 +213,82 @@ pub mod commands {
 
         let timestamp = extract_timestamp(file_path);
 
-        let mut jpeg_bytes = Vec::new();
-        let mut cursor = Cursor::new(&mut jpeg_bytes);
-        let mut encoder = JpegEncoder::new_with_quality(&mut cursor, 80);
-        encoder
-            .encode(
-                &thumbnail.rgba,
-                thumbnail.width,
-                thumbnail.height,
-                ColorType::Rgba8.into(),
-            )
-            .map_err(|e| format!("Failed to encode JPEG thumbnail: {e}"))?;
+        // Derive unique cache file path from path + mtime
+        let mtime = std::fs::metadata(file_path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&(path, mtime, edge), &mut hasher);
+        let cache_key = format!("{:016x}", std::hash::Hasher::finish(&hasher));
+        let cache_file = cache_dir.join(format!("{cache_key}.jpg"));
 
-        let data_url = format!("data:image/jpeg;base64,{}", BASE64_STANDARD.encode(&jpeg_bytes));
+        if !cache_file.exists() {
+            let file = std::fs::File::create(&cache_file)
+                .map_err(|e| format!("Failed to create thumbnail cache file: {e}"))?;
+            let mut writer = std::io::BufWriter::new(file);
+            let mut encoder = JpegEncoder::new_with_quality(&mut writer, 80);
+            let rgb: Vec<u8> = thumbnail
+                .rgba
+                .chunks_exact(4)
+                .flat_map(|c| [c[0], c[1], c[2]])
+                .collect();
+            encoder
+                .encode(
+                    &rgb,
+                    thumbnail.width,
+                    thumbnail.height,
+                    ColorType::Rgb8.into(),
+                )
+                .map_err(|e| format!("Failed to encode JPEG thumbnail: {e}"))?;
+        }
+
+        let cache_path_str = cache_file.to_string_lossy().to_string();
+        let src_url = format!("asset://localhost/{}", cache_path_str);
 
         Ok(ThumbnailDto {
-            path,
-            data_url,
+            path: path.to_string(),
+            cache_path: cache_path_str,
+            src_url,
+            data_url: None,
             sharpness,
             image_hash,
             timestamp,
             width: thumbnail.width,
             height: thumbnail.height,
         })
+    }
+
+    /// Generates an oriented, scaled thumbnail for a photo and caches it to disk without Base64 IPC overhead.
+    #[tauri::command]
+    pub fn get_thumbnail(path: String, max_edge: Option<u32>) -> Result<ThumbnailDto, String> {
+        let edge = max_edge.unwrap_or(160);
+        let cache_dir = std::env::temp_dir().join("keep_or_nah_cache");
+        let _ = std::fs::create_dir_all(&cache_dir);
+        generate_thumbnail_dto(&path, edge, &cache_dir)
+    }
+
+    /// Asynchronously streams progressive thumbnail generation via Tauri IPC events.
+    #[tauri::command]
+    pub fn start_thumbnail_stream(
+        app: AppHandle,
+        paths: Vec<String>,
+        max_edge: Option<u32>,
+    ) -> Result<(), String> {
+        let edge = max_edge.unwrap_or(160);
+        std::thread::spawn(move || {
+            let cache_dir = std::env::temp_dir().join("keep_or_nah_cache");
+            let _ = std::fs::create_dir_all(&cache_dir);
+
+            for path in paths {
+                if let Ok(dto) = generate_thumbnail_dto(&path, edge, &cache_dir) {
+                    let _ = app.emit("thumbnail-ready", dto);
+                }
+            }
+        });
+        Ok(())
     }
 
     fn extract_timestamp(path: &Path) -> f64 {
@@ -339,6 +394,7 @@ pub fn run() {
             commands::get_batch_summary,
             commands::commit_batch,
             commands::get_thumbnail,
+            commands::start_thumbnail_stream,
             commands::compute_burst_clusters,
             commands::read_exif_metadata,
             commands::check_core_status
@@ -390,5 +446,30 @@ mod tests {
         let metadata = read_exif_metadata(file_path.to_string_lossy().to_string()).unwrap();
         assert!(metadata.shutter_speed.is_none());
         assert!(metadata.aperture.is_none());
+    }
+
+    #[test]
+    fn test_generate_thumbnail_dto_caches_to_disk_without_base64() {
+        use image::{ImageBuffer, Rgba};
+        let temp = TempDir::new().unwrap();
+        let cache_dir = temp.path().join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        let img_path = temp.path().join("test.png");
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(64, 48, Rgba([255, 0, 0, 255]));
+        img.save(&img_path).unwrap();
+
+        let dto = super::commands::generate_thumbnail_dto(
+            &img_path.to_string_lossy(),
+            40,
+            &cache_dir,
+        )
+        .unwrap();
+
+        assert!(dto.data_url.is_none(), "Base64 data_url must be eliminated for binary IPC streaming");
+        assert!(dto.src_url.starts_with("asset://localhost/"));
+        assert!(std::path::Path::new(&dto.cache_path).exists(), "Cached thumbnail must exist on disk");
+        assert_eq!(dto.width, 40);
+        assert_eq!(dto.height, 30);
     }
 }

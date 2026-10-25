@@ -1,6 +1,15 @@
 import React, { useEffect, useRef } from "react";
+import { convertFileSrc, isTauri } from "@tauri-apps/api/core";
 import { PhotoGroup, ThumbnailData } from "./types";
 import { Image as ImageIcon, Star, Check, X, Flag } from "lucide-react";
+
+export const resolveThumbnailUrl = (thumb?: ThumbnailData): string | undefined => {
+  if (!thumb) return undefined;
+  if (thumb.cache_path) {
+    return isTauri() ? convertFileSrc(thumb.cache_path) : thumb.src_url || thumb.cache_path;
+  }
+  return thumb.data_url || thumb.src_url;
+};
 
 interface ThumbnailStripProps {
   groups: PhotoGroup[];
@@ -86,9 +95,9 @@ export const ThumbnailStrip: React.FC<ThumbnailStripProps> = ({
 
             {/* Thumbnail Canvas / Placeholder */}
             <div className="w-full flex-1 rounded bg-zinc-950/80 overflow-hidden flex items-center justify-center relative">
-              {thumb ? (
+              {thumb && resolveThumbnailUrl(thumb) ? (
                 <img
-                  src={thumb.data_url}
+                  src={resolveThumbnailUrl(thumb)}
                   alt={group.stem}
                   className="w-full h-full object-contain"
                   loading="lazy"

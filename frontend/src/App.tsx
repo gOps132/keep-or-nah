@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { FolderOpen, Sparkles, Undo2, CheckSquare } from "lucide-react";
 import {
   PhotoGroup,
@@ -38,6 +39,28 @@ export default function App() {
     items: [],
   });
 
+  // Listen for asynchronously streamed progressive thumbnail events
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<ThumbnailData>("thumbnail-ready", (event) => {
+      const thumb = event.payload;
+      setThumbnails((prev) => ({
+        ...prev,
+        [thumb.path]: thumb,
+      }));
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((err) => {
+        console.warn("Event listener for thumbnail-ready unavailable:", err);
+      });
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   // Load directory items and trigger scan
   const loadFolder = useCallback(async (folderPath: string) => {
     try {
@@ -50,22 +73,13 @@ export default function App() {
       setExifCache({});
       setStagedDecisions({});
 
-      // Background thumbnail loading loop
-      for (const group of groups) {
-        invoke<ThumbnailData>("get_thumbnail", {
-          path: group.representative,
-          maxEdge: 160,
-        })
-          .then((thumb) => {
-            setThumbnails((prev) => ({
-              ...prev,
-              [group.representative]: thumb,
-            }));
-          })
-          .catch((err) => {
-            console.error(`Failed to load thumbnail for ${group.representative}:`, err);
-          });
-      }
+      // Asynchronously stream thumbnails over Tauri IPC events
+      invoke("start_thumbnail_stream", {
+        paths: groups.map((g) => g.representative),
+        maxEdge: 160,
+      }).catch((err) => {
+        console.error("Failed to start thumbnail stream:", err);
+      });
     } catch (err) {
       console.error("Failed to scan directory:", err);
     } finally {

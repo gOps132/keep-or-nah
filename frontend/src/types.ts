@@ -10,7 +10,9 @@ export interface PhotoGroup {
 
 export interface ThumbnailData {
   path: string;
-  data_url: string;
+  cache_path?: string;
+  src_url?: string;
+  data_url?: string | null;
   sharpness: number;
   image_hash?: number;
   timestamp?: number;
