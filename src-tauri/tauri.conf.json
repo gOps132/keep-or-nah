@@ -12,7 +12,9 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Keep or Nah",
+        "url": "index.html",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
