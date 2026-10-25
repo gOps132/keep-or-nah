@@ -1,12 +1,12 @@
 import React, { useState } from "react";
-import { BatchSummaryDto } from "./types";
+import { BatchSummaryDto, ActionMode } from "./types";
 import { CheckCircle2, Trash2, ArrowRight, Loader2, X } from "lucide-react";
 
 interface ReviewCommitModalProps {
   isOpen: boolean;
   onClose: () => void;
   summary: BatchSummaryDto;
-  onConfirmCommit: (actionMode: "move" | "copy") => Promise<void>;
+  onConfirmCommit: (actionMode: ActionMode) => Promise<void>;
 }
 
 function formatBytes(bytes: number): string {
@@ -23,7 +23,7 @@ export const ReviewCommitModal: React.FC<ReviewCommitModalProps> = ({
   summary,
   onConfirmCommit,
 }) => {
-  const [actionMode, setActionMode] = useState<"move" | "copy">("move");
+  const [actionMode, setActionMode] = useState<ActionMode>("move");
   const [isCommitting, setIsCommitting] = useState<boolean>(false);
 
   if (!isOpen) return null;
@@ -72,7 +72,7 @@ export const ReviewCommitModal: React.FC<ReviewCommitModalProps> = ({
           </div>
 
           <div className="p-3 rounded-lg bg-zinc-900/60 border border-white/[0.04] flex flex-col">
-            <span className="text-[11px] text-zinc-400">Nah / Discard</span>
+            <span className="text-[11px] text-zinc-400">Nah Groups</span>
             <div className="flex items-center gap-1.5 mt-1 text-red-400 font-semibold text-lg font-mono">
               <Trash2 className="w-4 h-4" />
               <span>{summary.nah_count}</span>
@@ -89,7 +89,7 @@ export const ReviewCommitModal: React.FC<ReviewCommitModalProps> = ({
 
         {/* Action Mode Segmented Switch */}
         <div className="px-6 py-3 border-b border-white/[0.06] flex items-center justify-between text-xs">
-          <span className="text-zinc-400 font-medium">Transfer Action:</span>
+          <span className="text-zinc-400 font-medium">Action Mode:</span>
           <div className="flex items-center p-0.5 rounded-lg bg-zinc-950 border border-white/[0.08]">
             <button
               onClick={() => setActionMode("move")}

@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from "react";
 import { PhotoGroup, ThumbnailData } from "./types";
 import { Image as ImageIcon, Star, Check, X, Flag } from "lucide-react";
 
-interface PhotoStripProps {
+interface ThumbnailStripProps {
   groups: PhotoGroup[];
   activeIndex: number;
   thumbnails: Record<string, ThumbnailData>;
@@ -11,7 +11,7 @@ interface PhotoStripProps {
   bestShotStems?: Set<string>;
 }
 
-export const PhotoStrip: React.FC<PhotoStripProps> = ({
+export const ThumbnailStrip: React.FC<ThumbnailStripProps> = ({
   groups,
   activeIndex,
   thumbnails,
