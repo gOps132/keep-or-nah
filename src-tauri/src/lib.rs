@@ -81,7 +81,8 @@ pub mod commands {
         }
 
         let extensions = keep_or_nah_core::scan::discover_extensions(dir);
-        let groups = keep_or_nah_core::scan::build_photo_groups(dir, &extensions, &extensions);
+        let previewable = keep_or_nah_core::scan::default_previewable_extensions();
+        let groups = keep_or_nah_core::scan::build_photo_groups(dir, &extensions, &previewable);
 
         let dtos: Vec<PhotoGroupDto> = groups
             .into_iter()
@@ -499,5 +500,25 @@ mod tests {
         );
         assert_eq!(dto.width, 40);
         assert_eq!(dto.height, 30);
+    }
+
+    #[test]
+    fn test_scan_directory_prioritizes_jpeg_over_arw_representative() {
+        let temp = TempDir::new().unwrap();
+        let arw_path = temp.path().join("DSC_0001.ARW");
+        let jpg_path = temp.path().join("DSC_0001.JPG");
+        let xmp_path = temp.path().join("DSC_0001.xmp");
+        std::fs::write(&arw_path, b"fake-arw").unwrap();
+        std::fs::write(&jpg_path, b"fake-jpg").unwrap();
+        std::fs::write(&xmp_path, b"fake-xmp").unwrap();
+
+        let extensions = keep_or_nah_core::scan::discover_extensions(temp.path());
+        let previewable = keep_or_nah_core::scan::default_previewable_extensions();
+        let groups = keep_or_nah_core::scan::build_photo_groups(temp.path(), &extensions, &previewable);
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].stem, "DSC_0001");
+        assert_eq!(groups[0].representative.file_name().unwrap(), "DSC_0001.JPG");
+        assert_eq!(groups[0].members.len(), 3);
     }
 }
