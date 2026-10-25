@@ -162,11 +162,13 @@ fn extract_tiff_jpeg(data: &[u8]) -> Option<&[u8]> {
         }
 
         if let (Some(off), Some(len)) = (jpeg_offset, jpeg_len) {
-            if off + len <= data.len() && len > best_len {
-                if data[off] == 0xFF && data[off + 1] == 0xD8 {
-                    best_len = len;
-                    best_jpeg = Some(&data[off..off + len]);
-                }
+            if off + len <= data.len()
+                && len > best_len
+                && data[off] == 0xFF
+                && data[off + 1] == 0xD8
+            {
+                best_len = len;
+                best_jpeg = Some(&data[off..off + len]);
             }
         }
 
@@ -208,8 +210,7 @@ pub fn extract_and_cache_preview(raw_path: &Path, cache_dir: &Path) -> Result<Pa
         return Err(format!("File does not exist: {}", raw_path.display()));
     }
 
-    fs::create_dir_all(cache_dir)
-        .map_err(|e| format!("Failed to create cache directory: {e}"))?;
+    fs::create_dir_all(cache_dir).map_err(|e| format!("Failed to create cache directory: {e}"))?;
 
     let filename = make_cache_filename(raw_path);
     let target_path = cache_dir.join(&filename);

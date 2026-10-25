@@ -301,7 +301,8 @@ pub mod commands {
                 .app_cache_dir()
                 .unwrap_or_else(|_| std::env::temp_dir().join("keep_or_nah_cache"))
                 .join("raw_previews");
-            let cached = keep_or_nah_core::raw_extractor::extract_and_cache_preview(file_path, &cache_dir)?;
+            let cached =
+                keep_or_nah_core::raw_extractor::extract_and_cache_preview(file_path, &cache_dir)?;
             Ok(cached.to_string_lossy().to_string())
         } else {
             Ok(path)
@@ -545,11 +546,15 @@ mod tests {
 
         let extensions = keep_or_nah_core::scan::discover_extensions(temp.path());
         let previewable = keep_or_nah_core::scan::default_previewable_extensions();
-        let groups = keep_or_nah_core::scan::build_photo_groups(temp.path(), &extensions, &previewable);
+        let groups =
+            keep_or_nah_core::scan::build_photo_groups(temp.path(), &extensions, &previewable);
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].stem, "DSC_0001");
-        assert_eq!(groups[0].representative.file_name().unwrap(), "DSC_0001.JPG");
+        assert_eq!(
+            groups[0].representative.file_name().unwrap(),
+            "DSC_0001.JPG"
+        );
         assert_eq!(groups[0].members.len(), 3);
     }
 
@@ -569,17 +574,14 @@ mod tests {
 
         let raw_path = temp.path().join("DSC_9999.ARW");
         let mut raw_container = vec![0x49, 0x49, 0x2A, 0x00]; // TIFF header
-        raw_container.extend_from_slice(&vec![0u8; 100]);
+        raw_container.extend_from_slice(&[0u8; 100]);
         raw_container.extend_from_slice(&jpeg_bytes);
-        raw_container.extend_from_slice(&vec![0u8; 100]);
+        raw_container.extend_from_slice(&[0u8; 100]);
         std::fs::write(&raw_path, &raw_container).unwrap();
 
-        let dto = super::commands::generate_thumbnail_dto(
-            &raw_path.to_string_lossy(),
-            40,
-            &cache_dir,
-        )
-        .unwrap();
+        let dto =
+            super::commands::generate_thumbnail_dto(&raw_path.to_string_lossy(), 40, &cache_dir)
+                .unwrap();
 
         assert_eq!(dto.width, 40);
         assert_eq!(dto.height, 30);

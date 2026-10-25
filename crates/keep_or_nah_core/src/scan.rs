@@ -153,7 +153,9 @@ pub fn build_photo_groups(
         // Representative: previewable first (by order), then extension, then filename.
         let representative = eligible
             .iter()
-            .min_by(|a, b| rank_member(a, &previewable_order).cmp(&rank_member(b, &previewable_order)))
+            .min_by(|a, b| {
+                rank_member(a, &previewable_order).cmp(&rank_member(b, &previewable_order))
+            })
             .expect("eligible is non-empty")
             .path
             .clone();
