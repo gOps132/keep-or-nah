@@ -2,17 +2,19 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Keep or Nah",
   "version": "0.1.0",
-  "identifier": "com.keepornah.app",
+  "identifier": "com.keepornah.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev --prefix frontend",
+    "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build --prefix frontend",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../frontend/dist"
   },
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Keep or Nah",
+        "url": "index.html",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
