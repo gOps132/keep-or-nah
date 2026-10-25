@@ -5,6 +5,7 @@
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+.superpowers/
 .mypy_cache/
 build/
 dist/
@@ -14,3 +15,5 @@ crates/**/target/
 *.dylib
 *.pyd
 freebuff-chat-*.md
+.agents/ui_ux_tester/shots/
+.agents/ui_ux_tester/report.md
