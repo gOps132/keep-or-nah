@@ -62,8 +62,7 @@ impl BurstClusterer {
             let time_diff = (photo.timestamp - prev.timestamp).abs();
             let hash_dist = Self::hamming_distance(photo.image_hash, prev.image_hash);
 
-            if time_diff <= self.time_threshold_seconds
-                && hash_dist <= self.hash_distance_threshold
+            if time_diff <= self.time_threshold_seconds && hash_dist <= self.hash_distance_threshold
             {
                 current_group.push(photo);
             } else {
