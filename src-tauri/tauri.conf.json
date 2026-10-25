@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Keep or Nah",
+  "productName": "keep-or-nah",
   "version": "0.1.0",
   "identifier": "com.keepornah.desktop",
   "build": {
