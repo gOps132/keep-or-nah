@@ -1,11 +1,12 @@
 import React, { useEffect, useRef } from "react";
 import { PhotoGroup, ThumbnailData } from "./types";
-import { Image as ImageIcon, Star } from "lucide-react";
+import { Image as ImageIcon, Star, Check, X, Flag } from "lucide-react";
 
 interface PhotoStripProps {
   groups: PhotoGroup[];
   activeIndex: number;
   thumbnails: Record<string, ThumbnailData>;
+  stagedDecisions: Record<string, string>;
   onSelect: (index: number) => void;
   bestShotStems?: Set<string>;
 }
@@ -14,6 +15,7 @@ export const PhotoStrip: React.FC<PhotoStripProps> = ({
   groups,
   activeIndex,
   thumbnails,
+  stagedDecisions,
   onSelect,
   bestShotStems = new Set(),
 }) => {
@@ -44,6 +46,7 @@ export const PhotoStrip: React.FC<PhotoStripProps> = ({
         const isActive = idx === activeIndex;
         const thumb = thumbnails[group.representative];
         const isBestShot = bestShotStems.has(group.stem);
+        const decision = stagedDecisions[group.stem];
 
         return (
           <button
@@ -56,7 +59,7 @@ export const PhotoStrip: React.FC<PhotoStripProps> = ({
                 : "bg-zinc-900/60 border-white/[0.06] hover:bg-zinc-800/60 hover:border-white/[0.12]"
             }`}
           >
-            {/* Best Shot Badge */}
+            {/* Best Shot Badge (Top Right) */}
             {isBestShot && (
               <span
                 title="Best Shot in Burst (High Sharpness)"
@@ -78,9 +81,26 @@ export const PhotoStrip: React.FC<PhotoStripProps> = ({
               ) : (
                 <ImageIcon className="w-5 h-5 text-zinc-600 animate-pulse" />
               )}
+
+              {/* Staged Decision Badge (Floating Bottom Right of Image) */}
+              {decision === "keep" && (
+                <span className="absolute bottom-1 right-1 z-10 px-1 py-0.5 rounded bg-keep text-white text-[9px] font-bold shadow flex items-center gap-0.5">
+                  <Check className="w-2.5 h-2.5 stroke-[3]" />
+                </span>
+              )}
+              {decision === "nah" && (
+                <span className="absolute bottom-1 right-1 z-10 px-1 py-0.5 rounded bg-nah text-white text-[9px] font-bold shadow flex items-center gap-0.5">
+                  <X className="w-2.5 h-2.5 stroke-[3]" />
+                </span>
+              )}
+              {decision === "flag" && (
+                <span className="absolute bottom-1 right-1 z-10 px-1 py-0.5 rounded bg-flag text-white text-[9px] font-bold shadow flex items-center gap-0.5">
+                  <Flag className="w-2.5 h-2.5 fill-current" />
+                </span>
+              )}
             </div>
 
-            {/* Stem Label */}
+            {/* Stem Label & Sequence */}
             <div className="w-full mt-1 flex items-center justify-between text-[10px] font-mono leading-none">
               <span className="truncate text-zinc-400 group-hover:text-zinc-200">
                 {group.stem}

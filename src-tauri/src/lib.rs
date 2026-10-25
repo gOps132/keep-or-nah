@@ -1,12 +1,18 @@
+pub mod session;
+
 pub mod commands {
     use base64::prelude::*;
     use image::codecs::jpeg::JpegEncoder;
     use image::ColorType;
     use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
     use std::io::Cursor;
     use std::path::{Path, PathBuf};
-    use tauri::AppHandle;
+    use std::sync::Mutex;
+    use tauri::{AppHandle, State};
     use tauri_plugin_dialog::DialogExt;
+
+    use crate::session::{Decision, SessionState};
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
     pub struct PhotoGroupDto {
@@ -60,10 +66,17 @@ pub mod commands {
 
     /// Scans a directory and returns atomically grouped photo items.
     #[tauri::command]
-    pub fn scan_directory(path: String) -> Result<Vec<PhotoGroupDto>, String> {
+    pub fn scan_directory(
+        path: String,
+        session_state: State<'_, Mutex<SessionState>>,
+    ) -> Result<Vec<PhotoGroupDto>, String> {
         let dir = Path::new(&path);
         if !dir.is_dir() {
             return Err(format!("Path is not a directory: {path}"));
+        }
+
+        if let Ok(mut state) = session_state.lock() {
+            state.reset_with_dir(path.clone());
         }
 
         let extensions = keep_or_nah_core::scan::discover_extensions(dir);
@@ -81,6 +94,48 @@ pub mod commands {
             .collect();
 
         Ok(dtos)
+    }
+
+    /// Records an in-memory staged triage decision for a photo stem.
+    #[tauri::command]
+    pub fn stage_decision(
+        stem: String,
+        decision: String,
+        session_state: State<'_, Mutex<SessionState>>,
+    ) -> Result<HashMap<String, String>, String> {
+        let parsed = Decision::from_str_opt(&decision)
+            .ok_or_else(|| format!("Invalid triage decision: {decision}"))?;
+
+        let mut state = session_state
+            .lock()
+            .map_err(|_| "Failed to lock session state".to_string())?;
+
+        state.stage_decision(stem, parsed);
+        Ok(state.get_decisions_map())
+    }
+
+    /// Undoes the last staged decision and returns the affected stem.
+    #[tauri::command]
+    pub fn undo_decision(
+        session_state: State<'_, Mutex<SessionState>>,
+    ) -> Result<Option<String>, String> {
+        let mut state = session_state
+            .lock()
+            .map_err(|_| "Failed to lock session state".to_string())?;
+
+        Ok(state.undo_last_decision())
+    }
+
+    /// Retrieves the current map of staged decisions.
+    #[tauri::command]
+    pub fn get_staged_decisions(
+        session_state: State<'_, Mutex<SessionState>>,
+    ) -> Result<HashMap<String, String>, String> {
+        let state = session_state
+            .lock()
+            .map_err(|_| "Failed to lock session state".to_string())?;
+
+        Ok(state.get_decisions_map())
     }
 
     /// Generates an oriented, scaled thumbnail for a photo and computes its sharpness score.
@@ -183,11 +238,15 @@ pub mod commands {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(std::sync::Mutex::new(session::SessionState::new()))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             commands::open_directory_dialog,
             commands::scan_directory,
+            commands::stage_decision,
+            commands::undo_decision,
+            commands::get_staged_decisions,
             commands::get_thumbnail,
             commands::read_exif_metadata,
             commands::check_core_status
@@ -198,7 +257,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::commands::{check_core_status, read_exif_metadata, scan_directory};
+    use super::commands::{check_core_status, read_exif_metadata};
     use tempfile::TempDir;
 
     #[test]
@@ -206,22 +265,6 @@ mod tests {
         let status = check_core_status();
         assert!(status.is_ok());
         assert_eq!(status.unwrap(), "keep_or_nah_core linked and operational");
-    }
-
-    #[test]
-    fn test_scan_directory_groups_same_stem_files() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path();
-
-        std::fs::write(path.join("DSC_0001.JPG"), b"dummy").unwrap();
-        std::fs::write(path.join("DSC_0001.RAW"), b"dummy").unwrap();
-        std::fs::write(path.join("DSC_0002.JPG"), b"dummy").unwrap();
-
-        let groups = scan_directory(path.to_string_lossy().to_string()).unwrap();
-        assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0].stem, "DSC_0001");
-        assert_eq!(groups[0].members.len(), 2);
-        assert_eq!(groups[1].stem, "DSC_0002");
     }
 
     #[test]

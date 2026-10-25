@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Sparkles } from "lucide-react";
+import { FolderOpen, Sparkles, Undo2 } from "lucide-react";
 import { PhotoGroup, ThumbnailData, ExifMetadataDto } from "./types";
 import { PhotoStrip } from "./PhotoStrip";
 import { PreviewViewport } from "./PreviewViewport";
@@ -12,6 +12,7 @@ export default function App() {
   const [activeIndex, setActiveIndex] = useState<number>(0);
   const [thumbnails, setThumbnails] = useState<Record<string, ThumbnailData>>({});
   const [exifCache, setExifCache] = useState<Record<string, ExifMetadataDto>>({});
+  const [stagedDecisions, setStagedDecisions] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [bestShotStems, setBestShotStems] = useState<Set<string>>(new Set());
 
@@ -25,6 +26,7 @@ export default function App() {
       setActiveIndex(0);
       setThumbnails({});
       setExifCache({});
+      setStagedDecisions({});
 
       // Background thumbnail loading loop
       for (const group of groups) {
@@ -62,6 +64,46 @@ export default function App() {
 
   const activeGroup = photoGroups[activeIndex] ?? null;
 
+  // Stage a triage decision (Keep, Nah, Flag)
+  const handleStageDecision = useCallback(
+    async (decision: "keep" | "nah" | "flag") => {
+      if (!activeGroup) return;
+
+      try {
+        const updated = await invoke<Record<string, string>>("stage_decision", {
+          stem: activeGroup.stem,
+          decision,
+        });
+        setStagedDecisions(updated);
+
+        // Advance to next photo group
+        setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1));
+      } catch (err) {
+        console.error("Failed to stage decision:", err);
+      }
+    },
+    [activeGroup, photoGroups.length]
+  );
+
+  // Undo last decision
+  const handleUndo = useCallback(async () => {
+    try {
+      const undoneStem = await invoke<string | null>("undo_decision");
+      if (undoneStem) {
+        const decisions = await invoke<Record<string, string>>("get_staged_decisions");
+        setStagedDecisions(decisions);
+
+        // Navigate back to the photo that was undone
+        const foundIdx = photoGroups.findIndex((g) => g.stem === undoneStem);
+        if (foundIdx !== -1) {
+          setActiveIndex(foundIdx);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to undo decision:", err);
+    }
+  }, [photoGroups]);
+
   // Load EXIF metadata for active photo
   useEffect(() => {
     if (!activeGroup) return;
@@ -82,9 +124,16 @@ export default function App() {
     }
   }, [activeGroup, exifCache]);
 
-  // Keyboard navigation & triage action shortcuts (1, 2, F)
+  // Global Keyboard Navigation & Hotkeys
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Undo: ⌘Z / Ctrl+Z
+      if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+
       if (photoGroups.length === 0) return;
 
       if (e.key === "ArrowLeft") {
@@ -95,22 +144,19 @@ export default function App() {
         setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1));
       } else if (e.key === "1") {
         e.preventDefault();
-        // Keep shortcut: advance to next
-        setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1));
+        handleStageDecision("keep");
       } else if (e.key === "2") {
         e.preventDefault();
-        // Nah shortcut: advance to next
-        setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1));
+        handleStageDecision("nah");
       } else if (e.key === "f" || e.key === "F") {
         e.preventDefault();
-        // Flag shortcut: advance to next
-        setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1));
+        handleStageDecision("flag");
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [photoGroups.length]);
+  }, [photoGroups.length, handleStageDecision, handleUndo]);
 
   // Determine best shots based on sharpness in clusters
   useEffect(() => {
@@ -126,6 +172,10 @@ export default function App() {
     }
     setBestShotStems(bestSet);
   }, [thumbnails, photoGroups]);
+
+  const totalStaged = Object.keys(stagedDecisions).length;
+  const keepCount = Object.values(stagedDecisions).filter((d) => d === "keep").length;
+  const nahCount = Object.values(stagedDecisions).filter((d) => d === "nah").length;
 
   return (
     <div className="flex flex-col h-screen w-screen bg-canvas text-zinc-100 overflow-hidden font-sans">
@@ -152,8 +202,26 @@ export default function App() {
           )}
         </div>
 
-        {/* Right: Actions */}
+        {/* Right: Staged Counts, Undo, and Actions */}
         <div className="flex items-center gap-2">
+          {totalStaged > 0 && (
+            <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-zinc-900 border border-white/[0.08] text-xs font-mono">
+              <span className="text-emerald-400 font-semibold">{keepCount} Keep</span>
+              <span className="text-zinc-600">·</span>
+              <span className="text-red-400 font-semibold">{nahCount} Nah</span>
+            </div>
+          )}
+
+          <button
+            onClick={handleUndo}
+            disabled={totalStaged === 0}
+            title="Undo last triage decision (⌘Z / Ctrl+Z)"
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition disabled:opacity-30 disabled:pointer-events-none border border-white/[0.06] active:scale-95 cursor-pointer"
+          >
+            <Undo2 className="w-3.5 h-3.5" />
+            <span>Undo</span>
+          </button>
+
           <button
             onClick={handleOpenFolder}
             disabled={isLoading}
@@ -177,9 +245,9 @@ export default function App() {
 
             {/* Floating Glass Action HUD */}
             <ActionHud
-              onKeep={() => setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1))}
-              onNah={() => setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1))}
-              onFlag={() => setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1))}
+              onKeep={() => handleStageDecision("keep")}
+              onNah={() => handleStageDecision("nah")}
+              onFlag={() => handleStageDecision("flag")}
             />
           </>
         ) : selectedFolder ? (
@@ -218,6 +286,7 @@ export default function App() {
         groups={photoGroups}
         activeIndex={activeIndex}
         thumbnails={thumbnails}
+        stagedDecisions={stagedDecisions}
         onSelect={(idx) => setActiveIndex(idx)}
         bestShotStems={bestShotStems}
       />
@@ -227,11 +296,13 @@ export default function App() {
         <div className="flex items-center gap-3">
           <span>Tauri v2 · Native Desktop</span>
           {photoGroups.length > 0 && (
-            <span>Shortcuts: 1 Keep · 2 Nah · F Flag · ⌘+Wheel Zoom · 0 Fit</span>
+            <span>Shortcuts: 1 Keep · 2 Nah · F Flag · ⌘Z Undo · ⌘+Wheel Zoom · 0 Fit</span>
           )}
         </div>
         <span>
-          {photoGroups.length > 0 ? `Photo ${activeIndex + 1} of ${photoGroups.length}` : "Ready"}
+          {photoGroups.length > 0
+            ? `Photo ${activeIndex + 1} of ${photoGroups.length} (${totalStaged} staged)`
+            : "Ready"}
         </span>
       </footer>
     </div>

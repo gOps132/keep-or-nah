@@ -9,13 +9,14 @@ const mockGroups: PhotoGroup[] = [
 ];
 
 describe("PhotoStrip Component", () => {
-  it("renders all photo groups in the strip", () => {
+  it("renders all photo groups in the strip and handles selection", () => {
     let selected = 0;
     render(
       <PhotoStrip
         groups={mockGroups}
         activeIndex={0}
         thumbnails={{}}
+        stagedDecisions={{ DSC_1001: "keep" }}
         onSelect={(idx) => {
           selected = idx;
         }}
