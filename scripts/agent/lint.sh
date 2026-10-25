@@ -13,17 +13,18 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 CRATE_DIR="crates/keep_or_nah_core"
-
-echo "=== python lint ==="
-uv run ruff check .
-
-echo "=== python format ==="
-uv run ruff format --check .
+TAURI_DIR="src-tauri"
+FRONTEND_DIR="frontend"
 
 echo "=== rust format ==="
 cargo fmt --manifest-path "$CRATE_DIR/Cargo.toml" --check
+cargo fmt --manifest-path "$TAURI_DIR/Cargo.toml" --check
 
 echo "=== rust clippy ==="
 cargo clippy --manifest-path "$CRATE_DIR/Cargo.toml" --all-targets -- -D warnings
+cargo clippy --manifest-path "$TAURI_DIR/Cargo.toml" --all-targets -- -D warnings
+
+echo "=== frontend check ==="
+npm --prefix "$FRONTEND_DIR" run build
 
 echo "all lint checks passed"

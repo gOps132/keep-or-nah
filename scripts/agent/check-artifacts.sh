@@ -44,14 +44,10 @@ fi
 #    ignored, so this asserts the rule exists rather than the directory.
 ignore_required=(
   ".DS_Store"
-  ".venv/"
-  "__pycache__/"
-  ".pytest_cache/"
-  ".ruff_cache/"
-  ".pyinstaller/"
-  "build/"
-  "dist/"
+  "frontend/dist/"
+  "frontend/node_modules/"
   "crates/keep_or_nah_core/target/"
+  "src-tauri/target/"
   "*.so"
   "*.dylib"
   "*.pyd"

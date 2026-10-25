@@ -1,8 +1,7 @@
 name: Release
 
 # Turns a `v*` tag into a published release with downloadable macOS and
-# Windows artifacts. The build itself is delegated to scripts/build.py so the
-# local and the CI packaging paths cannot drift apart.
+# Windows artifacts using Tauri.
 
 on:
   push:
@@ -25,7 +24,6 @@ defaults:
     shell: bash
 
 env:
-  UV_PYTHON: "3.12"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -38,31 +36,6 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      # uv's managed CPython builds for Linux omit Tk, and the verification
-      # gate runs the GUI test suite. Build the virtualenv from the system
-      # interpreter, which can have Tk.
-      - name: Install Tk for the system Python
-        run: |
-          if /usr/bin/python3 -c "import tkinter" 2>/dev/null; then
-            echo "the system python already has Tk"
-          elif [ "$(id -u)" -eq 0 ]; then
-            apt-get update
-            apt-get install -y python3-tk
-          elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-            sudo -n apt-get update
-            sudo -n apt-get install -y python3-tk
-          else
-            echo "::error::the system python has no Tk, and this runner cannot install it"
-            exit 1
-          fi
-          /usr/bin/python3 -c "import tkinter; print('system tkinter', tkinter.TkVersion)"
-
       - name: Read the pinned Rust toolchain
         id: rust
         run: echo "version=$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
@@ -73,10 +46,20 @@ jobs:
           toolchain: ${{ steps.rust.outputs.version }}
           components: rustfmt, clippy
 
-      - name: Sync the Python environment
+      - name: Install Linux dependencies
         run: |
-          uv sync --all-groups --python /usr/bin/python3
-          echo "UV_PYTHON=/usr/bin/python3" >> "$GITHUB_ENV"
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
 
       - name: Run the full verification gate
         run: scripts/verify.sh
@@ -91,12 +74,6 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
       - name: Read the pinned Rust toolchain
         id: rust
         run: echo "version=$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
@@ -107,22 +84,30 @@ jobs:
           toolchain: ${{ steps.rust.outputs.version }}
           components: rustfmt, clippy
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "crates/keep_or_nah_core"
+          workspaces: |
+            crates/keep_or_nah_core
+            src-tauri
 
-      - name: Build the macOS app bundle
-        run: uv run python scripts/build.py macos
+      - name: Build macOS app bundle
+        run: npx --prefix frontend tauri build
 
-      # The bundle is uploaded as one archive. Uploading the directory's
-      # contents instead would attach every file inside the bundle to the
-      # release individually, which is hundreds of assets and a rate limit
-      # waiting to happen.
       - name: Package the macOS app bundle
         run: |
-          cd dist/macos
-          zip -r "$GITHUB_WORKSPACE/Keep-or-Nah-macos.zip" "Keep or Nah.app" -x '*.DS_Store'
+          cd src-tauri/target/release/bundle/macos
+          zip -r "$GITHUB_WORKSPACE/Keep-or-Nah-macos.zip" "keep-or-nah.app" -x '*.DS_Store'
           cd "$GITHUB_WORKSPACE"
 
       - name: Upload the macOS app bundle
@@ -142,13 +127,6 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-          python-version: "3.12"
-
       - name: Read the pinned Rust toolchain
         id: rust
         run: echo "version=$(grep -E '^channel' rust-toolchain.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
@@ -159,19 +137,31 @@ jobs:
           toolchain: ${{ steps.rust.outputs.version }}
           components: rustfmt, clippy
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: "crates/keep_or_nah_core"
+          workspaces: |
+            crates/keep_or_nah_core
+            src-tauri
 
-      - name: Build the Windows executable
-        run: uv run python scripts/build.py windows
+      - name: Build Windows executable
+        run: npx --prefix frontend tauri build
 
-      # The executable is uploaded as one archive, for the same reason the
-      # macOS bundle is.
       - name: Package the Windows executable
         shell: pwsh
-        run: Compress-Archive -Path dist/windows/KeepOrNah.exe -DestinationPath Keep-or-Nah-windows.zip
+        run: |
+          $msi = Get-ChildItem -Path src-tauri/target/release/bundle/msi/*.msi | Select-Object -First 1
+          Compress-Archive -Path $msi.FullName -DestinationPath Keep-or-Nah-windows.zip
 
       - name: Upload the Windows executable
         uses: actions/upload-artifact@v4
@@ -190,8 +180,6 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
-      # The release notes are generated from the commit history, so the
-      # repository has to be checked out with its full history and its tags.
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag || github.ref }}
