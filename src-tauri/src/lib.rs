@@ -58,9 +58,10 @@ pub mod commands {
             Some(path) => {
                 let path_str = match path {
                     tauri_plugin_dialog::FilePath::Path(p) => p.to_string_lossy().to_string(),
-                    tauri_plugin_dialog::FilePath::Url(u) => {
-                        u.to_file_path().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| u.to_string())
-                    }
+                    tauri_plugin_dialog::FilePath::Url(u) => u
+                        .to_file_path()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| u.to_string()),
                 };
                 Ok(Some(path_str))
             }
@@ -87,7 +88,11 @@ pub mod commands {
             .enumerate()
             .map(|(index, group)| PhotoGroupDto {
                 stem: group.stem,
-                members: group.members.iter().map(|m| m.to_string_lossy().to_string()).collect(),
+                members: group
+                    .members
+                    .iter()
+                    .map(|m| m.to_string_lossy().to_string())
+                    .collect(),
                 representative: group.representative.to_string_lossy().to_string(),
                 index,
             })
@@ -232,7 +237,9 @@ pub mod commands {
             let mut encoder = JpegEncoder::new_with_quality(&mut writer, 80);
             let rgb: Vec<u8> = thumbnail
                 .rgba
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .flat_map(|c| [c[0], c[1], c[2]])
                 .collect();
             encoder
@@ -295,9 +302,10 @@ pub mod commands {
         if let Ok(file) = std::fs::File::open(path) {
             let mut reader = std::io::BufReader::new(file);
             if let Ok(exif) = exif::Reader::new().read_from_container(&mut reader) {
-                if let Some(field) = exif.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY) {
+                if let Some(field) = exif.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)
+                {
                     let val = field.display_value().to_string();
-                    let parts: Vec<&str> = val.split(|c| c == ' ' || c == ':' || c == '-').collect();
+                    let parts: Vec<&str> = val.split([' ', ':', '-']).collect();
                     if parts.len() >= 6 {
                         if let (Ok(y), Ok(m), Ok(d), Ok(h), Ok(min), Ok(s)) = (
                             parts[0].parse::<i32>(),
@@ -307,8 +315,12 @@ pub mod commands {
                             parts[4].parse::<u32>(),
                             parts[5].parse::<u32>(),
                         ) {
-                            let days = (y - 1970) as f64 * 365.25 + (m as f64 - 1.0) * 30.4375 + d as f64;
-                            return days * 86400.0 + h as f64 * 3600.0 + min as f64 * 60.0 + s as f64;
+                            let days =
+                                (y - 1970) as f64 * 365.25 + (m as f64 - 1.0) * 30.4375 + d as f64;
+                            return days * 86400.0
+                                + h as f64 * 3600.0
+                                + min as f64 * 60.0
+                                + s as f64;
                         }
                     }
                 }
@@ -361,10 +373,22 @@ pub mod commands {
             dto.focal_length = Some(field.display_value().to_string());
         }
         if let Some(field) = exif.get_field(exif::Tag::Model, exif::In::PRIMARY) {
-            dto.camera_model = Some(field.display_value().to_string().trim_matches('"').to_string());
+            dto.camera_model = Some(
+                field
+                    .display_value()
+                    .to_string()
+                    .trim_matches('"')
+                    .to_string(),
+            );
         }
         if let Some(field) = exif.get_field(exif::Tag::LensModel, exif::In::PRIMARY) {
-            dto.lens_model = Some(field.display_value().to_string().trim_matches('"').to_string());
+            dto.lens_model = Some(
+                field
+                    .display_value()
+                    .to_string()
+                    .trim_matches('"')
+                    .to_string(),
+            );
         }
 
         Ok(dto)
@@ -456,19 +480,23 @@ mod tests {
         std::fs::create_dir_all(&cache_dir).unwrap();
 
         let img_path = temp.path().join("test.png");
-        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(64, 48, Rgba([255, 0, 0, 255]));
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(64, 48, Rgba([255, 0, 0, 255]));
         img.save(&img_path).unwrap();
 
-        let dto = super::commands::generate_thumbnail_dto(
-            &img_path.to_string_lossy(),
-            40,
-            &cache_dir,
-        )
-        .unwrap();
+        let dto =
+            super::commands::generate_thumbnail_dto(&img_path.to_string_lossy(), 40, &cache_dir)
+                .unwrap();
 
-        assert!(dto.data_url.is_none(), "Base64 data_url must be eliminated for binary IPC streaming");
+        assert!(
+            dto.data_url.is_none(),
+            "Base64 data_url must be eliminated for binary IPC streaming"
+        );
         assert!(dto.src_url.starts_with("asset://localhost/"));
-        assert!(std::path::Path::new(&dto.cache_path).exists(), "Cached thumbnail must exist on disk");
+        assert!(
+            std::path::Path::new(&dto.cache_path).exists(),
+            "Cached thumbnail must exist on disk"
+        );
         assert_eq!(dto.width, 40);
         assert_eq!(dto.height, 30);
     }

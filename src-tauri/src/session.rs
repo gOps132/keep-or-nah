@@ -91,8 +91,13 @@ pub struct CommitResultDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ExecutedOp {
-    Moved { source: PathBuf, destination: PathBuf },
-    Copied { destination: PathBuf },
+    Moved {
+        source: PathBuf,
+        destination: PathBuf,
+    },
+    Copied {
+        destination: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,7 +114,10 @@ fn rollback_ops(ops: Vec<ExecutedOp>, session_dir: &Path) -> Result<(), String> 
 
     for op in ops.into_iter().rev() {
         match &op {
-            ExecutedOp::Moved { source, destination } => {
+            ExecutedOp::Moved {
+                source,
+                destination,
+            } => {
                 if destination.exists() {
                     if let Err(e) = fs::rename(destination, source) {
                         rollback_errors.push(format!(
@@ -194,12 +202,17 @@ impl SessionState {
 
     pub fn stage_decision(&mut self, stem: String, decision: Decision) {
         self.decisions.insert(stem.clone(), decision);
-        self.undo_journal.push(StagedDecisionRecord { stem, decision });
+        self.undo_journal
+            .push(StagedDecisionRecord { stem, decision });
     }
 
     pub fn undo_last_decision(&mut self) -> Option<String> {
         if let Some(record) = self.undo_journal.pop() {
-            let previous = self.undo_journal.iter().rev().find(|r| r.stem == record.stem);
+            let previous = self
+                .undo_journal
+                .iter()
+                .rev()
+                .find(|r| r.stem == record.stem);
             match previous {
                 Some(prev) => {
                     self.decisions.insert(record.stem.clone(), prev.decision);
@@ -308,7 +321,10 @@ impl SessionState {
             };
 
             if let Err(e) = fs::create_dir_all(dest_folder) {
-                errors.push(format!("Failed to create destination folder {}: {e}", dest_folder.display()));
+                errors.push(format!(
+                    "Failed to create destination folder {}: {e}",
+                    dest_folder.display()
+                ));
                 break;
             }
 
@@ -338,7 +354,8 @@ impl SessionState {
                         }
                         Err(rename_err) => {
                             // If cross-device or permission, fallback to verified stage_copy + remove_verified
-                            let source_ident = match keep_or_nah_core::fileops::identity_of(member) {
+                            let source_ident = match keep_or_nah_core::fileops::identity_of(member)
+                            {
                                 Ok(id) => id,
                                 Err(e) => {
                                     errors.push(format!(
@@ -349,19 +366,32 @@ impl SessionState {
                                     break;
                                 }
                             };
-                            match keep_or_nah_core::fileops::stage_copy(member, dest_folder, Some(&source_ident.components())) {
+                            match keep_or_nah_core::fileops::stage_copy(
+                                member,
+                                dest_folder,
+                                Some(&source_ident.components()),
+                            ) {
                                 Ok(staged) => {
                                     let staged_p = Path::new(&staged.path);
                                     if let Err(e) = fs::rename(staged_p, &target_file) {
                                         let _ = fs::remove_file(staged_p);
-                                        errors.push(format!("Failed to publish staged file for {}: {e}", member.display()));
+                                        errors.push(format!(
+                                            "Failed to publish staged file for {}: {e}",
+                                            member.display()
+                                        ));
                                         group_failed = true;
                                         break;
                                     }
                                     // Remove source with identity verification
-                                    if let Err(e) = keep_or_nah_core::fileops::remove_verified(member, &source_ident.components()) {
+                                    if let Err(e) = keep_or_nah_core::fileops::remove_verified(
+                                        member,
+                                        &source_ident.components(),
+                                    ) {
                                         let _ = fs::remove_file(&target_file);
-                                        errors.push(format!("Failed to verified-remove source {}: {e}", member.display()));
+                                        errors.push(format!(
+                                            "Failed to verified-remove source {}: {e}",
+                                            member.display()
+                                        ));
                                         group_failed = true;
                                         break;
                                     }
@@ -371,7 +401,10 @@ impl SessionState {
                                     });
                                 }
                                 Err(e) => {
-                                    errors.push(format!("Failed to move {} ({rename_err}): {e}", member.display()));
+                                    errors.push(format!(
+                                        "Failed to move {} ({rename_err}): {e}",
+                                        member.display()
+                                    ));
                                     group_failed = true;
                                     break;
                                 }
@@ -385,7 +418,10 @@ impl SessionState {
                             let staged_p = Path::new(&staged.path);
                             if let Err(e) = fs::rename(staged_p, &target_file) {
                                 let _ = fs::remove_file(staged_p);
-                                errors.push(format!("Failed to publish staged copy for {}: {e}", member.display()));
+                                errors.push(format!(
+                                    "Failed to publish staged copy for {}: {e}",
+                                    member.display()
+                                ));
                                 group_failed = true;
                                 break;
                             }
@@ -394,7 +430,10 @@ impl SessionState {
                             });
                         }
                         Err(e) => {
-                            errors.push(format!("Failed to stage copy for {}: {e}", member.display()));
+                            errors.push(format!(
+                                "Failed to stage copy for {}: {e}",
+                                member.display()
+                            ));
                             group_failed = true;
                             break;
                         }
@@ -425,7 +464,8 @@ impl SessionState {
             self.decisions.remove(stem);
             self.group_members.remove(stem);
         }
-        self.undo_journal.retain(|r| !committed_stems.contains(&r.stem));
+        self.undo_journal
+            .retain(|r| !committed_stems.contains(&r.stem));
 
         let file_count = executed_ops.len();
         Ok(CommitResultDto {
@@ -448,24 +488,59 @@ mod tests {
 
         session.stage_decision("DSC_001".to_string(), Decision::Keep);
         assert_eq!(session.decisions.get("DSC_001"), Some(&Decision::Keep));
-        assert_eq!(session.get_staged_counts(), StagedCounts { keep: 1, nah: 0, flag: 0 });
+        assert_eq!(
+            session.get_staged_counts(),
+            StagedCounts {
+                keep: 1,
+                nah: 0,
+                flag: 0
+            }
+        );
 
         session.stage_decision("DSC_002".to_string(), Decision::Nah);
-        assert_eq!(session.get_staged_counts(), StagedCounts { keep: 1, nah: 1, flag: 0 });
+        assert_eq!(
+            session.get_staged_counts(),
+            StagedCounts {
+                keep: 1,
+                nah: 1,
+                flag: 0
+            }
+        );
 
         session.stage_decision("DSC_001".to_string(), Decision::Flag);
         assert_eq!(session.decisions.get("DSC_001"), Some(&Decision::Flag));
-        assert_eq!(session.get_staged_counts(), StagedCounts { keep: 0, nah: 1, flag: 1 });
+        assert_eq!(
+            session.get_staged_counts(),
+            StagedCounts {
+                keep: 0,
+                nah: 1,
+                flag: 1
+            }
+        );
 
         let undone = session.undo_last_decision();
         assert_eq!(undone, Some("DSC_001".to_string()));
         assert_eq!(session.decisions.get("DSC_001"), Some(&Decision::Keep));
-        assert_eq!(session.get_staged_counts(), StagedCounts { keep: 1, nah: 1, flag: 0 });
+        assert_eq!(
+            session.get_staged_counts(),
+            StagedCounts {
+                keep: 1,
+                nah: 1,
+                flag: 0
+            }
+        );
 
         let undone2 = session.undo_last_decision();
         assert_eq!(undone2, Some("DSC_002".to_string()));
         assert_eq!(session.decisions.get("DSC_002"), None);
-        assert_eq!(session.get_staged_counts(), StagedCounts { keep: 1, nah: 0, flag: 0 });
+        assert_eq!(
+            session.get_staged_counts(),
+            StagedCounts {
+                keep: 1,
+                nah: 0,
+                flag: 0
+            }
+        );
     }
 
     #[test]
@@ -481,13 +556,19 @@ mod tests {
 
         let mut session = SessionState::new();
         session.reset_with_dir(src.to_string_lossy().to_string());
-        session.group_members.insert("A01".to_string(), vec![file1.clone()]);
-        session.group_members.insert("A02".to_string(), vec![file2.clone()]);
+        session
+            .group_members
+            .insert("A01".to_string(), vec![file1.clone()]);
+        session
+            .group_members
+            .insert("A02".to_string(), vec![file2.clone()]);
 
         session.stage_decision("A01".to_string(), Decision::Keep);
         session.stage_decision("A02".to_string(), Decision::Nah);
 
-        let result = session.commit_staged_batch(None, None, ActionMode::Move).unwrap();
+        let result = session
+            .commit_staged_batch(None, None, ActionMode::Move)
+            .unwrap();
         assert_eq!(result.successful_groups, 2);
         assert_eq!(result.successful_files, 2);
 
@@ -512,10 +593,14 @@ mod tests {
 
         let mut session = SessionState::new();
         session.reset_with_dir(src.to_string_lossy().to_string());
-        session.group_members.insert("A01".to_string(), vec![file1.clone()]);
+        session
+            .group_members
+            .insert("A01".to_string(), vec![file1.clone()]);
         session.stage_decision("A01".to_string(), Decision::Keep);
 
-        let result = session.commit_staged_batch(None, None, ActionMode::Copy).unwrap();
+        let result = session
+            .commit_staged_batch(None, None, ActionMode::Copy)
+            .unwrap();
         assert_eq!(result.successful_groups, 1);
         assert_eq!(result.successful_files, 1);
 
@@ -538,8 +623,12 @@ mod tests {
 
         let mut session = SessionState::new();
         session.reset_with_dir(src.to_string_lossy().to_string());
-        session.group_members.insert("A01".to_string(), vec![file1.clone()]);
-        session.group_members.insert("A02".to_string(), vec![file2.clone()]);
+        session
+            .group_members
+            .insert("A01".to_string(), vec![file1.clone()]);
+        session
+            .group_members
+            .insert("A02".to_string(), vec![file2.clone()]);
 
         session.stage_decision("A01".to_string(), Decision::Keep);
         session.stage_decision("A02".to_string(), Decision::Keep);
@@ -548,8 +637,14 @@ mod tests {
         assert!(result.is_err());
 
         // Because batch failed on A02, A01 must have been rolled back to source!
-        assert!(file1.exists(), "A01 should be restored to its source path after rollback");
-        assert!(!src.join("keep").join("A01.JPG").exists(), "Keep destination should not have A01");
+        assert!(
+            file1.exists(),
+            "A01 should be restored to its source path after rollback"
+        );
+        assert!(
+            !src.join("keep").join("A01.JPG").exists(),
+            "Keep destination should not have A01"
+        );
 
         // Staged decisions should still be retained because commit failed
         assert_eq!(session.decisions.len(), 2);
@@ -590,6 +685,9 @@ mod tests {
                 break;
             }
         }
-        assert!(found_journal, "Emergency recovery journal file should be created");
+        assert!(
+            found_journal,
+            "Emergency recovery journal file should be created"
+        );
     }
 }
