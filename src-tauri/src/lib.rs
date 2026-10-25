@@ -25,6 +25,16 @@ pub mod commands {
         pub height: u32,
     }
 
+    #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+    pub struct ExifMetadataDto {
+        pub shutter_speed: Option<String>,
+        pub aperture: Option<String>,
+        pub iso: Option<String>,
+        pub focal_length: Option<String>,
+        pub camera_model: Option<String>,
+        pub lens_model: Option<String>,
+    }
+
     /// Prompts the user to pick a photo directory using the native OS dialog.
     #[tauri::command]
     pub async fn open_directory_dialog(app: AppHandle) -> Result<Option<String>, String> {
@@ -125,6 +135,42 @@ pub mod commands {
         })
     }
 
+    /// Extracts camera telemetry from image EXIF metadata.
+    #[tauri::command]
+    pub fn read_exif_metadata(path: String) -> Result<ExifMetadataDto, String> {
+        let file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(_) => return Ok(ExifMetadataDto::default()),
+        };
+        let mut reader = std::io::BufReader::new(file);
+        let exif = match exif::Reader::new().read_from_container(&mut reader) {
+            Ok(e) => e,
+            Err(_) => return Ok(ExifMetadataDto::default()),
+        };
+
+        let mut dto = ExifMetadataDto::default();
+        if let Some(field) = exif.get_field(exif::Tag::ExposureTime, exif::In::PRIMARY) {
+            dto.shutter_speed = Some(field.display_value().to_string());
+        }
+        if let Some(field) = exif.get_field(exif::Tag::FNumber, exif::In::PRIMARY) {
+            dto.aperture = Some(format!("f/{}", field.display_value()));
+        }
+        if let Some(field) = exif.get_field(exif::Tag::PhotographicSensitivity, exif::In::PRIMARY) {
+            dto.iso = Some(format!("ISO {}", field.display_value()));
+        }
+        if let Some(field) = exif.get_field(exif::Tag::FocalLength, exif::In::PRIMARY) {
+            dto.focal_length = Some(field.display_value().to_string());
+        }
+        if let Some(field) = exif.get_field(exif::Tag::Model, exif::In::PRIMARY) {
+            dto.camera_model = Some(field.display_value().to_string().trim_matches('"').to_string());
+        }
+        if let Some(field) = exif.get_field(exif::Tag::LensModel, exif::In::PRIMARY) {
+            dto.lens_model = Some(field.display_value().to_string().trim_matches('"').to_string());
+        }
+
+        Ok(dto)
+    }
+
     /// Helper to verify native core integration at runtime.
     #[tauri::command]
     pub fn check_core_status() -> Result<String, String> {
@@ -143,6 +189,7 @@ pub fn run() {
             commands::open_directory_dialog,
             commands::scan_directory,
             commands::get_thumbnail,
+            commands::read_exif_metadata,
             commands::check_core_status
         ])
         .run(tauri::generate_context!())
@@ -151,7 +198,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::commands::{check_core_status, scan_directory};
+    use super::commands::{check_core_status, read_exif_metadata, scan_directory};
     use tempfile::TempDir;
 
     #[test]
@@ -175,5 +222,16 @@ mod tests {
         assert_eq!(groups[0].stem, "DSC_0001");
         assert_eq!(groups[0].members.len(), 2);
         assert_eq!(groups[1].stem, "DSC_0002");
+    }
+
+    #[test]
+    fn test_read_exif_on_empty_file_returns_default() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("empty.jpg");
+        std::fs::write(&file_path, b"").unwrap();
+
+        let metadata = read_exif_metadata(file_path.to_string_lossy().to_string()).unwrap();
+        assert!(metadata.shutter_speed.is_none());
+        assert!(metadata.aperture.is_none());
     }
 }

@@ -1,14 +1,17 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { FolderOpen, Sparkles, Image as ImageIcon, ChevronLeft, ChevronRight } from "lucide-react";
-import { PhotoGroup, ThumbnailData } from "./types";
+import { FolderOpen, Sparkles } from "lucide-react";
+import { PhotoGroup, ThumbnailData, ExifMetadataDto } from "./types";
 import { PhotoStrip } from "./PhotoStrip";
+import { PreviewViewport } from "./PreviewViewport";
+import { ActionHud } from "./ActionHud";
 
 export default function App() {
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
   const [photoGroups, setPhotoGroups] = useState<PhotoGroup[]>([]);
   const [activeIndex, setActiveIndex] = useState<number>(0);
   const [thumbnails, setThumbnails] = useState<Record<string, ThumbnailData>>({});
+  const [exifCache, setExifCache] = useState<Record<string, ExifMetadataDto>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [bestShotStems, setBestShotStems] = useState<Set<string>>(new Set());
 
@@ -21,6 +24,7 @@ export default function App() {
       setPhotoGroups(groups);
       setActiveIndex(0);
       setThumbnails({});
+      setExifCache({});
 
       // Background thumbnail loading loop
       for (const group of groups) {
@@ -56,7 +60,29 @@ export default function App() {
     }
   };
 
-  // Keyboard navigation: Arrow Left and Arrow Right
+  const activeGroup = photoGroups[activeIndex] ?? null;
+
+  // Load EXIF metadata for active photo
+  useEffect(() => {
+    if (!activeGroup) return;
+
+    if (!exifCache[activeGroup.representative]) {
+      invoke<ExifMetadataDto>("read_exif_metadata", {
+        path: activeGroup.representative,
+      })
+        .then((exif) => {
+          setExifCache((prev) => ({
+            ...prev,
+            [activeGroup.representative]: exif,
+          }));
+        })
+        .catch((err) => {
+          console.error("Failed to read EXIF:", err);
+        });
+    }
+  }, [activeGroup, exifCache]);
+
+  // Keyboard navigation & triage action shortcuts (1, 2, F)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (photoGroups.length === 0) return;
@@ -66,6 +92,18 @@ export default function App() {
         setActiveIndex((prev) => Math.max(0, prev - 1));
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
+        setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1));
+      } else if (e.key === "1") {
+        e.preventDefault();
+        // Keep shortcut: advance to next
+        setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1));
+      } else if (e.key === "2") {
+        e.preventDefault();
+        // Nah shortcut: advance to next
+        setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1));
+      } else if (e.key === "f" || e.key === "F") {
+        e.preventDefault();
+        // Flag shortcut: advance to next
         setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1));
       }
     };
@@ -79,7 +117,6 @@ export default function App() {
     const loadedThumbnails = Object.values(thumbnails);
     if (loadedThumbnails.length === 0) return;
 
-    // Identify items with exceptionally high sharpness scores (> 80.0)
     const bestSet = new Set<string>();
     for (const group of photoGroups) {
       const t = thumbnails[group.representative];
@@ -90,15 +127,12 @@ export default function App() {
     setBestShotStems(bestSet);
   }, [thumbnails, photoGroups]);
 
-  const activeGroup = photoGroups[activeIndex] ?? null;
-  const activeThumb = activeGroup ? thumbnails[activeGroup.representative] : null;
-
   return (
     <div className="flex flex-col h-screen w-screen bg-canvas text-zinc-100 overflow-hidden font-sans">
       {/* Unified Window Titlebar with macOS Traffic Light Spacing */}
       <header
         data-tauri-drag-region
-        className="h-11 bg-panel/85 backdrop-blur-md border-b border-white/[0.08] flex items-center justify-between px-4 select-none shrink-0"
+        className="h-11 bg-panel/85 backdrop-blur-md border-b border-white/[0.08] flex items-center justify-between px-4 select-none shrink-0 z-30"
       >
         {/* Left: macOS traffic lights offset & Title */}
         <div className="flex items-center gap-3 pl-16">
@@ -123,7 +157,7 @@ export default function App() {
           <button
             onClick={handleOpenFolder}
             disabled={isLoading}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium transition-all duration-150 border border-white/[0.06] active:scale-95"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium transition-all duration-150 border border-white/[0.06] active:scale-95 cursor-pointer"
           >
             <FolderOpen className="w-3.5 h-3.5 text-zinc-400" />
             <span>{isLoading ? "Scanning..." : "Open Folder"}</span>
@@ -131,65 +165,23 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Studio Canvas Area */}
-      <main className="flex-1 flex flex-col items-center justify-center p-6 relative bg-canvas overflow-hidden">
+      {/* Main Studio Canvas Viewport */}
+      <main className="flex-1 relative bg-canvas overflow-hidden flex items-center justify-center">
         {photoGroups.length > 0 && activeGroup ? (
-          <div className="flex flex-col items-center justify-center h-full w-full max-w-4xl relative">
-            {/* Quick Navigation Arrows */}
-            <div className="absolute inset-y-0 left-0 flex items-center">
-              <button
-                onClick={() => setActiveIndex((prev) => Math.max(0, prev - 1))}
-                disabled={activeIndex === 0}
-                className="p-2 rounded-full bg-zinc-900/60 hover:bg-zinc-800 border border-white/[0.08] text-zinc-400 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer"
-              >
-                <ChevronLeft className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="absolute inset-y-0 right-0 flex items-center">
-              <button
-                onClick={() => setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1))}
-                disabled={activeIndex === photoGroups.length - 1}
-                className="p-2 rounded-full bg-zinc-900/60 hover:bg-zinc-800 border border-white/[0.08] text-zinc-400 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer"
-              >
-                <ChevronRight className="w-5 h-5" />
-              </button>
-            </div>
+          <>
+            <PreviewViewport
+              filePath={activeGroup.representative}
+              stem={activeGroup.stem}
+              exif={exifCache[activeGroup.representative] ?? null}
+            />
 
-            {/* Photo Preview Card */}
-            <div className="flex flex-col items-center justify-center gap-4 p-4 rounded-xl bg-panel/40 border border-white/[0.06] shadow-2xl">
-              <div className="w-[480px] h-[340px] bg-zinc-950/80 rounded-lg overflow-hidden border border-white/[0.04] flex items-center justify-center relative">
-                {activeThumb ? (
-                  <img
-                    src={activeThumb.data_url}
-                    alt={activeGroup.stem}
-                    className="w-full h-full object-contain"
-                  />
-                ) : (
-                  <ImageIcon className="w-12 h-12 text-zinc-700 animate-pulse" />
-                )}
-              </div>
-
-              {/* Active Photo Info Bar */}
-              <div className="flex items-center justify-between w-full px-2 text-xs font-mono">
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-zinc-200">{activeGroup.stem}</span>
-                  <span className="text-zinc-500 text-[11px]">
-                    ({activeGroup.members.length} {activeGroup.members.length === 1 ? "file" : "files"})
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 text-zinc-400 text-[11px]">
-                  <span>
-                    Photo {activeIndex + 1} of {photoGroups.length}
-                  </span>
-                  {activeThumb && (
-                    <span className="text-emerald-400">
-                      Sharpness: {activeThumb.sharpness.toFixed(1)}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
+            {/* Floating Glass Action HUD */}
+            <ActionHud
+              onKeep={() => setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1))}
+              onNah={() => setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1))}
+              onFlag={() => setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1))}
+            />
+          </>
         ) : selectedFolder ? (
           <div className="flex flex-col items-center justify-center gap-3 p-8 rounded-xl bg-panel/60 border border-white/[0.08] shadow-2xl max-w-md text-center">
             <h2 className="text-sm font-semibold text-zinc-200">No Supported Photos Found</h2>
@@ -235,11 +227,11 @@ export default function App() {
         <div className="flex items-center gap-3">
           <span>Tauri v2 · Native Desktop</span>
           {photoGroups.length > 0 && (
-            <span>Use ← / → arrow keys to navigate</span>
+            <span>Shortcuts: 1 Keep · 2 Nah · F Flag · ⌘+Wheel Zoom · 0 Fit</span>
           )}
         </div>
         <span>
-          {photoGroups.length > 0 ? `${photoGroups.length} Groups Loaded` : "Ready"}
+          {photoGroups.length > 0 ? `Photo ${activeIndex + 1} of ${photoGroups.length}` : "Ready"}
         </span>
       </footer>
     </div>

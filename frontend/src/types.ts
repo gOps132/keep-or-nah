@@ -2,7 +2,7 @@ export interface PhotoGroup {
   stem: string;
   members: string[];
   representative: string;
-  index: usize;
+  index: number;
 }
 
 export interface ThumbnailData {
@@ -13,4 +13,11 @@ export interface ThumbnailData {
   height: number;
 }
 
-export type usize = number;
+export interface ExifMetadataDto {
+  shutter_speed?: string | null;
+  aperture?: string | null;
+  iso?: string | null;
+  focal_length?: string | null;
+  camera_model?: string | null;
+  lens_model?: string | null;
+}
