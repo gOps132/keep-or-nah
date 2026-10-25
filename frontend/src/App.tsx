@@ -1,7 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FolderOpen, Sparkles, Undo2, CheckSquare } from "lucide-react";
-import { PhotoGroup, ThumbnailData, ExifMetadataDto, BatchSummaryDto, CommitResultDto } from "./types";
+import {
+  PhotoGroup,
+  ThumbnailData,
+  ExifMetadataDto,
+  BatchSummaryDto,
+  CommitResultDto,
+  BurstCluster,
+  PhotoBurstInfo,
+} from "./types";
 import { ThumbnailStrip } from "./ThumbnailStrip";
 import { PreviewViewport } from "./PreviewViewport";
 import { ActionHud } from "./ActionHud";
@@ -16,6 +24,7 @@ export default function App() {
   const [stagedDecisions, setStagedDecisions] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [bestShotStems, setBestShotStems] = useState<Set<string>>(new Set());
+  const [burstClusterMap, setBurstClusterMap] = useState<Record<string, string>>({});
 
   // Review modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -63,6 +72,53 @@ export default function App() {
       setIsLoading(false);
     }
   }, []);
+
+  // Compute burst clusters and relative Best Shot whenever thumbnails update
+  useEffect(() => {
+    const thumbEntries = Object.values(thumbnails);
+    if (thumbEntries.length === 0) {
+      setBurstClusterMap({});
+      setBestShotStems(new Set());
+      return;
+    }
+
+    const burstPhotos: PhotoBurstInfo[] = thumbEntries
+      .filter((t) => typeof t.image_hash === "number" && typeof t.timestamp === "number")
+      .map((t) => ({
+        path: t.path,
+        timestamp: t.timestamp!,
+        image_hash: t.image_hash!,
+        sharpness: t.sharpness,
+      }));
+
+    if (burstPhotos.length === 0) return;
+
+    invoke<BurstCluster[]>("compute_burst_clusters", { photos: burstPhotos })
+      .then((clusters) => {
+        const tagMap: Record<string, string> = {};
+        const bestShots = new Set<string>();
+
+        let burstNum = 1;
+        for (const cluster of clusters) {
+          if (cluster.is_burst) {
+            const tag = `B${burstNum++}`;
+            for (const p of cluster.photos) {
+              tagMap[p.path] = tag;
+            }
+            const bestGroup = photoGroups.find((g) => g.representative === cluster.best_shot);
+            if (bestGroup) {
+              bestShots.add(bestGroup.stem);
+            }
+          }
+        }
+
+        setBurstClusterMap(tagMap);
+        setBestShotStems(bestShots);
+      })
+      .catch((err) => {
+        console.error("Failed to compute burst clusters:", err);
+      });
+  }, [thumbnails, photoGroups]);
 
   const handleOpenFolder = async () => {
     try {
@@ -357,6 +413,7 @@ export default function App() {
         stagedDecisions={stagedDecisions}
         onSelect={(idx) => setActiveIndex(idx)}
         bestShotStems={bestShotStems}
+        burstClusterMap={burstClusterMap}
       />
 
       {/* Review & Batch Commit Modal Sheet */}

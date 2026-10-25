@@ -12,8 +12,24 @@ export interface ThumbnailData {
   path: string;
   data_url: string;
   sharpness: number;
+  image_hash?: number;
+  timestamp?: number;
   width: number;
   height: number;
+}
+
+export interface PhotoBurstInfo {
+  path: string;
+  timestamp: number;
+  image_hash: number;
+  sharpness: number;
+}
+
+export interface BurstCluster {
+  id: string;
+  photos: PhotoBurstInfo[];
+  best_shot: string;
+  is_burst: boolean;
 }
 
 export interface ExifMetadataDto {

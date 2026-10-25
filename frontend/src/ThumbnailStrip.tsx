@@ -9,6 +9,7 @@ interface ThumbnailStripProps {
   stagedDecisions: Record<string, string>;
   onSelect: (index: number) => void;
   bestShotStems?: Set<string>;
+  burstClusterMap?: Record<string, string>;
 }
 
 export const ThumbnailStrip: React.FC<ThumbnailStripProps> = ({
@@ -18,6 +19,7 @@ export const ThumbnailStrip: React.FC<ThumbnailStripProps> = ({
   stagedDecisions,
   onSelect,
   bestShotStems = new Set(),
+  burstClusterMap = {},
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const activeItemRef = useRef<HTMLButtonElement>(null);
@@ -46,6 +48,7 @@ export const ThumbnailStrip: React.FC<ThumbnailStripProps> = ({
         const isActive = idx === activeIndex;
         const thumb = thumbnails[group.representative];
         const isBestShot = bestShotStems.has(group.stem);
+        const burstTag = burstClusterMap[group.stem] || burstClusterMap[group.representative];
         const decision = stagedDecisions[group.stem];
 
         return (
@@ -59,9 +62,21 @@ export const ThumbnailStrip: React.FC<ThumbnailStripProps> = ({
                 : "bg-zinc-900/60 border-white/[0.06] hover:bg-zinc-800/60 hover:border-white/[0.12]"
             }`}
           >
+            {/* Burst Cluster Tag (Top Left) */}
+            {burstTag && (
+              <span
+                data-testid={`burst-tag-${group.stem}`}
+                title={`Burst Cluster ${burstTag}`}
+                className="absolute top-1 left-1 z-10 px-1 py-0.2 rounded bg-indigo-600/90 text-white text-[8px] font-bold tracking-tight shadow"
+              >
+                {burstTag}
+              </span>
+            )}
+
             {/* Best Shot Badge (Top Right) */}
             {isBestShot && (
               <span
+                data-testid={`best-shot-badge-${group.stem}`}
                 title="Best Shot in Burst (High Sharpness)"
                 className="absolute top-1 right-1 z-10 w-4 h-4 rounded-full bg-amber-500/90 text-zinc-950 flex items-center justify-center shadow"
               >

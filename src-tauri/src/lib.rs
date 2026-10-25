@@ -1,3 +1,4 @@
+pub mod burst;
 pub mod session;
 
 pub mod commands {
@@ -12,6 +13,7 @@ pub mod commands {
     use tauri::{AppHandle, State};
     use tauri_plugin_dialog::DialogExt;
 
+    use crate::burst::{BurstCluster, BurstClusterer, PhotoBurstInfo};
     use crate::session::{BatchSummaryDto, CommitResultDto, Decision, SessionState};
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,6 +29,8 @@ pub mod commands {
         pub path: String,
         pub data_url: String,
         pub sharpness: f64,
+        pub image_hash: u64,
+        pub timestamp: f64,
         pub width: u32,
         pub height: u32,
     }
@@ -193,11 +197,19 @@ pub mod commands {
             keep_or_nah_core::image_loader::PreviewStage::Fast,
         )?;
 
-        let sharpness = keep_or_nah_core::analysis::compute_sharpness(
+        let sharpness = keep_or_nah_core::analysis::sharpness_score_f64(
             &thumbnail.rgba,
             thumbnail.width,
             thumbnail.height,
         );
+
+        let image_hash = keep_or_nah_core::analysis::difference_hash_64(
+            &thumbnail.rgba,
+            thumbnail.width,
+            thumbnail.height,
+        );
+
+        let timestamp = extract_timestamp(file_path);
 
         let mut jpeg_bytes = Vec::new();
         let mut cursor = Cursor::new(&mut jpeg_bytes);
@@ -216,10 +228,55 @@ pub mod commands {
         Ok(ThumbnailDto {
             path,
             data_url,
-            sharpness: sharpness as f64,
+            sharpness,
+            image_hash,
+            timestamp,
             width: thumbnail.width,
             height: thumbnail.height,
         })
+    }
+
+    fn extract_timestamp(path: &Path) -> f64 {
+        if let Ok(file) = std::fs::File::open(path) {
+            let mut reader = std::io::BufReader::new(file);
+            if let Ok(exif) = exif::Reader::new().read_from_container(&mut reader) {
+                if let Some(field) = exif.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY) {
+                    let val = field.display_value().to_string();
+                    let parts: Vec<&str> = val.split(|c| c == ' ' || c == ':' || c == '-').collect();
+                    if parts.len() >= 6 {
+                        if let (Ok(y), Ok(m), Ok(d), Ok(h), Ok(min), Ok(s)) = (
+                            parts[0].parse::<i32>(),
+                            parts[1].parse::<u32>(),
+                            parts[2].parse::<u32>(),
+                            parts[3].parse::<u32>(),
+                            parts[4].parse::<u32>(),
+                            parts[5].parse::<u32>(),
+                        ) {
+                            let days = (y - 1970) as f64 * 365.25 + (m as f64 - 1.0) * 30.4375 + d as f64;
+                            return days * 86400.0 + h as f64 * 3600.0 + min as f64 * 60.0 + s as f64;
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Ok(meta) = std::fs::metadata(path) {
+            if let Ok(modified) = meta.modified() {
+                if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
+                    return dur.as_secs_f64();
+                }
+            }
+        }
+        0.0
+    }
+
+    /// Computes burst clusters and identifies the relative Best Shot in each cluster.
+    #[tauri::command]
+    pub fn compute_burst_clusters(
+        photos: Vec<PhotoBurstInfo>,
+    ) -> Result<Vec<BurstCluster>, String> {
+        let clusterer = BurstClusterer::default();
+        Ok(clusterer.cluster(photos))
     }
 
     /// Extracts camera telemetry from image EXIF metadata.
@@ -282,6 +339,7 @@ pub fn run() {
             commands::get_batch_summary,
             commands::commit_batch,
             commands::get_thumbnail,
+            commands::compute_burst_clusters,
             commands::read_exif_metadata,
             commands::check_core_status
         ])
@@ -291,7 +349,8 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::commands::{check_core_status, read_exif_metadata};
+    use super::burst::PhotoBurstInfo;
+    use super::commands::{check_core_status, compute_burst_clusters, read_exif_metadata};
     use tempfile::TempDir;
 
     #[test]
@@ -299,6 +358,27 @@ mod tests {
         let status = check_core_status();
         assert!(status.is_ok());
         assert_eq!(status.unwrap(), "keep_or_nah_core linked and operational");
+    }
+
+    #[test]
+    fn test_compute_burst_clusters_command() {
+        let p1 = PhotoBurstInfo {
+            path: "shot1.jpg".to_string(),
+            timestamp: 10.0,
+            image_hash: 0xAAAA,
+            sharpness: 50.0,
+        };
+        let p2 = PhotoBurstInfo {
+            path: "shot2.jpg".to_string(),
+            timestamp: 10.5,
+            image_hash: 0xAAAA,
+            sharpness: 90.0,
+        };
+
+        let clusters = compute_burst_clusters(vec![p1, p2]).unwrap();
+        assert_eq!(clusters.len(), 1);
+        assert!(clusters[0].is_burst);
+        assert_eq!(clusters[0].best_shot, "shot2.jpg");
     }
 
     #[test]
