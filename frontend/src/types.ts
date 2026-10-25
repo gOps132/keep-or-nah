@@ -1,3 +1,6 @@
+export type ActionMode = "move" | "copy";
+export type TriageDecision = "keep" | "nah" | "flag";
+
 export interface PhotoGroup {
   stem: string;
   members: string[];

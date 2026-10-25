@@ -10,6 +10,34 @@ pub enum Decision {
     Flag,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ActionMode {
+    Move,
+    Copy,
+}
+
+impl ActionMode {
+    pub fn is_move(&self) -> bool {
+        matches!(self, ActionMode::Move)
+    }
+
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "move" => Some(ActionMode::Move),
+            "copy" => Some(ActionMode::Copy),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StagedCounts {
+    pub keep: usize,
+    pub nah: usize,
+    pub flag: usize,
+}
+
 impl Decision {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -66,7 +94,7 @@ pub struct SessionState {
     pub source_dir: Option<String>,
     pub decisions: HashMap<String, Decision>,
     pub group_members: HashMap<String, Vec<PathBuf>>,
-    pub undo_stack: Vec<StagedDecisionRecord>,
+    pub undo_journal: Vec<StagedDecisionRecord>,
 }
 
 impl SessionState {
@@ -78,7 +106,7 @@ impl SessionState {
         self.source_dir = Some(dir);
         self.decisions.clear();
         self.group_members.clear();
-        self.undo_stack.clear();
+        self.undo_journal.clear();
     }
 
     pub fn register_groups(&mut self, groups: &[crate::commands::PhotoGroupDto]) {
@@ -91,12 +119,12 @@ impl SessionState {
 
     pub fn stage_decision(&mut self, stem: String, decision: Decision) {
         self.decisions.insert(stem.clone(), decision);
-        self.undo_stack.push(StagedDecisionRecord { stem, decision });
+        self.undo_journal.push(StagedDecisionRecord { stem, decision });
     }
 
     pub fn undo_last_decision(&mut self) -> Option<String> {
-        if let Some(record) = self.undo_stack.pop() {
-            let previous = self.undo_stack.iter().rev().find(|r| r.stem == record.stem);
+        if let Some(record) = self.undo_journal.pop() {
+            let previous = self.undo_journal.iter().rev().find(|r| r.stem == record.stem);
             match previous {
                 Some(prev) => {
                     self.decisions.insert(record.stem.clone(), prev.decision);
@@ -111,18 +139,16 @@ impl SessionState {
         }
     }
 
-    pub fn get_staged_counts(&self) -> (usize, usize, usize) {
-        let mut keep = 0;
-        let mut nah = 0;
-        let mut flag = 0;
+    pub fn get_staged_counts(&self) -> StagedCounts {
+        let mut counts = StagedCounts::default();
         for d in self.decisions.values() {
             match d {
-                Decision::Keep => keep += 1,
-                Decision::Nah => nah += 1,
-                Decision::Flag => flag += 1,
+                Decision::Keep => counts.keep += 1,
+                Decision::Nah => counts.nah += 1,
+                Decision::Flag => counts.flag += 1,
             }
         }
-        (keep, nah, flag)
+        counts
     }
 
     pub fn get_decisions_map(&self) -> HashMap<String, String> {
@@ -134,10 +160,10 @@ impl SessionState {
 
     pub fn calculate_batch_summary(&self) -> BatchSummaryDto {
         let mut summary = BatchSummaryDto::default();
-        let (keep, nah, flag) = self.get_staged_counts();
-        summary.keep_count = keep;
-        summary.nah_count = nah;
-        summary.flag_count = flag;
+        let counts = self.get_staged_counts();
+        summary.keep_count = counts.keep;
+        summary.nah_count = counts.nah;
+        summary.flag_count = counts.flag;
         summary.total_groups = self.decisions.len();
 
         for (stem, decision) in &self.decisions {
@@ -169,7 +195,7 @@ impl SessionState {
         &mut self,
         keep_dir_override: Option<String>,
         nah_dir_override: Option<String>,
-        action_mode: &str, // "move" or "copy"
+        action_mode: ActionMode,
     ) -> Result<CommitResultDto, String> {
         let source_root = self
             .source_dir
@@ -187,7 +213,7 @@ impl SessionState {
         let mut committed_stems = Vec::new();
         let mut errors = Vec::new();
 
-        let is_move = action_mode == "move";
+        let is_move = action_mode.is_move();
 
         for (stem, decision) in &self.decisions {
             let target_dir = match decision {
@@ -276,7 +302,7 @@ impl SessionState {
             self.decisions.remove(stem);
             self.group_members.remove(stem);
         }
-        self.undo_stack.retain(|r| !committed_stems.contains(&r.stem));
+        self.undo_journal.retain(|r| !committed_stems.contains(&r.stem));
 
         let file_count = executed_ops.len();
         Ok(CommitResultDto {
@@ -299,24 +325,24 @@ mod tests {
 
         session.stage_decision("DSC_001".to_string(), Decision::Keep);
         assert_eq!(session.decisions.get("DSC_001"), Some(&Decision::Keep));
-        assert_eq!(session.get_staged_counts(), (1, 0, 0));
+        assert_eq!(session.get_staged_counts(), StagedCounts { keep: 1, nah: 0, flag: 0 });
 
         session.stage_decision("DSC_002".to_string(), Decision::Nah);
-        assert_eq!(session.get_staged_counts(), (1, 1, 0));
+        assert_eq!(session.get_staged_counts(), StagedCounts { keep: 1, nah: 1, flag: 0 });
 
         session.stage_decision("DSC_001".to_string(), Decision::Flag);
         assert_eq!(session.decisions.get("DSC_001"), Some(&Decision::Flag));
-        assert_eq!(session.get_staged_counts(), (0, 1, 1));
+        assert_eq!(session.get_staged_counts(), StagedCounts { keep: 0, nah: 1, flag: 1 });
 
         let undone = session.undo_last_decision();
         assert_eq!(undone, Some("DSC_001".to_string()));
         assert_eq!(session.decisions.get("DSC_001"), Some(&Decision::Keep));
-        assert_eq!(session.get_staged_counts(), (1, 1, 0));
+        assert_eq!(session.get_staged_counts(), StagedCounts { keep: 1, nah: 1, flag: 0 });
 
         let undone2 = session.undo_last_decision();
         assert_eq!(undone2, Some("DSC_002".to_string()));
         assert_eq!(session.decisions.get("DSC_002"), None);
-        assert_eq!(session.get_staged_counts(), (1, 0, 0));
+        assert_eq!(session.get_staged_counts(), StagedCounts { keep: 1, nah: 0, flag: 0 });
     }
 
     #[test]
@@ -338,7 +364,7 @@ mod tests {
         session.stage_decision("A01".to_string(), Decision::Keep);
         session.stage_decision("A02".to_string(), Decision::Nah);
 
-        let result = session.commit_staged_batch(None, None, "move").unwrap();
+        let result = session.commit_staged_batch(None, None, ActionMode::Move).unwrap();
         assert_eq!(result.successful_groups, 2);
         assert_eq!(result.successful_files, 2);
 

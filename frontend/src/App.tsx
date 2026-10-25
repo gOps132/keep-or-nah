@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FolderOpen, Sparkles, Undo2, CheckSquare } from "lucide-react";
 import { PhotoGroup, ThumbnailData, ExifMetadataDto, BatchSummaryDto, CommitResultDto } from "./types";
-import { PhotoStrip } from "./PhotoStrip";
+import { ThumbnailStrip } from "./ThumbnailStrip";
 import { PreviewViewport } from "./PreviewViewport";
 import { ActionHud } from "./ActionHud";
 import { ReviewCommitModal } from "./ReviewCommitModal";
@@ -350,7 +350,7 @@ export default function App() {
       </main>
 
       {/* Virtualized Horizontal Thumbnail Strip */}
-      <PhotoStrip
+      <ThumbnailStrip
         groups={photoGroups}
         activeIndex={activeIndex}
         thumbnails={thumbnails}

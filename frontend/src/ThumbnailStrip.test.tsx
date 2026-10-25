@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { PhotoStrip } from "./PhotoStrip";
+import { ThumbnailStrip } from "./ThumbnailStrip";
 import { PhotoGroup } from "./types";
 
 const mockGroups: PhotoGroup[] = [
@@ -8,11 +8,11 @@ const mockGroups: PhotoGroup[] = [
   { stem: "DSC_1002", members: ["DSC_1002.JPG", "DSC_1002.RAW"], representative: "DSC_1002.JPG", index: 1 },
 ];
 
-describe("PhotoStrip Component", () => {
+describe("ThumbnailStrip Component", () => {
   it("renders all photo groups in the strip and handles selection", () => {
     let selected = 0;
     render(
-      <PhotoStrip
+      <ThumbnailStrip
         groups={mockGroups}
         activeIndex={0}
         thumbnails={{}}

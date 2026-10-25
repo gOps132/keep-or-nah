@@ -163,8 +163,11 @@ pub mod commands {
             .lock()
             .map_err(|_| "Failed to lock session state".to_string())?;
 
-        let mode = action_mode.unwrap_or_else(|| "move".to_string());
-        state.commit_staged_batch(keep_dir, nah_dir, &mode)
+        let mode = action_mode
+            .as_deref()
+            .and_then(crate::session::ActionMode::from_str_opt)
+            .unwrap_or(crate::session::ActionMode::Move);
+        state.commit_staged_batch(keep_dir, nah_dir, mode)
     }
 
     /// Generates an oriented, scaled thumbnail for a photo and computes its sharpness score.

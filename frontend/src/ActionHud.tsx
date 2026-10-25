@@ -32,7 +32,7 @@ export const ActionHud: React.FC<ActionHudProps> = ({
       <button
         onClick={onNah}
         disabled={disabled}
-        title="Nah / Discard this photo group (Key: 2)"
+        title="Nah this photo group (Key: 2)"
         className="flex items-center gap-2 px-4 py-2 rounded-full bg-nah hover:bg-red-600 active:scale-95 text-white text-xs font-semibold shadow-md transition-all duration-150 disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
       >
         <X className="w-4 h-4 stroke-[2.5]" />
