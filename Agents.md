@@ -20,6 +20,10 @@ Default triage labels. See `docs/agents/triage-labels.md`.
 
 Single-context (`CONTEXT.md` and `docs/adr/` at the repo root). See `docs/agents/domain.md`.
 
+### Two-axis code review
+
+Standards and Spec reviews run in parallel before merging to `main`. See `.agents/skills/code-review/SKILL.md`.
+
 ## Verification pipeline
 
 **Nothing is done until `scripts/verify.sh` passes.** See `docs/agents/pipeline.md`
@@ -50,9 +54,10 @@ Per-role hooks, one command per role:
 - **Tester** — owns `scripts/agent/test.sh`. Produces evidence: the exact
   commands run and their real output. Never edits production code to make a
   test pass; reports the failure instead.
-- **Reviewer** — runs `scripts/agent/verify.sh` in full, reads the diff, and
-  checks the change against the ticket's acceptance criteria. A reviewer who
-  has not seen the gate pass does not approve.
+- **Reviewer** — runs `scripts/agent/verify.sh` in full, executes the two-axis
+  code review (Standards + Spec), reads the diff, and checks the change
+  against the ticket's acceptance criteria. A reviewer who has not seen the
+  gate pass does not approve.
 
 ### Rules
 
@@ -66,3 +71,5 @@ Per-role hooks, one command per role:
 4. One ticket, one close. See `docs/agents/feature-tickets.md`.
 5. Use the domain vocabulary from `CONTEXT.md` in ticket titles, commit
    messages, test names, and code. See `docs/agents/domain.md`.
+6. Two-axis code review before completion. Every feature or refactor must run
+   the two-axis review (Standards + Spec) to prevent drift and fragmentation.
