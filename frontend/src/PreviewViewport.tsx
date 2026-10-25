@@ -1,19 +1,41 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { convertFileSrc, isTauri } from "@tauri-apps/api/core";
 import { ExifMetadataDto } from "./types";
-import { ZoomIn, ZoomOut, Maximize2, Camera } from "lucide-react";
+import { ZoomIn, ZoomOut, Maximize2, Camera, Star } from "lucide-react";
 
-interface PreviewViewportProps {
+export type ViewMode = "1-up" | "2-up";
+
+export interface PhotoViewItem {
   filePath: string;
   stem: string;
   exif: ExifMetadataDto | null;
+  isBestShot?: boolean;
+  burstTag?: string;
+}
+
+interface PreviewViewportProps {
+  filePath?: string;
+  stem?: string;
+  exif?: ExifMetadataDto | null;
+  viewMode?: ViewMode;
+  primary?: PhotoViewItem;
+  comparison?: PhotoViewItem | null;
 }
 
 export const PreviewViewport: React.FC<PreviewViewportProps> = ({
   filePath,
   stem,
   exif,
+  viewMode = "1-up",
+  primary,
+  comparison,
 }) => {
+  const activePrimary: PhotoViewItem = primary || {
+    filePath: filePath || "",
+    stem: stem || "",
+    exif: exif || null,
+  };
+
   const [zoom, setZoom] = useState<number>(1.0);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
@@ -28,9 +50,9 @@ export const PreviewViewport: React.FC<PreviewViewportProps> = ({
   // Reset zoom on photo change
   useEffect(() => {
     resetView();
-  }, [filePath, resetView]);
+  }, [activePrimary.filePath, comparison?.filePath, resetView]);
 
-  // Handle wheel zoom and keyboard shortcut '0'
+  // Handle keyboard shortcut '0' for reset view
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "0") {
@@ -49,7 +71,6 @@ export const PreviewViewport: React.FC<PreviewViewportProps> = ({
       const delta = e.deltaY < 0 ? 1.15 : 0.85;
       setZoom((prev) => Math.min(Math.max(prev * delta, 0.25), 6.0));
     } else if (zoom > 1.0) {
-      // Pan with two-finger trackpad swipe when zoomed
       setPan((prev) => ({
         x: prev.x - e.deltaX,
         y: prev.y - e.deltaY,
@@ -77,7 +98,12 @@ export const PreviewViewport: React.FC<PreviewViewportProps> = ({
     setIsDragging(false);
   };
 
-  const imageSrc = convertFileSrc(filePath);
+  const toSrc = (path: string) => {
+    if (!path) return "";
+    return isTauri() ? convertFileSrc(path) : path;
+  };
+
+  const isSplit = viewMode === "2-up" && comparison != null;
 
   return (
     <div
@@ -87,6 +113,7 @@ export const PreviewViewport: React.FC<PreviewViewportProps> = ({
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
+      data-testid="preview-viewport-container"
       className="relative w-full h-full flex items-center justify-center overflow-hidden bg-canvas select-none cursor-grab active:cursor-grabbing"
     >
       {/* Zoom HUD Controls */}
@@ -94,7 +121,7 @@ export const PreviewViewport: React.FC<PreviewViewportProps> = ({
         <button
           onClick={() => setZoom((prev) => Math.max(prev / 1.25, 0.25))}
           title="Zoom Out (⌘ -)"
-          className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition"
+          className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition cursor-pointer"
         >
           <ZoomOut className="w-4 h-4" />
         </button>
@@ -104,46 +131,147 @@ export const PreviewViewport: React.FC<PreviewViewportProps> = ({
         <button
           onClick={() => setZoom((prev) => Math.min(prev * 1.25, 6.0))}
           title="Zoom In (⌘ +)"
-          className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition"
+          className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition cursor-pointer"
         >
           <ZoomIn className="w-4 h-4" />
         </button>
         <button
           onClick={resetView}
           title="Fit to Window (0)"
-          className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition"
+          className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition cursor-pointer"
         >
           <Maximize2 className="w-3.5 h-3.5" />
         </button>
       </div>
 
-      {/* EXIF Metadata Telemetry Pill */}
-      {exif && (exif.shutter_speed || exif.aperture || exif.iso || exif.camera_model) && (
-        <div className="absolute top-4 left-4 z-20 flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-zinc-950/70 backdrop-blur-md border border-white/[0.08] shadow-lg text-[11px] font-mono text-zinc-300">
-          <Camera className="w-3.5 h-3.5 text-accent" />
-          {exif.camera_model && <span className="text-zinc-200 font-semibold">{exif.camera_model}</span>}
-          {exif.shutter_speed && <span>{exif.shutter_speed}</span>}
-          {exif.aperture && <span className="text-blue-400">{exif.aperture}</span>}
-          {exif.iso && <span className="text-amber-400">{exif.iso}</span>}
-          {exif.focal_length && <span>{exif.focal_length}</span>}
-        </div>
-      )}
+      {/* Viewport Content */}
+      {isSplit ? (
+        <div className="w-full h-full grid grid-cols-2 divide-x divide-white/[0.08]">
+          {/* Left Split Pane: Active Photo */}
+          <div className="relative w-full h-full overflow-hidden flex items-center justify-center">
+            <div className="absolute top-4 left-4 z-20 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-950/80 backdrop-blur-md border border-white/[0.08] shadow-lg text-[11px] font-mono text-zinc-300">
+              <span className="px-1.5 py-0.5 rounded bg-accent/20 text-accent font-semibold text-[10px]">
+                Active
+              </span>
+              <span className="font-semibold text-zinc-200">{activePrimary.stem}</span>
+              {activePrimary.burstTag && (
+                <span className="px-1 py-0.2 rounded bg-indigo-600/80 text-white text-[9px] font-bold">
+                  {activePrimary.burstTag}
+                </span>
+              )}
+              {activePrimary.isBestShot && (
+                <span className="text-amber-400 flex items-center gap-0.5 text-[10px] font-semibold">
+                  <Star className="w-3 h-3 fill-current" />
+                  Best Shot
+                </span>
+              )}
+              {activePrimary.exif && activePrimary.exif.camera_model && (
+                <span className="text-zinc-400 border-l border-white/10 pl-2">
+                  {activePrimary.exif.camera_model}
+                </span>
+              )}
+            </div>
 
-      {/* Main Image Viewport with 60fps transform */}
-      <div
-        style={{
-          transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
-          transition: isDragging ? "none" : "transform 0.08s ease-out",
-        }}
-        className="w-full h-full flex items-center justify-center p-8 pointer-events-none will-change-transform"
-      >
-        <img
-          src={imageSrc}
-          alt={stem}
-          className="max-w-full max-h-full object-contain rounded shadow-2xl"
-          draggable={false}
-        />
-      </div>
+            <div
+              data-testid="split-left-pane"
+              style={{
+                transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
+                transition: isDragging ? "none" : "transform 0.08s ease-out",
+              }}
+              className="w-full h-full flex items-center justify-center p-6 pointer-events-none will-change-transform"
+            >
+              <img
+                src={toSrc(activePrimary.filePath)}
+                alt={activePrimary.stem}
+                className="max-w-full max-h-full object-contain rounded shadow-2xl"
+                draggable={false}
+              />
+            </div>
+          </div>
+
+          {/* Right Split Pane: Comparison Target Photo */}
+          <div className="relative w-full h-full overflow-hidden flex items-center justify-center">
+            <div className="absolute top-4 left-4 z-20 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-950/80 backdrop-blur-md border border-white/[0.08] shadow-lg text-[11px] font-mono text-zinc-300">
+              <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-semibold text-[10px]">
+                {comparison.isBestShot ? "★ Best Shot" : "Compare"}
+              </span>
+              <span className="font-semibold text-zinc-200">{comparison.stem}</span>
+              {comparison.burstTag && (
+                <span className="px-1 py-0.2 rounded bg-indigo-600/80 text-white text-[9px] font-bold">
+                  {comparison.burstTag}
+                </span>
+              )}
+              {comparison.exif && comparison.exif.camera_model && (
+                <span className="text-zinc-400 border-l border-white/10 pl-2">
+                  {comparison.exif.camera_model}
+                </span>
+              )}
+            </div>
+
+            <div
+              data-testid="split-right-pane"
+              style={{
+                transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
+                transition: isDragging ? "none" : "transform 0.08s ease-out",
+              }}
+              className="w-full h-full flex items-center justify-center p-6 pointer-events-none will-change-transform"
+            >
+              <img
+                src={toSrc(comparison.filePath)}
+                alt={comparison.stem}
+                className="max-w-full max-h-full object-contain rounded shadow-2xl"
+                draggable={false}
+              />
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* Standard 1-Up Single Pane Viewport */
+        <>
+          {activePrimary.exif &&
+            (activePrimary.exif.shutter_speed ||
+              activePrimary.exif.aperture ||
+              activePrimary.exif.iso ||
+              activePrimary.exif.camera_model) && (
+              <div className="absolute top-4 left-4 z-20 flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-zinc-950/70 backdrop-blur-md border border-white/[0.08] shadow-lg text-[11px] font-mono text-zinc-300">
+                <Camera className="w-3.5 h-3.5 text-accent" />
+                {activePrimary.exif.camera_model && (
+                  <span className="text-zinc-200 font-semibold">
+                    {activePrimary.exif.camera_model}
+                  </span>
+                )}
+                {activePrimary.exif.shutter_speed && (
+                  <span>{activePrimary.exif.shutter_speed}</span>
+                )}
+                {activePrimary.exif.aperture && (
+                  <span className="text-blue-400">{activePrimary.exif.aperture}</span>
+                )}
+                {activePrimary.exif.iso && (
+                  <span className="text-amber-400">{activePrimary.exif.iso}</span>
+                )}
+                {activePrimary.exif.focal_length && (
+                  <span>{activePrimary.exif.focal_length}</span>
+                )}
+              </div>
+            )}
+
+          <div
+            data-testid="single-pane"
+            style={{
+              transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
+              transition: isDragging ? "none" : "transform 0.08s ease-out",
+            }}
+            className="w-full h-full flex items-center justify-center p-8 pointer-events-none will-change-transform"
+          >
+            <img
+              src={toSrc(activePrimary.filePath)}
+              alt={activePrimary.stem}
+              className="max-w-full max-h-full object-contain rounded shadow-2xl"
+              draggable={false}
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 };

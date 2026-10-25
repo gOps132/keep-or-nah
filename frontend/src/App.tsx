@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { FolderOpen, Sparkles, Undo2, CheckSquare } from "lucide-react";
+import { FolderOpen, Sparkles, Undo2, CheckSquare, Square, Columns2 } from "lucide-react";
 import {
   PhotoGroup,
   ThumbnailData,
@@ -12,7 +12,7 @@ import {
   PhotoBurstInfo,
 } from "./types";
 import { ThumbnailStrip } from "./ThumbnailStrip";
-import { PreviewViewport } from "./PreviewViewport";
+import { PreviewViewport, ViewMode } from "./PreviewViewport";
 import { ActionHud } from "./ActionHud";
 import { ReviewCommitModal } from "./ReviewCommitModal";
 
@@ -26,6 +26,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [bestShotStems, setBestShotStems] = useState<Set<string>>(new Set());
   const [burstClusterMap, setBurstClusterMap] = useState<Record<string, string>>({});
+  const [viewMode, setViewMode] = useState<ViewMode>("1-up");
 
   // Review modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -275,6 +276,9 @@ export default function App() {
       } else if (e.key === "f" || e.key === "F") {
         e.preventDefault();
         handleStageDecision("flag");
+      } else if (e.key === "c" || e.key === "C") {
+        e.preventDefault();
+        setViewMode((prev) => (prev === "1-up" ? "2-up" : "1-up"));
       }
     };
 
@@ -282,20 +286,54 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [photoGroups.length, stagedDecisions, isModalOpen, handleStageDecision, handleUndo, handleOpenReviewModal]);
 
-  // Determine best shots based on sharpness in clusters
-  useEffect(() => {
-    const loadedThumbnails = Object.values(thumbnails);
-    if (loadedThumbnails.length === 0) return;
+  // Resolve comparison photo in 2-Up mode
+  const comparisonGroup = (() => {
+    if (!activeGroup || photoGroups.length < 2) return null;
 
-    const bestSet = new Set<string>();
-    for (const group of photoGroups) {
-      const t = thumbnails[group.representative];
-      if (t && t.sharpness > 75.0) {
-        bestSet.add(group.stem);
+    const activeBurstTag =
+      burstClusterMap[activeGroup.representative] || burstClusterMap[activeGroup.stem];
+    if (activeBurstTag) {
+      // Find other photos in the same burst cluster
+      const clusterMembers = photoGroups.filter(
+        (g) =>
+          (burstClusterMap[g.representative] === activeBurstTag ||
+            burstClusterMap[g.stem] === activeBurstTag) &&
+          g.stem !== activeGroup.stem
+      );
+
+      if (clusterMembers.length > 0) {
+        // Prefer the Best Shot member in the cluster
+        const bestShotMember = clusterMembers.find((g) => bestShotStems.has(g.stem));
+        return bestShotMember || clusterMembers[0];
       }
     }
-    setBestShotStems(bestSet);
-  }, [thumbnails, photoGroups]);
+
+    // Default to adjacent photo
+    return photoGroups[activeIndex + 1] || photoGroups[activeIndex - 1] || null;
+  })();
+
+  const primaryViewItem = activeGroup
+    ? {
+        filePath: activeGroup.representative,
+        stem: activeGroup.stem,
+        exif: exifCache[activeGroup.representative] ?? null,
+        isBestShot: bestShotStems.has(activeGroup.stem),
+        burstTag:
+          burstClusterMap[activeGroup.representative] || burstClusterMap[activeGroup.stem],
+      }
+    : undefined;
+
+  const comparisonViewItem = comparisonGroup
+    ? {
+        filePath: comparisonGroup.representative,
+        stem: comparisonGroup.stem,
+        exif: exifCache[comparisonGroup.representative] ?? null,
+        isBestShot: bestShotStems.has(comparisonGroup.stem),
+        burstTag:
+          burstClusterMap[comparisonGroup.representative] ||
+          burstClusterMap[comparisonGroup.stem],
+      }
+    : null;
 
   const totalStaged = Object.keys(stagedDecisions).length;
   const keepCount = Object.values(stagedDecisions).filter((d) => d === "keep").length;
@@ -326,8 +364,39 @@ export default function App() {
           )}
         </div>
 
-        {/* Right: Staged Counts, Undo, Review Batch, and Actions */}
+        {/* Right: View Mode, Staged Counts, Undo, Review Batch, and Actions */}
         <div className="flex items-center gap-2">
+          {photoGroups.length > 1 && (
+            <div className="flex items-center p-0.5 rounded-lg bg-zinc-900 border border-white/[0.08]">
+              <button
+                data-testid="view-mode-1up"
+                onClick={() => setViewMode("1-up")}
+                title="1-Up Single Viewport"
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition cursor-pointer ${
+                  viewMode === "1-up"
+                    ? "bg-zinc-800 text-white shadow-sm"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                <Square className="w-3.5 h-3.5" />
+                <span>1-Up</span>
+              </button>
+              <button
+                data-testid="view-mode-2up"
+                onClick={() => setViewMode("2-up")}
+                title="2-Up Split Comparison Viewport (C)"
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition cursor-pointer ${
+                  viewMode === "2-up"
+                    ? "bg-zinc-800 text-white shadow-sm"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                <Columns2 className="w-3.5 h-3.5" />
+                <span>2-Up Compare</span>
+              </button>
+            </div>
+          )}
+
           {totalStaged > 0 && (
             <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-zinc-900 border border-white/[0.08] text-xs font-mono">
               <span className="text-emerald-400 font-semibold">{keepCount} Keep</span>
@@ -379,6 +448,9 @@ export default function App() {
               filePath={activeGroup.representative}
               stem={activeGroup.stem}
               exif={exifCache[activeGroup.representative] ?? null}
+              viewMode={viewMode}
+              primary={primaryViewItem}
+              comparison={comparisonViewItem}
             />
 
             {/* Floating Glass Action HUD */}
@@ -443,7 +515,7 @@ export default function App() {
         <div className="flex items-center gap-3">
           <span>Tauri v2 · Native Desktop</span>
           {photoGroups.length > 0 && (
-            <span>Shortcuts: 1 Keep · 2 Nah · F Flag · ⌘Z Undo · ⌘↵ Review Batch · 0 Fit</span>
+            <span>Shortcuts: 1 Keep · 2 Nah · F Flag · C Compare · ⌘Z Undo · ⌘↵ Review Batch · 0 Fit</span>
           )}
         </div>
         <span>
