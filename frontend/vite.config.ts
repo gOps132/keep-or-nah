@@ -8,6 +8,9 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
   },
+  test: {
+    environment: "jsdom",
+  },
   build: {
     target: "esnext",
     minify: !process.env.TAURI_DEBUG ? "esbuild" : false,
