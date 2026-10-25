@@ -43,36 +43,28 @@ and the thumbnail.
 - **Thumbnail Strip** — asynchronously decoded thumbnails of the Photo Groups
   in the active Photo Session, with a selection indicator, the Best Shot
   badge, and a badge for the Staged Decision of a decided Photo Group.
-- **Native Rust core** (`keep_or_nah_core`, bound with PyO3 and maturin) handles
+- **Native Rust core** (`keep_or_nah_core`) handles
   directory scanning, same-stem grouping, SIMD Lanczos3 thumbnail generation,
   EXIF-aware preview rendering, atomic file operations, sharpness scoring, and
   perceptual hashing.
-- **CustomTkinter GUI** — a single frontend with one keyboard scheme and no
-  alternative interface.
+- **Tauri Desktop Application** — high-performance native Rust desktop backend
+  with React + TypeScript frontend, hardware-accelerated rendering, and
+  consistent cross-platform keyboard shortcuts.
 - **Session recovery** — the active Photo Session, including Staged Decisions
   and the Undo Journal, is written to disk and restored on the next launch.
 
 ## Setup
 
-Requires Python 3.12 or 3.13, `uv`, and a Rust toolchain (`cargo`, `maturin`).
+Requires Node.js 20+ and a Rust toolchain (`cargo`).
 
 ```bash
-uv sync
-uv run maturin develop
+npm --prefix frontend install
 ```
-
-`maturin develop` compiles the native core and installs it into the virtualenv
-so that `import keep_or_nah_core` resolves.
-
-`uv sync` removes the compiled native module from the virtualenv, because the
-module is an editable install rather than a declared dependency. Run
-`maturin develop` again after any `uv sync`. `scripts/agent/doctor.sh` reports
-when the module is missing.
 
 ## Run the App
 
 ```bash
-uv run python main.py
+npm run dev
 ```
 
 ## Test and Verify
@@ -82,22 +74,22 @@ so a green local run and a green CI run execute identical commands.
 
 ```bash
 scripts/verify.sh            # full gate
-scripts/verify.sh --fast     # skip the Rust stages and the native rebuild
+scripts/verify.sh --fast     # skip release desktop packaging
 ```
 
 Per-role helpers live under `scripts/agent/`:
 
 ```bash
 scripts/agent/doctor.sh      # diagnose the local toolchain
-scripts/agent/lint.sh        # ruff, ruff format, cargo fmt, cargo clippy
-scripts/agent/test.sh        # the Rust test suite and the Python test suite
-scripts/agent/build.sh       # build and install the native core
+scripts/agent/lint.sh        # cargo fmt, cargo clippy, frontend check
+scripts/agent/test.sh        # Rust core & Tauri tests + frontend Vitest suite
+scripts/agent/build.sh       # build standalone desktop application
 ```
 
-To run only the Python suite:
+To run only the frontend Vitest suite:
 
 ```bash
-uv run pytest -q
+npm --prefix frontend test
 ```
 
 ## Keyboard Shortcuts
@@ -124,14 +116,8 @@ The triage keys behave identically in Staged Triage mode, where they record a
 Staged Decision instead of writing to disk, and in immediate mode, where they
 write to disk directly. Shortcuts are ignored while a text entry has focus.
 
-## Build Packages
+## Build Application
 
 ```bash
-uv run python scripts/build.py macos
-uv run python scripts/build.py windows
+npm run build:app
 ```
-
-See [docs/BUILD.md](docs/BUILD.md) for macOS, Windows, and CrossOver build
-instructions, plus the CI and release workflows.
-
-See [docs/PLATFORM.md](docs/PLATFORM.md) for platform-specific runtime notes.

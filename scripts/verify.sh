@@ -9,7 +9,7 @@
 #
 # Usage:
 #   scripts/verify.sh              # full gate
-#   scripts/verify.sh --fast       # skip the Rust stages and the native rebuild
+#   scripts/verify.sh --fast       # skip release desktop packaging
 #   scripts/verify.sh --stage NAME # run one stage (see STAGES below)
 #   scripts/verify.sh --list       # list the stages
 #
@@ -24,26 +24,27 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 CRATE_DIR="crates/keep_or_nah_core"
+TAURI_DIR="src-tauri"
+FRONTEND_DIR="frontend"
 FAST=0
 ONLY_STAGE=""
 LIST_ONLY=0
 
 STAGES=(
   "doctor"
-  "lint-python"
-  "format-python"
   "format-rust"
   "lint-rust"
   "test-rust"
+  "lint-frontend"
+  "test-frontend"
   "build"
-  "test-python"
 )
 
-# Stages that `--fast` skips: the ones that need a Rust toolchain round trip.
-FAST_SKIPPED=("format-rust" "lint-rust" "test-rust" "build")
+# Stages that `--fast` skips: release packaging
+FAST_SKIPPED=("build")
 
 usage() {
-  sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -127,13 +128,6 @@ stage_doctor() {
   stage_begin "doctor"
   local problems=0
 
-  if ! command -v uv >/dev/null 2>&1; then
-    echo "missing: uv (https://docs.astral.sh/uv/)" >&2
-    problems=1
-  else
-    echo "uv        $(uv --version 2>/dev/null || echo unknown)"
-  fi
-
   if ! command -v cargo >/dev/null 2>&1; then
     echo "missing: cargo (https://rustup.rs/)" >&2
     problems=1
@@ -141,15 +135,33 @@ stage_doctor() {
     echo "cargo     $(cargo --version 2>/dev/null || echo unknown)"
   fi
 
+  if ! command -v node >/dev/null 2>&1; then
+    echo "missing: node (https://nodejs.org/)" >&2
+    problems=1
+  else
+    echo "node      $(node --version 2>/dev/null || echo unknown)"
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "missing: npm" >&2
+    problems=1
+  else
+    echo "npm       $(npm --version 2>/dev/null || echo unknown)"
+  fi
+
   if [[ ! -f "$CRATE_DIR/Cargo.toml" ]]; then
     echo "missing: $CRATE_DIR/Cargo.toml" >&2
     problems=1
   fi
 
-  if ! uv run python -c "import keep_or_nah_core" >/dev/null 2>&1; then
-    echo "note: the native module is not built yet - run 'uv run maturin develop'" >&2
-  else
-    echo "native    keep_or_nah_core is importable"
+  if [[ ! -f "$TAURI_DIR/Cargo.toml" ]]; then
+    echo "missing: $TAURI_DIR/Cargo.toml" >&2
+    problems=1
+  fi
+
+  if [[ ! -f "$FRONTEND_DIR/package.json" ]]; then
+    echo "missing: $FRONTEND_DIR/package.json" >&2
+    problems=1
   fi
 
   if [[ $problems -ne 0 ]]; then
@@ -157,83 +169,50 @@ stage_doctor() {
   fi
 }
 
-stage_lint_python() {
-  stage_begin "lint-python"
-  uv run ruff check .
-}
-
-stage_format_python() {
-  stage_begin "format-python"
-  uv run ruff format --check .
-}
-
 stage_format_rust() {
   stage_begin "format-rust"
   cargo fmt --manifest-path "$CRATE_DIR/Cargo.toml" --check
+  cargo fmt --manifest-path "$TAURI_DIR/Cargo.toml" --check
 }
 
 stage_lint_rust() {
   stage_begin "lint-rust"
   cargo clippy --manifest-path "$CRATE_DIR/Cargo.toml" --all-targets -- -D warnings
+  cargo clippy --manifest-path "$TAURI_DIR/Cargo.toml" --all-targets -- -D warnings
 }
 
 stage_test_rust() {
   stage_begin "test-rust"
-  # The crate is built for CPython's stable ABI, so the test harness links
-  # without libpython and needs no interpreter at all. PYO3_NO_PYTHON tells
-  # PyO3 not to go looking for one. See ADR-0006.
-  #
-  # Windows is the exception: PyO3 always links the interpreter's import
-  # library there, because a Windows extension module resolves the CPython
-  # symbols through that library rather than leaving them for the host to
-  # provide. So on Windows the interpreter has to be present and has to be
-  # pointed at, and the test binary needs it at run time as well.
-  local test_cmd=(cargo test --manifest-path "$CRATE_DIR/Cargo.toml" --no-default-features)
-  if [[ "$(uname -s 2>/dev/null || echo unknown)" == MINGW* || "${OS:-}" == "Windows_NT" ]]; then
-    if command -v uv >/dev/null 2>&1; then
-      local windows_python
-      windows_python="$(uv python find 2>/dev/null || true)"
-      if [[ -n "$windows_python" ]]; then
-        export PYO3_PYTHON="$windows_python"
-      fi
-    fi
-  else
-    export PYO3_NO_PYTHON=1
-  fi
+  cargo test --manifest-path "$CRATE_DIR/Cargo.toml"
+  cargo test --manifest-path "$TAURI_DIR/Cargo.toml"
+}
 
-  if ! "${test_cmd[@]}"; then
-    echo >&2
-    echo "The Rust test suite could not run." >&2
-    echo "If the failure is a link error mentioning __Py_ symbols, the crate" >&2
-    echo "still hard-enables PyO3's extension-module feature. See issue #15." >&2
-    return 1
-  fi
+stage_lint_frontend() {
+  stage_begin "lint-frontend"
+  npm --prefix "$FRONTEND_DIR" run build
+}
+
+stage_test_frontend() {
+  stage_begin "test-frontend"
+  npm --prefix "$FRONTEND_DIR" test
 }
 
 stage_build() {
   stage_begin "build"
-  uv run maturin develop --manifest-path "$CRATE_DIR/Cargo.toml"
-}
-
-stage_test_python() {
-  stage_begin "test-python"
-  uv run pytest -q
+  npx --prefix "$FRONTEND_DIR" tauri build --no-bundle
 }
 
 # --- runner ----------------------------------------------------------------
 
-# Dispatch with a case statement rather than an associative array: macOS
-# ships bash 3.2, which has no `declare -A`.
 run_stage() {
   case "$1" in
     doctor) stage_doctor ;;
-    lint-python) stage_lint_python ;;
-    format-python) stage_format_python ;;
     format-rust) stage_format_rust ;;
     lint-rust) stage_lint_rust ;;
     test-rust) stage_test_rust ;;
+    lint-frontend) stage_lint_frontend ;;
+    test-frontend) stage_test_frontend ;;
     build) stage_build ;;
-    test-python) stage_test_python ;;
     *) echo "error: no runner for stage '$1'" >&2; return 2 ;;
   esac
 }

@@ -30,8 +30,8 @@ Standards and Spec reviews run in parallel before merging to `main`. See `.agent
 for the full contract.
 
 ```bash
-scripts/verify.sh          # the canonical gate: lint, format, rust tests, build, python tests
-scripts/verify.sh --fast   # skip the rust stages and the native rebuild
+scripts/verify.sh          # the canonical gate: doctor, format-rust, lint-rust, test-rust, lint-frontend, test-frontend, build
+scripts/verify.sh --fast   # skip release desktop packaging (build)
 scripts/verify.sh --list   # list the stages
 ```
 
