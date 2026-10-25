@@ -1,0 +1,27 @@
+[package]
+name = "keep-or-nah-app"
+version = "0.1.0"
+description = "Desktop photo triage application"
+authors = ["Keep or Nah Authors"]
+edition = "2021"
+
+[lib]
+name = "keep_or_nah_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+kamadak-exif = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+keep_or_nah_core = { path = "../crates/keep_or_nah_core", features = ["extension-module"] }
+
+[dev-dependencies]
+tempfile = "3"
