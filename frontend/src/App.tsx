@@ -12,7 +12,7 @@ import {
   PhotoBurstInfo,
 } from "./types";
 import { ThumbnailStrip } from "./ThumbnailStrip";
-import { PreviewViewport, ViewMode } from "./PreviewViewport";
+import { PreviewViewport, ViewMode, isViewableFormat, isRawFile } from "./PreviewViewport";
 import { ActionHud } from "./ActionHud";
 import { ReviewCommitModal } from "./ReviewCommitModal";
 
@@ -27,6 +27,8 @@ export default function App() {
   const [bestShotStems, setBestShotStems] = useState<Set<string>>(new Set());
   const [burstClusterMap, setBurstClusterMap] = useState<Record<string, string>>({});
   const [viewMode, setViewMode] = useState<ViewMode>("1-up");
+  const [activeMemberOverride, setActiveMemberOverride] = useState<Record<string, string>>({});
+  const [resolvedPreviewMap, setResolvedPreviewMap] = useState<Record<string, string>>({});
 
   // Review modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -241,6 +243,52 @@ export default function App() {
   }, [activeGroup, exifCache]);
 
   // Global Keyboard Navigation & Hotkeys
+  const handleSelectMember = useCallback(
+    async (stem: string, memberPath: string) => {
+      setActiveMemberOverride((prev) => ({ ...prev, [stem]: memberPath }));
+      if (isRawFile(memberPath) && !resolvedPreviewMap[memberPath]) {
+        try {
+          const resolved = await invoke<string>("resolve_photo_preview", { path: memberPath });
+          setResolvedPreviewMap((prev) => ({
+            ...prev,
+            [memberPath]: resolved || memberPath,
+          }));
+        } catch (err) {
+          console.error("Failed to resolve photo preview:", err);
+          setResolvedPreviewMap((prev) => ({ ...prev, [memberPath]: memberPath }));
+        }
+      }
+    },
+    [resolvedPreviewMap]
+  );
+
+  const selectedPrimaryMember = activeGroup
+    ? activeMemberOverride[activeGroup.stem] || activeGroup.representative
+    : "";
+
+  useEffect(() => {
+    if (
+      selectedPrimaryMember &&
+      isRawFile(selectedPrimaryMember) &&
+      !resolvedPreviewMap[selectedPrimaryMember]
+    ) {
+      invoke<string>("resolve_photo_preview", { path: selectedPrimaryMember })
+        .then((resolved) => {
+          setResolvedPreviewMap((prev) => ({
+            ...prev,
+            [selectedPrimaryMember]: resolved || selectedPrimaryMember,
+          }));
+        })
+        .catch((err) => {
+          console.error("Failed to resolve photo preview:", err);
+          setResolvedPreviewMap((prev) => ({
+            ...prev,
+            [selectedPrimaryMember]: selectedPrimaryMember,
+          }));
+        });
+    }
+  }, [selectedPrimaryMember, resolvedPreviewMap]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // ⌘↵ / Ctrl+Enter: Review Batch Modal
@@ -279,12 +327,34 @@ export default function App() {
       } else if (e.key === "c" || e.key === "C") {
         e.preventDefault();
         setViewMode((prev) => (prev === "1-up" ? "2-up" : "1-up"));
+      } else if (e.key === "v" || e.key === "V") {
+        e.preventDefault();
+        if (activeGroup && activeGroup.members.length > 1) {
+          const viewable = activeGroup.members.filter(isViewableFormat);
+          if (viewable.length > 1) {
+            const current = activeMemberOverride[activeGroup.stem] || activeGroup.representative;
+            const currentIdx = viewable.indexOf(current);
+            const nextIdx = (currentIdx + 1) % viewable.length;
+            const nextPath = viewable[nextIdx];
+            handleSelectMember(activeGroup.stem, nextPath);
+          }
+        }
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [photoGroups.length, stagedDecisions, isModalOpen, handleStageDecision, handleUndo, handleOpenReviewModal]);
+  }, [
+    photoGroups.length,
+    stagedDecisions,
+    isModalOpen,
+    activeGroup,
+    activeMemberOverride,
+    handleStageDecision,
+    handleUndo,
+    handleOpenReviewModal,
+    handleSelectMember,
+  ]);
 
   // Resolve comparison photo in 2-Up mode
   const comparisonGroup = (() => {
@@ -314,12 +384,15 @@ export default function App() {
 
   const primaryViewItem = activeGroup
     ? {
-        filePath: activeGroup.representative,
+        filePath: resolvedPreviewMap[selectedPrimaryMember] || selectedPrimaryMember,
         stem: activeGroup.stem,
         exif: exifCache[activeGroup.representative] ?? null,
         isBestShot: bestShotStems.has(activeGroup.stem),
         burstTag:
           burstClusterMap[activeGroup.representative] || burstClusterMap[activeGroup.stem],
+        members: activeGroup.members,
+        selectedMember: selectedPrimaryMember,
+        onSelectMember: (path: string) => handleSelectMember(activeGroup.stem, path),
       }
     : undefined;
 

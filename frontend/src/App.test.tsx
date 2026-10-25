@@ -5,9 +5,24 @@ import { PhotoGroup, BatchSummaryDto } from "./types";
 
 // Mock Tauri core IPC invoke and event listen
 const mockPhotoGroups: PhotoGroup[] = [
-  { stem: "DSC_0001", members: ["DSC_0001.JPG"], representative: "/photos/DSC_0001.JPG", index: 0 },
-  { stem: "DSC_0002", members: ["DSC_0002.JPG"], representative: "/photos/DSC_0002.JPG", index: 1 },
-  { stem: "DSC_0003", members: ["DSC_0003.JPG"], representative: "/photos/DSC_0003.JPG", index: 2 },
+  {
+    stem: "DSC_0001",
+    members: ["/photos/DSC_0001.JPG", "/photos/DSC_0001.ARW"],
+    representative: "/photos/DSC_0001.JPG",
+    index: 0,
+  },
+  {
+    stem: "DSC_0002",
+    members: ["/photos/DSC_0002.JPG"],
+    representative: "/photos/DSC_0002.JPG",
+    index: 1,
+  },
+  {
+    stem: "DSC_0003",
+    members: ["/photos/DSC_0003.JPG"],
+    representative: "/photos/DSC_0003.JPG",
+    index: 2,
+  },
 ];
 
 let stagedMap: Record<string, string> = {};
@@ -23,6 +38,8 @@ vi.mock("@tauri-apps/api/core", () => ({
         return mockPhotoGroups;
       case "start_thumbnail_stream":
         return null;
+      case "resolve_photo_preview":
+        return args.path;
       case "read_exif_metadata":
         return {
           camera_model: "Sony A7IV",
@@ -228,6 +245,35 @@ describe("App Integration Tests", () => {
 
     await waitFor(() => {
       expect(screen.queryByText("Review Staged Decisions")).toBeNull();
+    });
+  });
+
+  it("cycles active format within photo group on pressing V and format pill click", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByText("Choose Photo Folder"));
+
+    await waitFor(() => {
+      expect(screen.getByText("DSC_0001")).toBeDefined();
+    });
+
+    // Format pills should render for DSC_0001 which has JPG and ARW
+    await waitFor(() => {
+      expect(screen.getByTestId("format-pill-jpg")).toBeDefined();
+      expect(screen.getByTestId("format-pill-arw")).toBeDefined();
+    });
+
+    // Press V to cycle from JPG to ARW
+    fireEvent.keyDown(window, { key: "v" });
+    await waitFor(() => {
+      const activePill = screen.getByTestId("format-pill-arw");
+      expect(activePill.className).toContain("bg-accent");
+    });
+
+    // Click JPG pill to switch back
+    fireEvent.click(screen.getByTestId("format-pill-jpg"));
+    await waitFor(() => {
+      const activePill = screen.getByTestId("format-pill-jpg");
+      expect(activePill.className).toContain("bg-accent");
     });
   });
 });
