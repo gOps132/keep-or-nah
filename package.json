@@ -1,0 +1,13 @@
+{
+  "name": "keep-or-nah",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop photo culling and triage application",
+  "scripts": {
+    "dev": "npm --prefix frontend run tauri dev",
+    "build": "npm --prefix frontend run tauri build",
+    "build:app": "npm --prefix frontend run tauri build --no-bundle",
+    "test:frontend": "npm --prefix frontend test",
+    "lint:frontend": "npm --prefix frontend run build"
+  }
+}
