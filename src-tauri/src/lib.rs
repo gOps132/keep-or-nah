@@ -7,9 +7,18 @@ pub mod commands {
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex, OnceLock};
+    use tauri::async_runtime::Mutex as AsyncMutex;
     use tauri::{AppHandle, Emitter, Manager, State};
     use tauri_plugin_dialog::DialogExt;
+
+    static HEAVY_RENDER_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+    fn get_heavy_render_lock() -> &'static AsyncMutex<()> {
+        static LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| AsyncMutex::new(()))
+    }
 
     use crate::burst::{BurstCluster, BurstClusterer, PhotoBurstInfo};
     use crate::session::{BatchSummaryDto, CommitResultDto, Decision, SessionState};
@@ -315,6 +324,9 @@ pub mod commands {
     /// (via native hardware demosaicing in keep_or_nah_core) and caches it to disk
     /// in `app_cache_dir/raw_full_renders/<key>.jpg`.
     /// If the path is not a RAW format, returns the original path.
+    ///
+    /// Applies single-worker concurrency gating and monotonic cancellation
+    /// so fast navigation abandons obsolete in-flight jobs without memory spikes.
     #[tauri::command]
     pub async fn resolve_full_raw_render(app: AppHandle, path: String) -> Result<String, String> {
         let file_path = PathBuf::from(&path);
@@ -322,7 +334,8 @@ pub mod commands {
             return Err(format!("File does not exist: {path}"));
         }
 
-        if !keep_or_nah_core::raw_extractor::is_raw_file(&file_path) {
+        let registry = keep_or_nah_core::heavy_asset::HeavyAssetRegistry::default();
+        if !registry.is_heavy_asset(&file_path) {
             return Ok(path);
         }
 
@@ -334,12 +347,36 @@ pub mod commands {
 
         let _ = std::fs::create_dir_all(&cache_dir);
 
-        // Offload heavy demosaicing and encoding to a blocking background thread
-        tauri::async_runtime::spawn_blocking(move || {
+        // Monotonic generation counter for superseding / cancellation
+        let my_gen = HEAVY_RENDER_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+
+        // Bounded concurrency = 1 (single-worker queue to guarantee bounded RAM)
+        let _guard = get_heavy_render_lock().lock().await;
+
+        // Abandon if superseded while waiting in queue
+        if HEAVY_RENDER_GENERATION.load(Ordering::SeqCst) != my_gen {
+            return Err("Heavy render cancelled by newer request".to_string());
+        }
+
+        // Offload demosaicing and hardware export to a blocking background thread
+        let result = tauri::async_runtime::spawn_blocking(move || {
             resolve_full_raw_render_sync(&file_path, &cache_dir)
         })
         .await
-        .map_err(|e| format!("Failed to spawn blocking demosaic task: {e}"))?
+        .map_err(|e| format!("Failed to spawn blocking demosaic task: {e}"))??;
+
+        // Abandon if superseded during decode
+        if HEAVY_RENDER_GENERATION.load(Ordering::SeqCst) != my_gen {
+            return Err("Heavy render cancelled by newer request".to_string());
+        }
+
+        Ok(result)
+    }
+
+    /// Resolves any heavy asset (RAW, HEIC, TIFF, etc.) via the extensible HeavyAssetDecoder registry.
+    #[tauri::command]
+    pub async fn resolve_heavy_render(app: AppHandle, path: String) -> Result<String, String> {
+        resolve_full_raw_render(app, path).await
     }
 
     /// Synchronous helper for resolving and caching full RAW demosaic.
@@ -347,48 +384,9 @@ pub mod commands {
         file_path: &Path,
         cache_dir: &Path,
     ) -> Result<String, String> {
-        let mtime = std::fs::metadata(file_path)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let size = std::fs::metadata(file_path).map(|m| m.len()).unwrap_or(0);
-
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(&(file_path.to_string_lossy(), mtime, size), &mut hasher);
-        let cache_key = format!("{:016x}", std::hash::Hasher::finish(&hasher));
-        let cache_file = cache_dir.join(format!("{cache_key}.jpg"));
-
-        if cache_file.exists()
-            && std::fs::metadata(&cache_file)
-                .map(|m| m.len() > 0)
-                .unwrap_or(false)
-        {
-            return Ok(cache_file.to_string_lossy().to_string());
-        }
-
-        let decoded = keep_or_nah_core::raw_demosaic::decode_raw_image(file_path)
-            .map_err(|e| format!("RAW demosaicing failed: {e}"))?;
-
-        let temp_cache_file = cache_dir.join(format!("{cache_key}.tmp"));
-        {
-            let file = std::fs::File::create(&temp_cache_file)
-                .map_err(|e| format!("Failed to create temporary cache file: {e}"))?;
-            let mut writer = std::io::BufWriter::new(file);
-            let mut encoder = JpegEncoder::new_with_quality(&mut writer, 95);
-            encoder
-                .encode(
-                    decoded.to_rgb8().as_raw(),
-                    decoded.width(),
-                    decoded.height(),
-                    image::ExtendedColorType::Rgb8,
-                )
-                .map_err(|e| format!("Failed to encode demosaiced JPEG: {e}"))?;
-        }
-
-        let _ = std::fs::rename(&temp_cache_file, &cache_file);
-        Ok(cache_file.to_string_lossy().to_string())
+        let registry = keep_or_nah_core::heavy_asset::HeavyAssetRegistry::default();
+        let cached = registry.resolve_full_render(file_path, cache_dir)?;
+        Ok(cached.to_string_lossy().to_string())
     }
 
     /// Asynchronously streams progressive thumbnail generation via Tauri IPC events.
@@ -537,6 +535,7 @@ pub fn run() {
             commands::read_exif_metadata,
             commands::resolve_photo_preview,
             commands::resolve_full_raw_render,
+            commands::resolve_heavy_render,
             commands::check_core_status
         ])
         .run(tauri::generate_context!())

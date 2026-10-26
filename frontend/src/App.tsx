@@ -12,10 +12,11 @@ import {
   PhotoBurstInfo,
 } from "./types";
 import { ThumbnailStrip } from "./ThumbnailStrip";
-import { PreviewViewport, ViewMode, isViewableFormat, isRawFile } from "./PreviewViewport";
+import { PreviewViewport, ViewMode, isViewableFormat } from "./PreviewViewport";
 import { ActionHud } from "./ActionHud";
 import { ReviewCommitModal } from "./ReviewCommitModal";
 import { SettingsModal, loadStoredSettings, AppSettings } from "./SettingsModal";
+import { useProgressiveAsset } from "./useProgressiveAsset";
 
 export default function App() {
   const [appSettings, setAppSettings] = useState<AppSettings>(loadStoredSettings);
@@ -33,9 +34,6 @@ export default function App() {
   const [compareTarget, setCompareTarget] = useState<"photo" | "format">("photo");
   const [activeMemberOverride, setActiveMemberOverride] = useState<Record<string, string>>({});
   const [comparisonMemberOverride, setComparisonMemberOverride] = useState<Record<string, string>>({});
-  const [resolvedPreviewMap, setResolvedPreviewMap] = useState<Record<string, string>>({});
-  const [fullRawRenderMap, setFullRawRenderMap] = useState<Record<string, string>>({});
-  const [rawStatusMap, setRawStatusMap] = useState<Record<string, "fast" | "full" | "loading">>({});
 
   // Review modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -250,24 +248,9 @@ export default function App() {
   }, [activeGroup, exifCache]);
 
   // Global Keyboard Navigation & Hotkeys
-  const handleSelectMember = useCallback(
-    async (stem: string, memberPath: string) => {
-      setActiveMemberOverride((prev) => ({ ...prev, [stem]: memberPath }));
-      if (isRawFile(memberPath) && !resolvedPreviewMap[memberPath]) {
-        try {
-          const resolved = await invoke<string>("resolve_photo_preview", { path: memberPath });
-          setResolvedPreviewMap((prev) => ({
-            ...prev,
-            [memberPath]: resolved || memberPath,
-          }));
-        } catch (err) {
-          console.error("Failed to resolve photo preview:", err);
-          setResolvedPreviewMap((prev) => ({ ...prev, [memberPath]: memberPath }));
-        }
-      }
-    },
-    [resolvedPreviewMap]
-  );
+  const handleSelectMember = useCallback((stem: string, memberPath: string) => {
+    setActiveMemberOverride((prev) => ({ ...prev, [stem]: memberPath }));
+  }, []);
 
   const selectedPrimaryMember = activeGroup
     ? activeMemberOverride[activeGroup.stem] || activeGroup.representative
@@ -284,123 +267,42 @@ export default function App() {
         viewableMembers[0]
       : null;
 
-  const getDisplayPath = useCallback(
-    (path: string) => {
-      if (!isRawFile(path)) return path;
-      return fullRawRenderMap[path] || resolvedPreviewMap[path] || path;
-    },
-    [fullRawRenderMap, resolvedPreviewMap]
-  );
+  // Resolve comparison photo in 2-Up mode
+  const comparisonGroup = (() => {
+    if (!activeGroup || photoGroups.length < 2) return null;
 
-  const getRawStatus = useCallback(
-    (path: string): "fast" | "full" | "loading" | null => {
-      if (!isRawFile(path)) return null;
-      if (fullRawRenderMap[path]) return "full";
-      if (resolvedPreviewMap[path]) return "fast";
-      return rawStatusMap[path] || "loading";
-    },
-    [fullRawRenderMap, resolvedPreviewMap, rawStatusMap]
-  );
+    const activeBurstTag =
+      burstClusterMap[activeGroup.representative] || burstClusterMap[activeGroup.stem];
+    if (activeBurstTag) {
+      // Find other photos in the same burst cluster
+      const clusterMembers = photoGroups.filter(
+        (g) =>
+          (burstClusterMap[g.representative] === activeBurstTag ||
+            burstClusterMap[g.stem] === activeBurstTag) &&
+          g.stem !== activeGroup.stem
+      );
 
-  // Progressive 2-Stage RAW Loading for Primary Member
-  useEffect(() => {
-    if (!selectedPrimaryMember || !isRawFile(selectedPrimaryMember)) return;
-
-    // Stage 1: Fast preview extraction (~15ms)
-    if (!resolvedPreviewMap[selectedPrimaryMember]) {
-      invoke<string>("resolve_photo_preview", { path: selectedPrimaryMember })
-        .then((fastPath) => {
-          setResolvedPreviewMap((prev) => ({
-            ...prev,
-            [selectedPrimaryMember]: fastPath || selectedPrimaryMember,
-          }));
-        })
-        .catch((err) => {
-          console.error("Failed to resolve fast preview:", err);
-          setResolvedPreviewMap((prev) => ({
-            ...prev,
-            [selectedPrimaryMember]: selectedPrimaryMember,
-          }));
-        });
+      if (clusterMembers.length > 0) {
+        // Prefer the Best Shot member in the cluster
+        const bestShotMember = clusterMembers.find((g) => bestShotStems.has(g.stem));
+        return bestShotMember || clusterMembers[0];
+      }
     }
 
-    // Stage 2: Background Hardware-Accelerated Full 14-bit RAW Demosaic
-    if (!fullRawRenderMap[selectedPrimaryMember]) {
-      setRawStatusMap((prev) => ({
-        ...prev,
-        [selectedPrimaryMember]: "loading",
-      }));
-      invoke<string>("resolve_full_raw_render", { path: selectedPrimaryMember })
-        .then((fullPath) => {
-          if (fullPath) {
-            setFullRawRenderMap((prev) => ({
-              ...prev,
-              [selectedPrimaryMember]: fullPath,
-            }));
-            setRawStatusMap((prev) => ({
-              ...prev,
-              [selectedPrimaryMember]: "full",
-            }));
-          }
-        })
-        .catch((err) => {
-          console.warn("Background full RAW demosaic unavailable, keeping fast preview:", err);
-          setRawStatusMap((prev) => ({
-            ...prev,
-            [selectedPrimaryMember]: "fast",
-          }));
-        });
-    }
-  }, [selectedPrimaryMember, resolvedPreviewMap, fullRawRenderMap]);
+    // Default to adjacent photo
+    return photoGroups[activeIndex + 1] || photoGroups[activeIndex - 1] || null;
+  })();
 
-  // Progressive 2-Stage RAW Loading for Companion Format
-  useEffect(() => {
-    if (!companionFormatPath || !isRawFile(companionFormatPath)) return;
+  const comparisonTargetFilePath =
+    viewMode === "2-up"
+      ? compareTarget === "format" && hasMultipleFormats
+        ? companionFormatPath
+        : comparisonGroup?.representative || null
+      : null;
 
-    if (!resolvedPreviewMap[companionFormatPath]) {
-      invoke<string>("resolve_photo_preview", { path: companionFormatPath })
-        .then((fastPath) => {
-          setResolvedPreviewMap((prev) => ({
-            ...prev,
-            [companionFormatPath]: fastPath || companionFormatPath,
-          }));
-        })
-        .catch((err) => {
-          console.error("Failed to resolve companion fast preview:", err);
-          setResolvedPreviewMap((prev) => ({
-            ...prev,
-            [companionFormatPath]: companionFormatPath,
-          }));
-        });
-    }
-
-    if (!fullRawRenderMap[companionFormatPath]) {
-      setRawStatusMap((prev) => ({
-        ...prev,
-        [companionFormatPath]: "loading",
-      }));
-      invoke<string>("resolve_full_raw_render", { path: companionFormatPath })
-        .then((fullPath) => {
-          if (fullPath) {
-            setFullRawRenderMap((prev) => ({
-              ...prev,
-              [companionFormatPath]: fullPath,
-            }));
-            setRawStatusMap((prev) => ({
-              ...prev,
-              [companionFormatPath]: "full",
-            }));
-          }
-        })
-        .catch((err) => {
-          console.warn("Background companion full RAW demosaic unavailable:", err);
-          setRawStatusMap((prev) => ({
-            ...prev,
-            [companionFormatPath]: "fast",
-          }));
-        });
-    }
-  }, [companionFormatPath, resolvedPreviewMap, fullRawRenderMap]);
+  // Progressive 2-stage asset pipeline with 300ms settle debounce and single-worker gating
+  const primaryAsset = useProgressiveAsset(selectedPrimaryMember || null, 300);
+  const comparisonAsset = useProgressiveAsset(comparisonTargetFilePath, 300);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -480,35 +382,9 @@ export default function App() {
     handleSelectMember,
   ]);
 
-  // Resolve comparison photo in 2-Up mode
-  const comparisonGroup = (() => {
-    if (!activeGroup || photoGroups.length < 2) return null;
-
-    const activeBurstTag =
-      burstClusterMap[activeGroup.representative] || burstClusterMap[activeGroup.stem];
-    if (activeBurstTag) {
-      // Find other photos in the same burst cluster
-      const clusterMembers = photoGroups.filter(
-        (g) =>
-          (burstClusterMap[g.representative] === activeBurstTag ||
-            burstClusterMap[g.stem] === activeBurstTag) &&
-          g.stem !== activeGroup.stem
-      );
-
-      if (clusterMembers.length > 0) {
-        // Prefer the Best Shot member in the cluster
-        const bestShotMember = clusterMembers.find((g) => bestShotStems.has(g.stem));
-        return bestShotMember || clusterMembers[0];
-      }
-    }
-
-    // Default to adjacent photo
-    return photoGroups[activeIndex + 1] || photoGroups[activeIndex - 1] || null;
-  })();
-
   const primaryViewItem = activeGroup
     ? {
-        filePath: getDisplayPath(selectedPrimaryMember),
+        filePath: primaryAsset.displayPath || selectedPrimaryMember,
         sourcePath: selectedPrimaryMember,
         stem: activeGroup.stem,
         exif: exifCache[activeGroup.representative] ?? null,
@@ -518,7 +394,7 @@ export default function App() {
         members: activeGroup.members,
         selectedMember: selectedPrimaryMember,
         onSelectMember: (path: string) => handleSelectMember(activeGroup.stem, path),
-        rawStatus: getRawStatus(selectedPrimaryMember),
+        rawStatus: primaryAsset.rawStatus,
       }
     : undefined;
 
@@ -527,7 +403,7 @@ export default function App() {
 
     if (compareTarget === "format" && hasMultipleFormats && companionFormatPath) {
       return {
-        filePath: getDisplayPath(companionFormatPath),
+        filePath: comparisonAsset.displayPath || companionFormatPath,
         sourcePath: companionFormatPath,
         stem: activeGroup.stem,
         exif: exifCache[activeGroup.representative] ?? null,
@@ -541,13 +417,13 @@ export default function App() {
             [activeGroup.stem]: path,
           }));
         },
-        rawStatus: getRawStatus(companionFormatPath),
+        rawStatus: comparisonAsset.rawStatus,
       };
     }
 
     if (!comparisonGroup) return null;
     return {
-      filePath: getDisplayPath(comparisonGroup.representative),
+      filePath: comparisonAsset.displayPath || comparisonGroup.representative,
       sourcePath: comparisonGroup.representative,
       stem: comparisonGroup.stem,
       exif: exifCache[comparisonGroup.representative] ?? null,
@@ -557,7 +433,7 @@ export default function App() {
         burstClusterMap[comparisonGroup.stem],
       members: comparisonGroup.members,
       selectedMember: comparisonGroup.representative,
-      rawStatus: getRawStatus(comparisonGroup.representative),
+      rawStatus: comparisonAsset.rawStatus,
     };
   })();
 
