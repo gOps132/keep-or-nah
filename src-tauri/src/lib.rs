@@ -1,4 +1,5 @@
 pub mod burst;
+pub mod debug_log;
 pub mod session;
 
 pub mod commands {
@@ -21,7 +22,10 @@ pub mod commands {
     }
 
     use crate::burst::{BurstCluster, BurstClusterer, PhotoBurstInfo};
+    use crate::debug_log;
     use crate::session::{BatchSummaryDto, CommitResultDto, Decision, SessionState};
+    use serde_json::json;
+    use std::time::Instant;
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
     pub struct PhotoGroupDto {
@@ -84,9 +88,16 @@ pub mod commands {
         path: String,
         session_state: State<'_, Mutex<SessionState>>,
     ) -> Result<Vec<PhotoGroupDto>, String> {
+        let start = Instant::now();
         let dir = Path::new(&path);
         if !dir.is_dir() {
-            return Err(format!("Path is not a directory: {path}"));
+            let err = format!("Path is not a directory: {path}");
+            debug_log::log_action(
+                "error",
+                None,
+                json!({ "source": "scan_directory", "error": err }),
+            );
+            return Err(err);
         }
 
         let extensions = keep_or_nah_core::scan::discover_extensions(dir);
@@ -113,7 +124,73 @@ pub mod commands {
             state.register_groups(&dtos);
         }
 
+        debug_log::log_action(
+            "folder_selection",
+            Some(start.elapsed().as_secs_f64() * 1000.0),
+            json!({ "path": path, "group_count": dtos.len() }),
+        );
+
         Ok(dtos)
+    }
+
+    /// Updates the Keep, Nah, and Flag destination folders for the active session.
+    #[tauri::command]
+    pub fn set_session_destinations(
+        keep_dir: Option<String>,
+        nah_dir: Option<String>,
+        flag_dir: Option<String>,
+        session_state: State<'_, Mutex<SessionState>>,
+    ) -> Result<(), String> {
+        let mut state = session_state
+            .lock()
+            .map_err(|_| "Failed to lock session state".to_string())?;
+        state.set_destinations(keep_dir.clone(), nah_dir.clone(), flag_dir.clone());
+        debug_log::log_action(
+            "settings_change",
+            None,
+            json!({ "keep_dir": keep_dir, "nah_dir": nah_dir, "flag_dir": flag_dir }),
+        );
+        Ok(())
+    }
+
+    /// Executes an immediate triage decision on a Photo Group.
+    #[tauri::command]
+    pub fn decide_immediate(
+        stem: String,
+        decision: String,
+        action_mode: Option<String>,
+        session_state: State<'_, Mutex<SessionState>>,
+    ) -> Result<CommitResultDto, String> {
+        let start = Instant::now();
+        let parsed = Decision::from_str_opt(&decision)
+            .ok_or_else(|| format!("Invalid triage decision: {decision}"))?;
+        let mode = action_mode
+            .as_deref()
+            .and_then(crate::session::ActionMode::from_str_opt)
+            .unwrap_or(crate::session::ActionMode::Move);
+
+        let mut state = session_state
+            .lock()
+            .map_err(|_| "Failed to lock session state".to_string())?;
+
+        match state.decide_immediate(stem.clone(), parsed, mode) {
+            Ok(res) => {
+                debug_log::log_action(
+                    "decision",
+                    Some(start.elapsed().as_secs_f64() * 1000.0),
+                    json!({ "stem": stem, "decision": decision, "mode": "immediate" }),
+                );
+                Ok(res)
+            }
+            Err(err) => {
+                debug_log::log_action(
+                    "error",
+                    Some(start.elapsed().as_secs_f64() * 1000.0),
+                    json!({ "source": "decide_immediate", "stem": stem, "decision": decision, "error": err }),
+                );
+                Err(err)
+            }
+        }
     }
 
     /// Records an in-memory staged triage decision for a photo stem.
@@ -130,7 +207,12 @@ pub mod commands {
             .lock()
             .map_err(|_| "Failed to lock session state".to_string())?;
 
-        state.stage_decision(stem, parsed);
+        state.stage_decision(stem.clone(), parsed);
+        debug_log::log_action(
+            "decision",
+            None,
+            json!({ "stem": stem, "decision": decision, "mode": "staged" }),
+        );
         Ok(state.get_decisions_map())
     }
 
@@ -143,7 +225,9 @@ pub mod commands {
             .lock()
             .map_err(|_| "Failed to lock session state".to_string())?;
 
-        Ok(state.undo_last_decision())
+        let undone = state.undo_last_decision();
+        debug_log::log_action("undo", None, json!({ "undone_stem": undone }));
+        Ok(undone)
     }
 
     /// Retrieves the current map of staged decisions.
@@ -178,6 +262,7 @@ pub mod commands {
         action_mode: Option<String>,
         session_state: State<'_, Mutex<SessionState>>,
     ) -> Result<CommitResultDto, String> {
+        let start = Instant::now();
         let mut state = session_state
             .lock()
             .map_err(|_| "Failed to lock session state".to_string())?;
@@ -186,7 +271,28 @@ pub mod commands {
             .as_deref()
             .and_then(crate::session::ActionMode::from_str_opt)
             .unwrap_or(crate::session::ActionMode::Move);
-        state.commit_staged_batch(keep_dir, nah_dir, mode)
+        match state.commit_staged_batch(keep_dir, nah_dir, mode) {
+            Ok(res) => {
+                debug_log::log_action(
+                    "batch_commit",
+                    Some(start.elapsed().as_secs_f64() * 1000.0),
+                    json!({
+                        "successful_groups": res.successful_groups,
+                        "successful_files": res.successful_files,
+                        "action_mode": action_mode.unwrap_or_else(|| "move".to_string())
+                    }),
+                );
+                Ok(res)
+            }
+            Err(err) => {
+                debug_log::log_action(
+                    "error",
+                    Some(start.elapsed().as_secs_f64() * 1000.0),
+                    json!({ "source": "commit_batch", "error": err }),
+                );
+                Err(err)
+            }
+        }
     }
 
     /// Generates an oriented, scaled thumbnail for a photo and computes its sharpness score.
@@ -195,6 +301,7 @@ pub mod commands {
         edge: u32,
         cache_dir: &Path,
     ) -> Result<ThumbnailDto, String> {
+        let start = Instant::now();
         let file_path = Path::new(path);
         let preview_path = if keep_or_nah_core::raw_extractor::is_raw_file(file_path) {
             let raw_cache = cache_dir.join("raw_previews");
@@ -272,6 +379,17 @@ pub mod commands {
         let cache_path_str = cache_file.to_string_lossy().to_string();
         let src_url = format!("asset://localhost/{}", cache_path_str);
 
+        debug_log::log_render(
+            "render.thumbnail_decode",
+            start.elapsed().as_secs_f64() * 1000.0,
+            json!({
+                "path": path,
+                "width": thumbnail.width,
+                "height": thumbnail.height,
+                "sharpness": sharpness
+            }),
+        );
+
         Ok(ThumbnailDto {
             path: path.to_string(),
             cache_path: cache_path_str,
@@ -299,12 +417,19 @@ pub mod commands {
     /// and returns the path to the cached JPEG; otherwise returns the original path.
     #[tauri::command]
     pub fn resolve_photo_preview(app: AppHandle, path: String) -> Result<String, String> {
+        let start = Instant::now();
         let file_path = Path::new(&path);
         if !file_path.exists() {
-            return Err(format!("File does not exist: {path}"));
+            let err = format!("File does not exist: {path}");
+            debug_log::log_action(
+                "error",
+                None,
+                json!({ "source": "resolve_photo_preview", "error": err }),
+            );
+            return Err(err);
         }
 
-        if keep_or_nah_core::raw_extractor::is_raw_file(file_path) {
+        let resolved = if keep_or_nah_core::raw_extractor::is_raw_file(file_path) {
             let cache_dir = app
                 .path()
                 .app_cache_dir()
@@ -312,10 +437,18 @@ pub mod commands {
                 .join("raw_previews");
             let cached =
                 keep_or_nah_core::raw_extractor::extract_and_cache_preview(file_path, &cache_dir)?;
-            Ok(cached.to_string_lossy().to_string())
+            cached.to_string_lossy().to_string()
         } else {
-            Ok(path)
-        }
+            path.clone()
+        };
+
+        debug_log::log_render(
+            "render.preview.fast",
+            start.elapsed().as_secs_f64() * 1000.0,
+            json!({ "path": path, "resolved": resolved, "stage": "fast" }),
+        );
+
+        Ok(resolved)
     }
 
     /// Resolves a full-resolution demosaiced RAW render for display.
@@ -384,9 +517,20 @@ pub mod commands {
         file_path: &Path,
         cache_dir: &Path,
     ) -> Result<String, String> {
+        let start = Instant::now();
         let registry = keep_or_nah_core::heavy_asset::HeavyAssetRegistry::default();
         let cached = registry.resolve_full_render(file_path, cache_dir)?;
-        Ok(cached.to_string_lossy().to_string())
+        let out = cached.to_string_lossy().to_string();
+        debug_log::log_render(
+            "render.preview.full",
+            start.elapsed().as_secs_f64() * 1000.0,
+            json!({
+                "path": file_path.to_string_lossy(),
+                "resolved": out,
+                "stage": "full"
+            }),
+        );
+        Ok(out)
     }
 
     /// Asynchronously streams progressive thumbnail generation via Tauri IPC events.
@@ -513,6 +657,29 @@ pub mod commands {
         let _ = keep_or_nah_core::scan::discover_extensions(&dummy_path);
         Ok("keep_or_nah_core linked and operational".to_string())
     }
+
+    /// Returns true when debug timing mode (`KEEP_OR_NAH_DEBUG=1`) is enabled.
+    #[tauri::command]
+    pub fn get_debug_status() -> bool {
+        debug_log::is_debug_enabled()
+    }
+
+    /// Appends a frontend render or interaction event to the thread-safe JSON Lines debug log.
+    #[tauri::command]
+    pub fn record_debug_event(
+        event: String,
+        category: String,
+        duration_ms: Option<f64>,
+        details: Option<serde_json::Value>,
+    ) -> Result<(), String> {
+        let payload = details.unwrap_or_else(|| json!({}));
+        if category == "render" {
+            debug_log::log_render(&event, duration_ms.unwrap_or(0.0), payload);
+        } else {
+            debug_log::log_action(&event, duration_ms, payload);
+        }
+        Ok(())
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -524,6 +691,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::open_directory_dialog,
             commands::scan_directory,
+            commands::set_session_destinations,
+            commands::decide_immediate,
             commands::stage_decision,
             commands::undo_decision,
             commands::get_staged_decisions,
@@ -536,7 +705,9 @@ pub fn run() {
             commands::resolve_photo_preview,
             commands::resolve_full_raw_render,
             commands::resolve_heavy_render,
-            commands::check_core_status
+            commands::check_core_status,
+            commands::get_debug_status,
+            commands::record_debug_event
         ])
         .run(tauri::generate_context!())
         .expect("error while running Keep or Nah application");

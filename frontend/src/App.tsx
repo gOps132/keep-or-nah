@@ -17,10 +17,12 @@ import { ActionHud } from "./ActionHud";
 import { ReviewCommitModal } from "./ReviewCommitModal";
 import { SettingsModal, loadStoredSettings, AppSettings } from "./SettingsModal";
 import { useProgressiveAsset } from "./useProgressiveAsset";
+import { initDebugLogger, logRenderTiming, logDebugEvent } from "./debugLogger";
 
 export default function App() {
   const [appSettings, setAppSettings] = useState<AppSettings>(loadStoredSettings);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
   const [photoGroups, setPhotoGroups] = useState<PhotoGroup[]>([]);
   const [activeIndex, setActiveIndex] = useState<number>(0);
@@ -47,15 +49,37 @@ export default function App() {
     items: [],
   });
 
+  // Initialize opt-in debug timing logger on mount
+  useEffect(() => {
+    initDebugLogger();
+  }, []);
+
+  // Sync persisted triage destinations with backend SessionState
+  useEffect(() => {
+    invoke("set_session_destinations", {
+      keepDir: appSettings.keepDestination || null,
+      nahDir: appSettings.nahDestination || null,
+      flagDir: appSettings.flagDestination || null,
+    }).catch(() => {});
+  }, [
+    appSettings.keepDestination,
+    appSettings.nahDestination,
+    appSettings.flagDestination,
+  ]);
+
   // Listen for asynchronously streamed progressive thumbnail events
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listen<ThumbnailData>("thumbnail-ready", (event) => {
+      const t0 = performance.now();
       const thumb = event.payload;
       setThumbnails((prev) => ({
         ...prev,
         [thumb.path]: thumb,
       }));
+      logRenderTiming("render.thumbnail_strip", performance.now() - t0, {
+        path: thumb.path,
+      });
     })
       .then((fn) => {
         unlisten = fn;
@@ -71,8 +95,10 @@ export default function App() {
 
   // Load directory items and trigger scan
   const loadFolder = useCallback(async (folderPath: string) => {
+    const overlayStart = performance.now();
     try {
       setIsLoading(true);
+      setErrorMessage(null);
       setSelectedFolder(folderPath);
       const groups = await invoke<PhotoGroup[]>("scan_directory", { path: folderPath });
       setPhotoGroups(groups);
@@ -89,11 +115,34 @@ export default function App() {
         console.error("Failed to start thumbnail stream:", err);
       });
     } catch (err) {
+      logDebugEvent("error", { source: "loadFolder", error: String(err) });
       console.error("Failed to scan directory:", err);
     } finally {
       setIsLoading(false);
+      logRenderTiming("render.loading_overlay", performance.now() - overlayStart, {
+        folderPath,
+      });
     }
   }, []);
+
+  // Listen for native OS drag-and-drop folder events
+  useEffect(() => {
+    let unlistenDrop: (() => void) | undefined;
+    listen<{ paths?: string[] }>("tauri://drag-drop", (event) => {
+      const dropped = event.payload?.paths?.[0];
+      if (dropped) {
+        loadFolder(dropped);
+      }
+    })
+      .then((fn) => {
+        unlistenDrop = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      if (unlistenDrop) unlistenDrop();
+    };
+  }, [loadFolder]);
 
   // Compute burst clusters and relative Best Shot whenever thumbnails update
   useEffect(() => {
@@ -155,10 +204,45 @@ export default function App() {
 
   const activeGroup = photoGroups[activeIndex] ?? null;
 
-  // Stage a triage decision (Keep, Nah, Flag)
+  // Log navigation events when active photo group changes
+  useEffect(() => {
+    if (!activeGroup) return;
+    logDebugEvent("navigation", {
+      activeIndex,
+      stem: activeGroup.stem,
+      representative: activeGroup.representative,
+    });
+  }, [activeIndex, activeGroup]);
+
+  // Stage or immediately execute a triage decision (Keep, Nah, Flag)
   const handleStageDecision = useCallback(
     async (decision: "keep" | "nah" | "flag") => {
       if (!activeGroup) return;
+      setErrorMessage(null);
+
+      if (appSettings.stagedTriage === false) {
+        const immediateMode = appSettings.actionMode || "move";
+        try {
+          await invoke<CommitResultDto>("decide_immediate", {
+            stem: activeGroup.stem,
+            decision,
+            actionMode: immediateMode,
+          });
+          if (immediateMode === "copy") {
+            setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1));
+          } else {
+            setPhotoGroups((prev) => {
+              const next = prev.filter((g) => g.stem !== activeGroup.stem);
+              setActiveIndex((idx) => Math.min(Math.max(0, next.length - 1), idx));
+              return next;
+            });
+          }
+        } catch (err) {
+          setErrorMessage(String(err));
+          logDebugEvent("error", { source: "decide_immediate", error: String(err) });
+        }
+        return;
+      }
 
       try {
         const updated = await invoke<Record<string, string>>("stage_decision", {
@@ -173,7 +257,7 @@ export default function App() {
         console.error("Failed to stage decision:", err);
       }
     },
-    [activeGroup, photoGroups.length]
+    [activeGroup, photoGroups.length, appSettings.stagedTriage, appSettings.actionMode]
   );
 
   // Undo last decision
@@ -184,16 +268,18 @@ export default function App() {
         const decisions = await invoke<Record<string, string>>("get_staged_decisions");
         setStagedDecisions(decisions);
 
-        // Navigate back to the photo that was undone
+        // Navigate back to the photo that was undone (or reload folder if immediate undo restored a file)
         const foundIdx = photoGroups.findIndex((g) => g.stem === undoneStem);
         if (foundIdx !== -1) {
           setActiveIndex(foundIdx);
+        } else if (selectedFolder) {
+          await loadFolder(selectedFolder);
         }
       }
     } catch (err) {
       console.error("Failed to undo decision:", err);
     }
-  }, [photoGroups]);
+  }, [photoGroups, selectedFolder, loadFolder]);
 
   // Open the review batch commit modal
   const handleOpenReviewModal = useCallback(async () => {
@@ -210,6 +296,8 @@ export default function App() {
   const handleConfirmCommit = async (actionMode: "move" | "copy") => {
     try {
       const result = await invoke<CommitResultDto>("commit_batch", {
+        keepDir: appSettings.keepDestination || null,
+        nahDir: appSettings.nahDestination || null,
         actionMode,
       });
 
@@ -553,6 +641,14 @@ export default function App() {
 
       {/* Main Studio Canvas Viewport */}
       <main className="flex-1 relative bg-canvas overflow-hidden flex items-center justify-center">
+        {errorMessage && (
+          <div
+            data-testid="error-banner"
+            className="absolute top-3 left-1/2 -translate-x-1/2 z-40 px-4 py-2 rounded-lg bg-red-950/90 border border-red-500/40 text-red-200 text-xs font-medium shadow-xl"
+          >
+            {errorMessage}
+          </div>
+        )}
         {photoGroups.length > 0 && activeGroup ? (
           <>
             <PreviewViewport
@@ -629,7 +725,15 @@ export default function App() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         settings={appSettings}
-        onUpdateSettings={setAppSettings}
+        onUpdateSettings={(next) => {
+          setAppSettings(next);
+          logDebugEvent("settings_change", {
+            defaultViewMode: next.defaultViewMode,
+            stagedTriage: next.stagedTriage,
+            actionMode: next.actionMode,
+          });
+        }}
+        onPickDestination={() => invoke<string | null>("open_directory_dialog")}
       />
 
       {/* Studio Footer Status */}

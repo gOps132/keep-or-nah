@@ -33,7 +33,7 @@ A triage decision marking a photo group to be discarded and moved to the designa
 _Avoid_: Reject, delete, discard, drop
 
 **Flag**:
-A triage decision marking a photo group for later re-examination without moving it immediately.
+A triage decision marking a photo group for later re-examination without moving it immediately in staged mode, or routing it to a configured Flag destination folder when set.
 _Avoid_: Star, bookmark, mark
 
 **Staged Decision**:

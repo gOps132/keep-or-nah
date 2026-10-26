@@ -166,15 +166,15 @@ To run the app:
 
 ### Triage Workflow
 
-1. **Open a Photo Session**: Click **Open Folder** to select a directory containing your photos. Keep or Nah natively scans the directory, groups same-stem files into **Photo Groups**, and populates the **Thumbnail Strip**.
+1. **Open a Photo Session**: Click **Open Folder** (or drag and drop a folder onto the window) to select a directory containing your photos. Keep or Nah natively scans the directory, groups same-stem files into **Photo Groups**, and populates the **Thumbnail Strip**.
 2. **Make Triage Decisions**: Navigate through photos using the keyboard. For each Photo Group, assign:
-   * **Keep** (`D` or `Space`): Marks the group to be kept and routed to your designated keep destination.
-   * **Nah** (`A` or `Del`): Marks the group to be discarded to the trash folder or system trash.
-   * **Flag** (`F`): Sets the group aside for later re-examination without moving it.
-3. **Compare Close Frames**: Press `C` to enter **Split Comparison** mode. Pan and zoom simultaneously across both frames to inspect focus. Press `1` to keep the left photo (marking right as Nah) or `2` to keep the right photo (marking left as Nah).
-4. **Choose Action Mode**: Toggle between **Move** (moves files out of the source directory) and **Copy** (duplicates files to the destination while preserving the originals).
-5. **Review and Batch Commit**: Click the **Review Batch** button to inspect staged decisions, total photo counts, and disk space to be reclaimed. Click **Commit Batch** to apply all file operations atomically with rollback on error.
-6. **Undo Anytime**: Made a mistake? Press `Cmd+Z` (`Ctrl+Z` on Windows/Linux) to reverse operations using the transactional **Undo Journal**.
+   * **Keep** (`1`): Marks the group to be kept and routed to your designated keep destination (defaults to `<session>/keep`).
+   * **Nah** (`2`): Marks the group to be discarded to the trash folder (defaults to `<session>/trash`).
+   * **Flag** (`F`): Sets the group aside for later re-examination. In staged mode, it stays in place in the source folder; when using Immediate Mode with a **Flag Destination** configured in **Preferences**, it moves or copies the group to the chosen Flag folder.
+3. **Compare Close Frames & Formats**: Press `C` to enter **Split Comparison** (`2-Up Compare`) mode. Pan and zoom simultaneously across both frames to inspect focus. Press `V` to cycle formats within a multi-format Photo Group (`RAW` + `JPG`), or press `X` in `2-Up` mode to compare `RAW` vs `JPG` side by side.
+4. **Configure Destinations & Mode**: Open **Preferences** to customize default view mode (`1-Up` or `2-Up`), triage mode (`Staged Batch` or `Immediate Mode`), action mode (`Move` or `Copy`), custom **Keep**, **Nah**, and **Flag** destination folders, and representative format priority.
+5. **Review and Batch Commit**: Click **Review Batch** (`⌘↵` / `Ctrl+Enter`) to inspect staged decisions, total photo counts, and disk space to be reclaimed, then choose **Move** or **Copy** and click **Commit**.
+6. **Undo Anytime**: Made a mistake? Press `Cmd+Z` (`Ctrl+Z` on Windows/Linux) to reverse staged or immediate operations using the transactional **Undo Journal**.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -186,21 +186,28 @@ Keep or Nah is designed for fluid, mouse-free triage:
 | --- | --- |
 | `Left` | Previous Photo Group |
 | `Right` | Next Photo Group |
-| `A` | Nah (discard) |
-| `D` | Keep |
-| `F` | Flag (defer) |
-| `Space` | Keep |
-| `Del` | Nah (discard) |
-| `C` | Toggle Split Comparison mode |
-| `1` | Split Comparison: Keep left photo, mark right as Nah |
-| `2` | Split Comparison: Keep right photo, mark left as Nah |
-| `Cmd+Z` / `Ctrl+Z` | Undo last file operation via Undo Journal |
-| `Cmd+=` / `Ctrl+=` | Zoom in |
-| `Cmd+-` / `Ctrl+-` | Zoom out |
-| `Cmd+0` / `Ctrl+0` | Reset zoom to fit |
-| `Cmd+,` / `Ctrl+,` | Open Preferences / Settings |
+| `1` | Keep |
+| `2` | Nah (discard) |
+| `F` | Flag (set aside / route to Flag destination) |
+| `C` | Toggle Split Comparison (`1-Up` / `2-Up`) |
+| `V` | Cycle active file format within a multi-format Photo Group |
+| `X` | Toggle between adjacent Photo Group comparison and intra-group Format Comparison in `2-Up` mode |
+| `Cmd+Z` / `Ctrl+Z` | Undo last decision or file operation via Undo Journal |
+| `Cmd+Enter` / `Ctrl+Enter` | Open Review & Batch Commit modal |
+| `0` | Reset zoom and pan to fit |
+| `Escape` | Close active modal |
 
-*Note: Keyboard shortcuts are inactive while a text entry field has focus.*
+*Note: Keyboard shortcuts are inactive while a modal dialog is open.*
+
+### Debug Render Timing Log
+
+To record every render boundary (`render.preview.fast`, `render.preview.full`, `render.thumbnail_decode`, `render.thumbnail_strip`, `render.split_comparison`, `render.loading_overlay`) with its `duration_ms` alongside user actions in thread-safe JSON Lines format:
+
+```bash
+KEEP_OR_NAH_DEBUG=1 KEEP_OR_NAH_DEBUG_LOG=/tmp/keep-or-nah-render.jsonl npm run dev
+```
+
+When `KEEP_OR_NAH_DEBUG` is unset, logging is completely disabled and writes no files.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

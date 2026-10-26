@@ -132,4 +132,39 @@ describe("SettingsModal & Preference Persistence", () => {
     fireEvent.click(screen.getByTestId("settings-reset-btn"));
     expect(currentSettings.formatPriority).toEqual(DEFAULT_FORMAT_PRIORITY);
   });
+
+  it("renders Keep, Nah, and Flag destination pickers and persists chosen Flag destination", async () => {
+    let currentSettings = { ...DEFAULT_SETTINGS };
+    const onUpdate = vi.fn((newSettings) => {
+      currentSettings = newSettings;
+    });
+    const onPickDestination = vi.fn(async (kind: "keep" | "nah" | "flag") => {
+      if (kind === "flag") return "/custom/flagged";
+      if (kind === "keep") return "/custom/keep";
+      return "/custom/nah";
+    });
+
+    render(
+      <SettingsModal
+        isOpen={true}
+        onClose={vi.fn()}
+        settings={currentSettings}
+        onUpdateSettings={onUpdate}
+        onPickDestination={onPickDestination}
+      />
+    );
+
+    expect(screen.getByTestId("keep-destination-picker")).toBeDefined();
+    expect(screen.getByTestId("nah-destination-picker")).toBeDefined();
+    const flagPicker = screen.getByTestId("flag-destination-picker");
+    expect(flagPicker).toBeDefined();
+
+    fireEvent.click(flagPicker);
+
+    await vi.waitFor(() => {
+      expect(onPickDestination).toHaveBeenCalledWith("flag");
+      expect(currentSettings.flagDestination).toBe("/custom/flagged");
+      expect(loadStoredSettings().flagDestination).toBe("/custom/flagged");
+    });
+  });
 });
