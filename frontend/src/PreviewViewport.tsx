@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import { convertFileSrc, isTauri } from "@tauri-apps/api/core";
 import { ExifMetadataDto } from "./types";
 import { ZoomIn, ZoomOut, Maximize2, Camera, Star } from "lucide-react";
+import { logRenderTiming, logDebugEvent } from "./debugLogger";
 
 export type ViewMode = "1-up" | "2-up";
 
@@ -252,6 +253,39 @@ export const PreviewViewport: React.FC<PreviewViewportProps> = ({
   };
 
   const isSplit = viewMode === "2-up" && comparison != null;
+
+  useEffect(() => {
+    const start = performance.now();
+    const id = requestAnimationFrame(() => {
+      const duration = performance.now() - start;
+      if (isSplit) {
+        logRenderTiming("render.split_comparison", duration, {
+          primary: activePrimary.stem,
+          comparison: comparison?.stem ?? null,
+          compareTarget,
+        });
+      } else {
+        logRenderTiming("render.preview.display", duration, {
+          stem: activePrimary.stem,
+          filePath: activePrimary.filePath,
+          rawStatus: activePrimary.rawStatus ?? null,
+        });
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [
+    isSplit,
+    activePrimary.stem,
+    activePrimary.filePath,
+    activePrimary.rawStatus,
+    comparison?.stem,
+    comparison?.filePath,
+    compareTarget,
+  ]);
+
+  useEffect(() => {
+    logDebugEvent("zoom", { zoom, stem: activePrimary.stem });
+  }, [zoom, activePrimary.stem]);
 
   return (
     <div
