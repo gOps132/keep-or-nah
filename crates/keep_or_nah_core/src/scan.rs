@@ -78,6 +78,19 @@ fn read_direct_children(source_dir: &Path) -> Vec<Member> {
         .collect()
 }
 
+/// Default raster formats that can be displayed directly in preview viewports.
+pub const DEFAULT_PREVIEWABLE_EXTENSIONS: &[&str] = &[
+    ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif",
+];
+
+/// Returns the default list of previewable extensions.
+pub fn default_previewable_extensions() -> Vec<String> {
+    DEFAULT_PREVIEWABLE_EXTENSIONS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// Normalized extensions found among direct-child regular files,
 /// ascending — Python `discover_extensions`.
 pub fn discover_extensions(source_dir: &Path) -> Vec<String> {
@@ -98,8 +111,10 @@ pub fn build_photo_groups(
     previewable: &[String],
 ) -> Vec<ScannedGroup> {
     let enabled_set: HashSet<String> = enabled.iter().map(|raw| raw.to_lowercase()).collect();
-    let previewable_set: HashSet<String> =
-        previewable.iter().map(|raw| raw.to_lowercase()).collect();
+    let mut previewable_order: HashMap<String, usize> = HashMap::new();
+    for (idx, raw) in previewable.iter().enumerate() {
+        previewable_order.entry(raw.to_lowercase()).or_insert(idx);
+    }
 
     // Bucket by exact stem (case-sensitive), like Python's `setdefault` loop.
     let mut buckets: HashMap<String, Vec<Member>> = HashMap::new();
@@ -135,10 +150,12 @@ pub fn build_photo_groups(
             continue;
         }
 
-        // Representative: previewable first, then extension, then filename.
+        // Representative: previewable first (by order), then extension, then filename.
         let representative = eligible
             .iter()
-            .min_by(|a, b| rank_member(a, &previewable_set).cmp(&rank_member(b, &previewable_set)))
+            .min_by(|a, b| {
+                rank_member(a, &previewable_order).cmp(&rank_member(b, &previewable_order))
+            })
             .expect("eligible is non-empty")
             .path
             .clone();
@@ -154,10 +171,13 @@ pub fn build_photo_groups(
 
 fn rank_member(
     member: &Member,
-    previewable_set: &HashSet<String>,
-) -> (bool, String, String, String) {
+    previewable_order: &HashMap<String, usize>,
+) -> (usize, String, String, String) {
     (
-        !previewable_set.contains(&member.suffix_lower),
+        previewable_order
+            .get(&member.suffix_lower)
+            .copied()
+            .unwrap_or(usize::MAX),
         member.suffix_lower.clone(),
         member.lower_name.clone(),
         member.name.clone(),
@@ -396,5 +416,54 @@ mod tests {
         let groups = build_photo_groups(&missing, &extensions(&[".jpg"]), &extensions(&[".jpg"]));
 
         assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn build_photo_groups_prioritizes_jpeg_over_arw_in_same_stem_group() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "DSC0001.ARW");
+        write(dir.path(), "DSC0001.JPG");
+        write(dir.path(), "DSC0001.xmp");
+
+        let groups = build_photo_groups(
+            dir.path(),
+            &discover_extensions(dir.path()),
+            &default_previewable_extensions(),
+        );
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].stem, "DSC0001");
+        assert_eq!(
+            names(&groups[0].members),
+            vec!["DSC0001.ARW", "DSC0001.JPG", "DSC0001.xmp"]
+        );
+        assert_eq!(groups[0].representative.file_name().unwrap(), "DSC0001.JPG");
+    }
+
+    #[test]
+    fn build_photo_groups_respects_previewable_order_priority() {
+        let dir = TempDir::new().unwrap();
+        write(dir.path(), "DSC0001.png");
+        write(dir.path(), "DSC0001.jpg");
+
+        let groups_png_first = build_photo_groups(
+            dir.path(),
+            &extensions(&[".png", ".jpg"]),
+            &extensions(&[".png", ".jpg"]),
+        );
+        assert_eq!(
+            groups_png_first[0].representative.file_name().unwrap(),
+            "DSC0001.png"
+        );
+
+        let groups_jpg_first = build_photo_groups(
+            dir.path(),
+            &extensions(&[".png", ".jpg"]),
+            &extensions(&[".jpg", ".png"]),
+        );
+        assert_eq!(
+            groups_jpg_first[0].representative.file_name().unwrap(),
+            "DSC0001.jpg"
+        );
     }
 }

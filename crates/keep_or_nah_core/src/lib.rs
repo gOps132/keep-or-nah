@@ -1,8 +1,11 @@
 pub mod analysis;
 pub mod cache;
 pub mod fileops;
+pub mod heavy_asset;
 pub mod image_loader;
 pub mod pipeline;
+pub mod raw_demosaic;
+pub mod raw_extractor;
 pub mod scan;
 
 pub fn version() -> &'static str {

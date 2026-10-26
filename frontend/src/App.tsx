@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { FolderOpen, Sparkles, Undo2, CheckSquare, Square, Columns2 } from "lucide-react";
+import { FolderOpen, Sparkles, Undo2, CheckSquare, Square, Columns2, Settings } from "lucide-react";
 import {
   PhotoGroup,
   ThumbnailData,
@@ -12,11 +12,15 @@ import {
   PhotoBurstInfo,
 } from "./types";
 import { ThumbnailStrip } from "./ThumbnailStrip";
-import { PreviewViewport, ViewMode } from "./PreviewViewport";
+import { PreviewViewport, ViewMode, isViewableFormat } from "./PreviewViewport";
 import { ActionHud } from "./ActionHud";
 import { ReviewCommitModal } from "./ReviewCommitModal";
+import { SettingsModal, loadStoredSettings, AppSettings } from "./SettingsModal";
+import { useProgressiveAsset } from "./useProgressiveAsset";
 
 export default function App() {
+  const [appSettings, setAppSettings] = useState<AppSettings>(loadStoredSettings);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
   const [photoGroups, setPhotoGroups] = useState<PhotoGroup[]>([]);
   const [activeIndex, setActiveIndex] = useState<number>(0);
@@ -26,7 +30,10 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [bestShotStems, setBestShotStems] = useState<Set<string>>(new Set());
   const [burstClusterMap, setBurstClusterMap] = useState<Record<string, string>>({});
-  const [viewMode, setViewMode] = useState<ViewMode>("1-up");
+  const [viewMode, setViewMode] = useState<ViewMode>(() => loadStoredSettings().defaultViewMode);
+  const [compareTarget, setCompareTarget] = useState<"photo" | "format">("photo");
+  const [activeMemberOverride, setActiveMemberOverride] = useState<Record<string, string>>({});
+  const [comparisonMemberOverride, setComparisonMemberOverride] = useState<Record<string, string>>({});
 
   // Review modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -241,50 +248,24 @@ export default function App() {
   }, [activeGroup, exifCache]);
 
   // Global Keyboard Navigation & Hotkeys
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // ⌘↵ / Ctrl+Enter: Review Batch Modal
-      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-        e.preventDefault();
-        if (Object.keys(stagedDecisions).length > 0) {
-          handleOpenReviewModal();
-        }
-        return;
-      }
+  const handleSelectMember = useCallback((stem: string, memberPath: string) => {
+    setActiveMemberOverride((prev) => ({ ...prev, [stem]: memberPath }));
+  }, []);
 
-      // Undo: ⌘Z / Ctrl+Z
-      if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z")) {
-        e.preventDefault();
-        handleUndo();
-        return;
-      }
+  const selectedPrimaryMember = activeGroup
+    ? activeMemberOverride[activeGroup.stem] || activeGroup.representative
+    : "";
 
-      if (photoGroups.length === 0 || isModalOpen) return;
+  const viewableMembers = activeGroup ? activeGroup.members.filter(isViewableFormat) : [];
+  const hasMultipleFormats = viewableMembers.length > 1;
 
-      if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        setActiveIndex((prev) => Math.max(0, prev - 1));
-      } else if (e.key === "ArrowRight") {
-        e.preventDefault();
-        setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1));
-      } else if (e.key === "1") {
-        e.preventDefault();
-        handleStageDecision("keep");
-      } else if (e.key === "2") {
-        e.preventDefault();
-        handleStageDecision("nah");
-      } else if (e.key === "f" || e.key === "F") {
-        e.preventDefault();
-        handleStageDecision("flag");
-      } else if (e.key === "c" || e.key === "C") {
-        e.preventDefault();
-        setViewMode((prev) => (prev === "1-up" ? "2-up" : "1-up"));
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [photoGroups.length, stagedDecisions, isModalOpen, handleStageDecision, handleUndo, handleOpenReviewModal]);
+  // Companion format for 2-Up format comparison mode
+  const companionFormatPath =
+    compareTarget === "format" && hasMultipleFormats && activeGroup
+      ? comparisonMemberOverride[activeGroup.stem] ||
+        viewableMembers.find((m) => m !== selectedPrimaryMember) ||
+        viewableMembers[0]
+      : null;
 
   // Resolve comparison photo in 2-Up mode
   const comparisonGroup = (() => {
@@ -312,28 +293,149 @@ export default function App() {
     return photoGroups[activeIndex + 1] || photoGroups[activeIndex - 1] || null;
   })();
 
+  const comparisonTargetFilePath =
+    viewMode === "2-up"
+      ? compareTarget === "format" && hasMultipleFormats
+        ? companionFormatPath
+        : comparisonGroup?.representative || null
+      : null;
+
+  // Progressive 2-stage asset pipeline with 300ms settle debounce and single-worker gating
+  const primaryAsset = useProgressiveAsset(selectedPrimaryMember || null, 300);
+  const comparisonAsset = useProgressiveAsset(comparisonTargetFilePath, 300);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // ⌘↵ / Ctrl+Enter: Review Batch Modal
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        if (Object.keys(stagedDecisions).length > 0) {
+          handleOpenReviewModal();
+        }
+        return;
+      }
+
+      // Undo: ⌘Z / Ctrl+Z
+      if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+
+      if (photoGroups.length === 0 || isModalOpen || isSettingsOpen) return;
+
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        setActiveIndex((prev) => Math.max(0, prev - 1));
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1));
+      } else if (e.key === "1") {
+        e.preventDefault();
+        handleStageDecision("keep");
+      } else if (e.key === "2") {
+        e.preventDefault();
+        handleStageDecision("nah");
+      } else if (e.key === "f" || e.key === "F") {
+        e.preventDefault();
+        handleStageDecision("flag");
+      } else if (e.key === "c" || e.key === "C") {
+        e.preventDefault();
+        setViewMode((prev) => (prev === "1-up" ? "2-up" : "1-up"));
+      } else if (e.key === "x" || e.key === "X") {
+        e.preventDefault();
+        if (hasMultipleFormats) {
+          if (viewMode !== "2-up") {
+            setViewMode("2-up");
+            setCompareTarget("format");
+          } else {
+            setCompareTarget((prev) => (prev === "photo" ? "format" : "photo"));
+          }
+        }
+      } else if (e.key === "v" || e.key === "V") {
+        e.preventDefault();
+        if (activeGroup && hasMultipleFormats) {
+          const current = activeMemberOverride[activeGroup.stem] || activeGroup.representative;
+          const currentIdx = viewableMembers.indexOf(current);
+          const nextIdx = (currentIdx + 1) % viewableMembers.length;
+          const nextPath = viewableMembers[nextIdx];
+          handleSelectMember(activeGroup.stem, nextPath);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [
+    photoGroups.length,
+    stagedDecisions,
+    isModalOpen,
+    isSettingsOpen,
+    activeGroup,
+    activeMemberOverride,
+    hasMultipleFormats,
+    viewMode,
+    viewableMembers,
+    handleStageDecision,
+    handleUndo,
+    handleOpenReviewModal,
+    handleSelectMember,
+  ]);
+
   const primaryViewItem = activeGroup
     ? {
-        filePath: activeGroup.representative,
+        filePath: primaryAsset.displayPath || selectedPrimaryMember,
+        sourcePath: selectedPrimaryMember,
         stem: activeGroup.stem,
         exif: exifCache[activeGroup.representative] ?? null,
         isBestShot: bestShotStems.has(activeGroup.stem),
         burstTag:
           burstClusterMap[activeGroup.representative] || burstClusterMap[activeGroup.stem],
+        members: activeGroup.members,
+        selectedMember: selectedPrimaryMember,
+        onSelectMember: (path: string) => handleSelectMember(activeGroup.stem, path),
+        rawStatus: primaryAsset.rawStatus,
       }
     : undefined;
 
-  const comparisonViewItem = comparisonGroup
-    ? {
-        filePath: comparisonGroup.representative,
-        stem: comparisonGroup.stem,
-        exif: exifCache[comparisonGroup.representative] ?? null,
-        isBestShot: bestShotStems.has(comparisonGroup.stem),
-        burstTag:
-          burstClusterMap[comparisonGroup.representative] ||
-          burstClusterMap[comparisonGroup.stem],
-      }
-    : null;
+  const comparisonViewItem = (() => {
+    if (viewMode !== "2-up" || !activeGroup) return null;
+
+    if (compareTarget === "format" && hasMultipleFormats && companionFormatPath) {
+      return {
+        filePath: comparisonAsset.displayPath || companionFormatPath,
+        sourcePath: companionFormatPath,
+        stem: activeGroup.stem,
+        exif: exifCache[activeGroup.representative] ?? null,
+        isBestShot: false,
+        burstTag: undefined,
+        members: activeGroup.members,
+        selectedMember: companionFormatPath,
+        onSelectMember: (path: string) => {
+          setComparisonMemberOverride((prev) => ({
+            ...prev,
+            [activeGroup.stem]: path,
+          }));
+        },
+        rawStatus: comparisonAsset.rawStatus,
+      };
+    }
+
+    if (!comparisonGroup) return null;
+    return {
+      filePath: comparisonAsset.displayPath || comparisonGroup.representative,
+      sourcePath: comparisonGroup.representative,
+      stem: comparisonGroup.stem,
+      exif: exifCache[comparisonGroup.representative] ?? null,
+      isBestShot: bestShotStems.has(comparisonGroup.stem),
+      burstTag:
+        burstClusterMap[comparisonGroup.representative] ||
+        burstClusterMap[comparisonGroup.stem],
+      members: comparisonGroup.members,
+      selectedMember: comparisonGroup.representative,
+      rawStatus: comparisonAsset.rawStatus,
+    };
+  })();
 
   const totalStaged = Object.keys(stagedDecisions).length;
   const keepCount = Object.values(stagedDecisions).filter((d) => d === "keep").length;
@@ -430,6 +532,15 @@ export default function App() {
           )}
 
           <button
+            onClick={() => setIsSettingsOpen(true)}
+            data-testid="settings-open-btn"
+            title="Preferences"
+            className="p-2 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition border border-white/[0.06] active:scale-95 cursor-pointer"
+          >
+            <Settings className="w-3.5 h-3.5" />
+          </button>
+
+          <button
             onClick={handleOpenFolder}
             disabled={isLoading}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium transition-all duration-150 border border-white/[0.06] active:scale-95 cursor-pointer"
@@ -451,6 +562,9 @@ export default function App() {
               viewMode={viewMode}
               primary={primaryViewItem}
               comparison={comparisonViewItem}
+              compareTarget={compareTarget}
+              onToggleCompareTarget={setCompareTarget}
+              hasMultipleFormats={hasMultipleFormats}
             />
 
             {/* Floating Glass Action HUD */}
@@ -508,6 +622,14 @@ export default function App() {
         onClose={() => setIsModalOpen(false)}
         summary={batchSummary}
         onConfirmCommit={handleConfirmCommit}
+      />
+
+      {/* Settings Preferences Modal */}
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        settings={appSettings}
+        onUpdateSettings={setAppSettings}
       />
 
       {/* Studio Footer Status */}
