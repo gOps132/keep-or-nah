@@ -26,6 +26,11 @@ const mockPhotoGroups: PhotoGroup[] = [
 ];
 
 let stagedMap: Record<string, string> = {};
+let sessionDestinations: {
+  keepDir?: string | null;
+  nahDir?: string | null;
+  flagDir?: string | null;
+} = {};
 
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => false,
@@ -42,6 +47,20 @@ vi.mock("@tauri-apps/api/core", () => ({
         return args.path;
       case "resolve_full_raw_render":
         return args.path;
+      case "set_session_destinations":
+        sessionDestinations = {
+          keepDir: args?.keepDir,
+          nahDir: args?.nahDir,
+          flagDir: args?.flagDir,
+        };
+        return null;
+      case "decide_immediate":
+        if (args.decision === "flag" && !sessionDestinations.flagDir) {
+          throw "Choose a Flag folder before sorting.";
+        }
+        return { successful_groups: 1, successful_files: 1, errors: [] };
+      case "get_debug_status":
+        return false;
       case "read_exif_metadata":
         return {
           camera_model: "Sony A7IV",
@@ -101,6 +120,8 @@ vi.mock("@tauri-apps/api/event", () => ({
 describe("App Integration Tests", () => {
   beforeEach(() => {
     stagedMap = {};
+    sessionDestinations = {};
+    localStorage.clear();
   });
 
   afterEach(() => {
@@ -352,6 +373,43 @@ describe("App Integration Tests", () => {
       const rawBadge = screen.getByTestId("raw-status-badge");
       expect(rawBadge).toBeDefined();
       expect(rawBadge.textContent).toContain("RAW");
+    });
+  });
+
+  it("shows error when pressing F in immediate mode without Flag destination, and succeeds once set", async () => {
+    render(<App />);
+
+    // Open folder
+    fireEvent.click(screen.getByText("Choose Photo Folder"));
+    await waitFor(() => {
+      expect(screen.getByText("DSC_0001")).toBeDefined();
+    });
+
+    // Open settings and switch to Immediate Mode
+    fireEvent.click(screen.getByTestId("settings-open-btn"));
+    fireEvent.click(screen.getByTestId("setting-triage-immediate"));
+    fireEvent.click(screen.getByTestId("settings-close-btn"));
+
+    // Press F without Flag destination -> shows "Choose a Flag folder before sorting."
+    fireEvent.keyDown(window, { key: "f" });
+    await waitFor(() => {
+      const banner = screen.getByTestId("error-banner");
+      expect(banner.textContent).toBe("Choose a Flag folder before sorting.");
+    });
+
+    // Open settings and choose a Flag destination
+    fireEvent.click(screen.getByTestId("settings-open-btn"));
+    fireEvent.click(screen.getByTestId("flag-destination-picker"));
+    await waitFor(() => {
+      expect(sessionDestinations.flagDir).toBe("/photos");
+    });
+    fireEvent.click(screen.getByTestId("settings-close-btn"));
+
+    // Press F again -> succeeds and removes DSC_0001 from active queue
+    fireEvent.keyDown(window, { key: "f" });
+    await waitFor(() => {
+      expect(screen.queryByTestId("error-banner")).toBeNull();
+      expect(screen.getByText(/Photo 1 of 2/)).toBeDefined();
     });
   });
 });

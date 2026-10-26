@@ -172,12 +172,151 @@ fn rollback_ops(ops: Vec<ExecutedOp>, session_dir: &Path) -> Result<(), String> 
     Ok(())
 }
 
+fn execute_group_file_ops(
+    members: &[PathBuf],
+    dest_folder: &Path,
+    is_move: bool,
+) -> (Vec<ExecutedOp>, Option<String>) {
+    let mut group_ops = Vec::new();
+
+    for member in members {
+        let file_name = match member.file_name() {
+            Some(name) => name,
+            None => continue,
+        };
+        let target_file = dest_folder.join(file_name);
+
+        if is_move {
+            match fs::rename(member, &target_file) {
+                Ok(_) => {
+                    group_ops.push(ExecutedOp::Moved {
+                        source: member.clone(),
+                        destination: target_file,
+                    });
+                }
+                Err(rename_err) => {
+                    let source_ident = match keep_or_nah_core::fileops::identity_of(member) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            return (
+                                group_ops,
+                                Some(format!(
+                                    "Failed to read source identity for {} ({rename_err}): {e}",
+                                    member.display()
+                                )),
+                            );
+                        }
+                    };
+                    match keep_or_nah_core::fileops::stage_copy(
+                        member,
+                        dest_folder,
+                        Some(&source_ident.components()),
+                    ) {
+                        Ok(staged) => {
+                            let staged_p = Path::new(&staged.path);
+                            if let Err(e) = fs::rename(staged_p, &target_file) {
+                                let _ = fs::remove_file(staged_p);
+                                return (
+                                    group_ops,
+                                    Some(format!(
+                                        "Failed to publish staged file for {}: {e}",
+                                        member.display()
+                                    )),
+                                );
+                            }
+                            if let Err(e) = keep_or_nah_core::fileops::remove_verified(
+                                member,
+                                &source_ident.components(),
+                            ) {
+                                let _ = fs::remove_file(&target_file);
+                                return (
+                                    group_ops,
+                                    Some(format!(
+                                        "Failed to verified-remove source {}: {e}",
+                                        member.display()
+                                    )),
+                                );
+                            }
+                            group_ops.push(ExecutedOp::Moved {
+                                source: member.clone(),
+                                destination: target_file,
+                            });
+                        }
+                        Err(e) => {
+                            return (
+                                group_ops,
+                                Some(format!(
+                                    "Failed to move {} ({rename_err}): {e}",
+                                    member.display()
+                                )),
+                            );
+                        }
+                    }
+                }
+            }
+        } else {
+            match keep_or_nah_core::fileops::stage_copy(member, dest_folder, None) {
+                Ok(staged) => {
+                    let staged_p = Path::new(&staged.path);
+                    if let Err(e) = fs::rename(staged_p, &target_file) {
+                        let _ = fs::remove_file(staged_p);
+                        return (
+                            group_ops,
+                            Some(format!(
+                                "Failed to publish staged copy for {}: {e}",
+                                member.display()
+                            )),
+                        );
+                    }
+                    group_ops.push(ExecutedOp::Copied {
+                        destination: target_file,
+                    });
+                }
+                Err(e) => {
+                    return (
+                        group_ops,
+                        Some(format!(
+                            "Failed to stage copy for {}: {e}",
+                            member.display()
+                        )),
+                    );
+                }
+            }
+        }
+    }
+
+    (group_ops, None)
+}
+
+fn clean_dir_opt(dir: Option<String>) -> Option<String> {
+    dir.and_then(|d| {
+        let trimmed = d.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImmediateDecisionRecord {
+    pub stem: String,
+    pub decision: Decision,
+    pub ops: Vec<ExecutedOp>,
+    pub members: Vec<PathBuf>,
+}
+
 #[derive(Debug, Default)]
 pub struct SessionState {
     pub source_dir: Option<String>,
+    pub keep_dir: Option<String>,
+    pub nah_dir: Option<String>,
+    pub flag_dir: Option<String>,
     pub decisions: HashMap<String, Decision>,
     pub group_members: HashMap<String, Vec<PathBuf>>,
     pub undo_journal: Vec<StagedDecisionRecord>,
+    pub immediate_undo_journal: Vec<ImmediateDecisionRecord>,
 }
 
 impl SessionState {
@@ -185,11 +324,89 @@ impl SessionState {
         Self::default()
     }
 
+    pub fn set_destinations(
+        &mut self,
+        keep_dir: Option<String>,
+        nah_dir: Option<String>,
+        flag_dir: Option<String>,
+    ) {
+        self.keep_dir = clean_dir_opt(keep_dir);
+        self.nah_dir = clean_dir_opt(nah_dir);
+        self.flag_dir = clean_dir_opt(flag_dir);
+    }
+
+    pub fn decide_immediate(
+        &mut self,
+        stem: String,
+        decision: Decision,
+        action_mode: ActionMode,
+    ) -> Result<CommitResultDto, String> {
+        let source_root = self
+            .source_dir
+            .as_ref()
+            .ok_or_else(|| "No active session source directory".to_string())?;
+        let session_path = Path::new(source_root);
+
+        let dest_folder = match decision {
+            Decision::Keep => self
+                .keep_dir
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| session_path.join("keep")),
+            Decision::Nah => self
+                .nah_dir
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| session_path.join("trash")),
+            Decision::Flag => match self.flag_dir.as_ref() {
+                Some(dir) => PathBuf::from(dir),
+                None => return Err("Choose a Flag folder before sorting.".to_string()),
+            },
+        };
+
+        fs::create_dir_all(&dest_folder).map_err(|e| {
+            format!(
+                "Failed to create destination folder {}: {e}",
+                dest_folder.display()
+            )
+        })?;
+
+        let members = self
+            .group_members
+            .get(&stem)
+            .cloned()
+            .ok_or_else(|| format!("Photo group not found: {stem}"))?;
+
+        let (group_ops, err_opt) =
+            execute_group_file_ops(&members, &dest_folder, action_mode.is_move());
+        if let Some(err) = err_opt {
+            let _ = rollback_ops(group_ops, session_path);
+            return Err(err);
+        }
+
+        let file_count = group_ops.len();
+        self.decisions.remove(&stem);
+        self.group_members.remove(&stem);
+        self.immediate_undo_journal.push(ImmediateDecisionRecord {
+            stem,
+            decision,
+            ops: group_ops,
+            members,
+        });
+
+        Ok(CommitResultDto {
+            successful_groups: 1,
+            successful_files: file_count,
+            errors: Vec::new(),
+        })
+    }
+
     pub fn reset_with_dir(&mut self, dir: String) {
         self.source_dir = Some(dir);
         self.decisions.clear();
         self.group_members.clear();
         self.undo_journal.clear();
+        self.immediate_undo_journal.clear();
     }
 
     pub fn register_groups(&mut self, groups: &[crate::commands::PhotoGroupDto]) {
@@ -207,6 +424,20 @@ impl SessionState {
     }
 
     pub fn undo_last_decision(&mut self) -> Option<String> {
+        if let Some(imm_record) = self.immediate_undo_journal.pop() {
+            let session_path = self
+                .source_dir
+                .as_deref()
+                .map(Path::new)
+                .unwrap_or_else(|| Path::new("."));
+            if rollback_ops(imm_record.ops, session_path).is_ok() {
+                self.group_members
+                    .insert(imm_record.stem.clone(), imm_record.members);
+                return Some(imm_record.stem);
+            }
+            return None;
+        }
+
         if let Some(record) = self.undo_journal.pop() {
             let previous = self
                 .undo_journal
@@ -285,18 +516,33 @@ impl SessionState {
         nah_dir_override: Option<String>,
         action_mode: ActionMode,
     ) -> Result<CommitResultDto, String> {
+        self.commit_staged_batch_with_flag(keep_dir_override, nah_dir_override, None, action_mode)
+    }
+
+    pub fn commit_staged_batch_with_flag(
+        &mut self,
+        keep_dir_override: Option<String>,
+        nah_dir_override: Option<String>,
+        flag_dir_override: Option<String>,
+        action_mode: ActionMode,
+    ) -> Result<CommitResultDto, String> {
         let source_root = self
             .source_dir
             .as_ref()
             .ok_or_else(|| "No active session source directory".to_string())?;
 
         let session_path = Path::new(source_root);
-        let keep_destination = keep_dir_override
+        let keep_destination = clean_dir_opt(keep_dir_override)
+            .or_else(|| self.keep_dir.clone())
             .map(PathBuf::from)
             .unwrap_or_else(|| session_path.join("keep"));
-        let nah_destination = nah_dir_override
+        let nah_destination = clean_dir_opt(nah_dir_override)
+            .or_else(|| self.nah_dir.clone())
             .map(PathBuf::from)
             .unwrap_or_else(|| session_path.join("trash"));
+        let flag_destination = clean_dir_opt(flag_dir_override)
+            .or_else(|| self.flag_dir.clone())
+            .map(PathBuf::from);
 
         let mut executed_ops: Vec<ExecutedOp> = Vec::new();
         let mut committed_stems = Vec::new();
@@ -308,13 +554,13 @@ impl SessionState {
             let target_dir = match decision {
                 Decision::Keep => Some(&keep_destination),
                 Decision::Nah => Some(&nah_destination),
-                Decision::Flag => None,
+                Decision::Flag => flag_destination.as_ref(),
             };
 
             let dest_folder = match target_dir {
                 Some(d) => d,
                 None => {
-                    // Flag stays in source directory, nothing to move
+                    // Flag stays in source directory when no Flag folder is set
                     committed_stems.push(stem.clone());
                     continue;
                 }
@@ -333,119 +579,12 @@ impl SessionState {
                 None => continue,
             };
 
-            let mut group_ops = Vec::new();
-            let mut group_failed = false;
-
-            for member in members {
-                let file_name = match member.file_name() {
-                    Some(name) => name,
-                    None => continue,
-                };
-                let target_file = dest_folder.join(file_name);
-
-                if is_move {
-                    // Try atomic filesystem rename first
-                    match fs::rename(member, &target_file) {
-                        Ok(_) => {
-                            group_ops.push(ExecutedOp::Moved {
-                                source: member.clone(),
-                                destination: target_file,
-                            });
-                        }
-                        Err(rename_err) => {
-                            // If cross-device or permission, fallback to verified stage_copy + remove_verified
-                            let source_ident = match keep_or_nah_core::fileops::identity_of(member)
-                            {
-                                Ok(id) => id,
-                                Err(e) => {
-                                    errors.push(format!(
-                                        "Failed to read source identity for {} ({rename_err}): {e}",
-                                        member.display()
-                                    ));
-                                    group_failed = true;
-                                    break;
-                                }
-                            };
-                            match keep_or_nah_core::fileops::stage_copy(
-                                member,
-                                dest_folder,
-                                Some(&source_ident.components()),
-                            ) {
-                                Ok(staged) => {
-                                    let staged_p = Path::new(&staged.path);
-                                    if let Err(e) = fs::rename(staged_p, &target_file) {
-                                        let _ = fs::remove_file(staged_p);
-                                        errors.push(format!(
-                                            "Failed to publish staged file for {}: {e}",
-                                            member.display()
-                                        ));
-                                        group_failed = true;
-                                        break;
-                                    }
-                                    // Remove source with identity verification
-                                    if let Err(e) = keep_or_nah_core::fileops::remove_verified(
-                                        member,
-                                        &source_ident.components(),
-                                    ) {
-                                        let _ = fs::remove_file(&target_file);
-                                        errors.push(format!(
-                                            "Failed to verified-remove source {}: {e}",
-                                            member.display()
-                                        ));
-                                        group_failed = true;
-                                        break;
-                                    }
-                                    group_ops.push(ExecutedOp::Moved {
-                                        source: member.clone(),
-                                        destination: target_file,
-                                    });
-                                }
-                                Err(e) => {
-                                    errors.push(format!(
-                                        "Failed to move {} ({rename_err}): {e}",
-                                        member.display()
-                                    ));
-                                    group_failed = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // ActionMode::Copy
-                    match keep_or_nah_core::fileops::stage_copy(member, dest_folder, None) {
-                        Ok(staged) => {
-                            let staged_p = Path::new(&staged.path);
-                            if let Err(e) = fs::rename(staged_p, &target_file) {
-                                let _ = fs::remove_file(staged_p);
-                                errors.push(format!(
-                                    "Failed to publish staged copy for {}: {e}",
-                                    member.display()
-                                ));
-                                group_failed = true;
-                                break;
-                            }
-                            group_ops.push(ExecutedOp::Copied {
-                                destination: target_file,
-                            });
-                        }
-                        Err(e) => {
-                            errors.push(format!(
-                                "Failed to stage copy for {}: {e}",
-                                member.display()
-                            ));
-                            group_failed = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if group_failed {
-                executed_ops.extend(group_ops);
+            let (group_ops, err_opt) = execute_group_file_ops(members, dest_folder, is_move);
+            executed_ops.extend(group_ops);
+            if let Some(err) = err_opt {
+                errors.push(err);
                 break;
             } else {
-                executed_ops.extend(group_ops);
                 committed_stems.push(stem.clone());
             }
         }
@@ -688,6 +827,74 @@ mod tests {
         assert!(
             found_journal,
             "Emergency recovery journal file should be created"
+        );
+    }
+
+    #[test]
+    fn test_flagging_with_and_without_destination_and_undo() {
+        let temp = TempDir::new().unwrap();
+        let src = temp.path().join("source");
+        let flag_dest = temp.path().join("flagged");
+        fs::create_dir(&src).unwrap();
+
+        let file1 = src.join("F01.JPG");
+        let file2 = src.join("F02.JPG");
+        fs::write(&file1, b"flag-data-1").unwrap();
+        fs::write(&file2, b"flag-data-2").unwrap();
+
+        let mut session = SessionState::new();
+        session.reset_with_dir(src.to_string_lossy().to_string());
+        session
+            .group_members
+            .insert("F01".to_string(), vec![file1.clone()]);
+        session
+            .group_members
+            .insert("F02".to_string(), vec![file2.clone()]);
+
+        // 1. Immediate mode without Flag destination returns exact error
+        let err = session
+            .decide_immediate("F01".to_string(), Decision::Flag, ActionMode::Move)
+            .unwrap_err();
+        assert_eq!(err, "Choose a Flag folder before sorting.");
+        assert!(
+            file1.exists(),
+            "File must remain untouched when Flag folder is unset"
+        );
+
+        // 2. Staged batch commit without Flag destination leaves flagged group in place
+        session.stage_decision("F02".to_string(), Decision::Flag);
+        let staged_res = session
+            .commit_staged_batch(None, None, ActionMode::Move)
+            .unwrap();
+        assert_eq!(staged_res.successful_groups, 1);
+        assert!(
+            file2.exists(),
+            "Staged Flag without destination stays in source folder"
+        );
+
+        // 3. Configure Flag destination and execute immediate Flag (Move)
+        session.set_destinations(None, None, Some(flag_dest.to_string_lossy().to_string()));
+        let imm_res = session
+            .decide_immediate("F01".to_string(), Decision::Flag, ActionMode::Move)
+            .unwrap();
+        assert_eq!(imm_res.successful_groups, 1);
+        assert_eq!(imm_res.successful_files, 1);
+        assert!(!file1.exists(), "F01 should be moved out of source");
+        assert!(
+            flag_dest.join("F01.JPG").exists(),
+            "F01 should exist in Flag destination"
+        );
+
+        // 4. Undoing immediate Flag through Undo Journal restores F01 to source
+        let undone_stem = session.undo_last_decision();
+        assert_eq!(undone_stem, Some("F01".to_string()));
+        assert!(
+            file1.exists(),
+            "Undo must restore F01 back to source folder"
+        );
+        assert!(
+            !flag_dest.join("F01.JPG").exists(),
+            "Undo must remove F01 from Flag destination"
         );
     }
 }

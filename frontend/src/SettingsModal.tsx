@@ -1,10 +1,14 @@
 import React, { useEffect } from "react";
 import { ViewMode } from "./PreviewViewport";
-import { Settings, ArrowUp, ArrowDown, RotateCcw, X, Square, Columns2 } from "lucide-react";
+import { Settings, ArrowUp, ArrowDown, RotateCcw, X, Square, Columns2, FolderOpen } from "lucide-react";
 
 export interface AppSettings {
   defaultViewMode: ViewMode;
   formatPriority: string[];
+  stagedTriage?: boolean;
+  keepDestination?: string;
+  nahDestination?: string;
+  flagDestination?: string;
 }
 
 export const DEFAULT_FORMAT_PRIORITY = [
@@ -24,6 +28,10 @@ export const DEFAULT_FORMAT_PRIORITY = [
 export const DEFAULT_SETTINGS: AppSettings = {
   defaultViewMode: "1-up",
   formatPriority: DEFAULT_FORMAT_PRIORITY,
+  stagedTriage: true,
+  keepDestination: "",
+  nahDestination: "",
+  flagDestination: "",
 };
 
 const SETTINGS_STORAGE_KEY = "keep_or_nah_user_settings";
@@ -40,6 +48,14 @@ export function loadStoredSettings(): AppSettings {
           Array.isArray(parsed.formatPriority) && parsed.formatPriority.length > 0
             ? parsed.formatPriority
             : DEFAULT_FORMAT_PRIORITY,
+        stagedTriage:
+          typeof parsed.stagedTriage === "boolean" ? parsed.stagedTriage : true,
+        keepDestination:
+          typeof parsed.keepDestination === "string" ? parsed.keepDestination : "",
+        nahDestination:
+          typeof parsed.nahDestination === "string" ? parsed.nahDestination : "",
+        flagDestination:
+          typeof parsed.flagDestination === "string" ? parsed.flagDestination : "",
       };
     }
   } catch (e) {
@@ -61,6 +77,7 @@ interface SettingsModalProps {
   onClose: () => void;
   settings: AppSettings;
   onUpdateSettings: (newSettings: AppSettings) => void;
+  onPickDestination?: (kind: "keep" | "nah" | "flag") => Promise<string | null>;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -68,6 +85,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   settings,
   onUpdateSettings,
+  onPickDestination,
 }) => {
   // ESC to close modal
   useEffect(() => {
@@ -113,6 +131,40 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const handleSelectDefaultViewMode = (mode: ViewMode) => {
     const next = { ...settings, defaultViewMode: mode };
+    saveStoredSettings(next);
+    onUpdateSettings(next);
+  };
+
+  const handleSelectTriageMode = (staged: boolean) => {
+    const next = { ...settings, stagedTriage: staged };
+    saveStoredSettings(next);
+    onUpdateSettings(next);
+  };
+
+  const handleBrowseDestination = async (kind: "keep" | "nah" | "flag") => {
+    if (!onPickDestination) return;
+    const picked = await onPickDestination(kind);
+    if (picked) {
+      const key =
+        kind === "keep"
+          ? "keepDestination"
+          : kind === "nah"
+          ? "nahDestination"
+          : "flagDestination";
+      const next = { ...settings, [key]: picked };
+      saveStoredSettings(next);
+      onUpdateSettings(next);
+    }
+  };
+
+  const handleClearDestination = (kind: "keep" | "nah" | "flag") => {
+    const key =
+      kind === "keep"
+        ? "keepDestination"
+        : kind === "nah"
+        ? "nahDestination"
+        : "flagDestination";
+    const next = { ...settings, [key]: "" };
     saveStoredSettings(next);
     onUpdateSettings(next);
   };
@@ -189,6 +241,106 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="text-[11px] text-zinc-400">Side-by-side comparison</div>
                 </div>
               </button>
+            </div>
+          </div>
+
+          {/* Triage Execution Mode & Destination Pickers */}
+          <div className="space-y-3">
+            <label className="text-xs font-semibold text-zinc-300 block">
+              Triage Execution Mode
+            </label>
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                data-testid="setting-triage-staged"
+                onClick={() => handleSelectTriageMode(true)}
+                className={`p-2.5 rounded-xl border text-left transition cursor-pointer ${
+                  settings.stagedTriage !== false
+                    ? "bg-accent/15 border-accent text-zinc-100 shadow-sm"
+                    : "bg-zinc-900/60 border-white/[0.06] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"
+                }`}
+              >
+                <div className="font-semibold text-xs text-zinc-200">Staged Batch (Default)</div>
+                <div className="text-[11px] text-zinc-400">Review before committing to disk</div>
+              </button>
+
+              <button
+                type="button"
+                data-testid="setting-triage-immediate"
+                onClick={() => handleSelectTriageMode(false)}
+                className={`p-2.5 rounded-xl border text-left transition cursor-pointer ${
+                  settings.stagedTriage === false
+                    ? "bg-accent/15 border-accent text-zinc-100 shadow-sm"
+                    : "bg-zinc-900/60 border-white/[0.06] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"
+                }`}
+              >
+                <div className="font-semibold text-xs text-zinc-200">Immediate Mode</div>
+                <div className="text-[11px] text-zinc-400">Move or copy on every decision</div>
+              </button>
+            </div>
+
+            <label className="text-xs font-semibold text-zinc-300 block pt-1">
+              Triage Destinations
+            </label>
+            <div className="rounded-xl border border-white/[0.08] bg-zinc-950/60 divide-y divide-white/[0.04] overflow-hidden">
+              {(
+                [
+                  {
+                    kind: "keep" as const,
+                    label: "Keep Folder",
+                    value: settings.keepDestination || "",
+                    fallback: "<session>/keep",
+                    testId: "keep-destination-picker",
+                  },
+                  {
+                    kind: "nah" as const,
+                    label: "Nah Folder",
+                    value: settings.nahDestination || "",
+                    fallback: "<session>/trash",
+                    testId: "nah-destination-picker",
+                  },
+                  {
+                    kind: "flag" as const,
+                    label: "Flag Folder",
+                    value: settings.flagDestination || "",
+                    fallback: "In-place (or choose folder)",
+                    testId: "flag-destination-picker",
+                  },
+                ]
+              ).map((item) => (
+                <div
+                  key={item.kind}
+                  className="px-3.5 py-2.5 flex items-center justify-between gap-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold text-xs text-zinc-200">{item.label}</div>
+                    <div className="text-[11px] text-zinc-400 font-mono truncate">
+                      {item.value || item.fallback}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {item.value && (
+                      <button
+                        type="button"
+                        onClick={() => handleClearDestination(item.kind)}
+                        data-testid={`${item.kind}-destination-clear`}
+                        className="px-2 py-1 rounded text-[11px] text-zinc-400 hover:text-zinc-200 bg-zinc-900 hover:bg-zinc-800 border border-white/[0.06] transition cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      data-testid={item.testId}
+                      onClick={() => handleBrowseDestination(item.kind)}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded text-[11px] text-zinc-200 bg-zinc-800 hover:bg-zinc-700 border border-white/[0.06] transition cursor-pointer"
+                    >
+                      <FolderOpen className="w-3 h-3 text-zinc-400" />
+                      <span>Choose</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
 
