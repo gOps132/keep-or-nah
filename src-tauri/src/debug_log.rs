@@ -162,7 +162,7 @@ pub fn resolve_debug_log_path() -> PathBuf {
     default_settings_dir().join("render-log.jsonl")
 }
 
-pub fn log_render(event: &str, duration_ms: f64, details: Value) {
+fn with_env_logger<F: FnOnce(&DebugLogger)>(f: F) {
     if !is_debug_enabled() {
         return;
     }
@@ -171,19 +171,15 @@ pub fn log_render(event: &str, duration_ms: f64, details: Value) {
         Err(poisoned) => poisoned.into_inner(),
     };
     let logger = DebugLogger::from_env();
-    logger.log_render(event, duration_ms, Some(details));
+    f(&logger);
+}
+
+pub fn log_render(event: &str, duration_ms: f64, details: Value) {
+    with_env_logger(|logger| logger.log_render(event, duration_ms, Some(details)));
 }
 
 pub fn log_action(event: &str, duration_ms: Option<f64>, details: Value) {
-    if !is_debug_enabled() {
-        return;
-    }
-    let _guard = match global_lock().lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    let logger = DebugLogger::from_env();
-    logger.log_event(event, duration_ms, Some(details));
+    with_env_logger(|logger| logger.log_event(event, duration_ms, Some(details)));
 }
 
 #[cfg(test)]

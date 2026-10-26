@@ -1,6 +1,6 @@
 ---
 name: interview
-description: Relentless interview primitive and application-specific planning. Structures discussions as a design tree, probes the frontier with recommended options, looks up facts autonomously, and blends Keep or Nah domain architecture (Tauri v2, React/TypeScript frontend, Rust core, progressive preview pipeline, photo groups) to produce an actionable spec.
+description: Relentless interview primitive and application-specific planning. Structures discussions as a design tree, probes the frontier with recommended options, looks up facts autonomously, and blends Keep or Nah domain architecture (Tkinter, Rust core, preview pipeline, photo groups) to produce an actionable spec.
 ---
 
 # Interview & Planning (Keep or Nah Design Tree Grilling)
@@ -45,15 +45,20 @@ Map the feature as a **design tree**: every major decision branches into subordi
 
 During the interview, ground every question in Keep or Nah's design contracts:
 
-1. **Rust Core Contracts** (`crates/keep_or_nah_core/`):
-   - Pure Rust crate linked directly into `src-tauri/`.
-   - Operations that belong in Rust: directory scan, atomic file operations with 5-component file identity verification, embedded RAW preview extraction, hardware-accelerated full RAW demosaicing, SIMD Lanczos3 scaling, Laplacian sharpness scoring, and `dHash` perceptual hashing.
-2. **Tauri v2 & Frontend Discipline** (`src-tauri/`, `frontend/src/`):
-   - UI thread must never block on disk I/O or image decoding; heavy renders use bounded single-worker background tasks with monotonic cancellation (`HEAVY_RENDER_GENERATION`) and 300ms settle debounce (`useProgressiveAsset`).
-   - Keyboard shortcuts, canvas zoom/pan transforms, and Thumbnail Strip navigation must remain responsive (<16ms frame budget).
-3. **Session & Grouping Contracts** (`src-tauri/src/session.rs`, `crates/keep_or_nah_core/src/scan.rs`):
-   - Atomic same-stem Photo Groups (`RAW` + `JPEG` + `XMP` sidecar).
-   - Staged triage by default (`Keep`, `Nah`, `Flag`) with atomic Batch Commit and emergency recovery journal, plus optional Immediate Mode and custom destination folders.
+1. **Rust Core Contracts** (`crates/keep_or_nah_core/`, `preview_pipeline.py`):
+   - Python-Rust bridge using PyO3.
+   - Operations that belong in Rust: heavy image decoding, downscaling, Laplacian variance blur detection, perceptual hashing, SIMD/parallel loops.
+   - Rebuilding after Rust edits: `uv run maturin develop`.
+2. **GUI & Threading Discipline** (`main.py`, `classic_gui.py`, `preview_pipeline.py`):
+   - Tkinter event loop must never block on disk I/O or image manipulation.
+   - Asynchronous worker queues and background threads push completed Tk images/events back to the main thread safely.
+   - Keyboard shortcuts, canvas zoom/pan transforms, and ribbon navigation should stay responsive (<16ms frame budget).
+3. **Session & Grouping Contracts** (`photo_session.py`, `photo_groups.py`, `view_filter.py`):
+   - Fast state toggles (Keep, Nah, Flag, Reset).
+   - Burst detection and perceptual hash clusters should operate on cached metadata without reloading full raw images.
+   - View filters must cleanly preserve active index and selection history.
+4. **Session Persistence** (`session_persistence.py`):
+   - Atomic saves and backward-compatible serialization.
 
 ---
 

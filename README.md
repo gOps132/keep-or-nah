@@ -170,9 +170,9 @@ To run the app:
 2. **Make Triage Decisions**: Navigate through photos using the keyboard. For each Photo Group, assign:
    * **Keep** (`1`): Marks the group to be kept and routed to your designated keep destination (defaults to `<session>/keep`).
    * **Nah** (`2`): Marks the group to be discarded to the trash folder (defaults to `<session>/trash`).
-   * **Flag** (`F`): Sets the group aside for later re-examination. In staged mode without a Flag folder set, it stays in place in the source folder; if a **Flag Destination** is configured in **Preferences** (or when using Immediate Mode), it moves or copies the group to the chosen Flag folder.
+   * **Flag** (`F`): Sets the group aside for later re-examination. In staged mode, it stays in place in the source folder; when using Immediate Mode with a **Flag Destination** configured in **Preferences**, it moves or copies the group to the chosen Flag folder.
 3. **Compare Close Frames & Formats**: Press `C` to enter **Split Comparison** (`2-Up Compare`) mode. Pan and zoom simultaneously across both frames to inspect focus. Press `V` to cycle formats within a multi-format Photo Group (`RAW` + `JPG`), or press `X` in `2-Up` mode to compare `RAW` vs `JPG` side by side.
-4. **Configure Destinations & Mode**: Open **Preferences** to customize default view mode (`1-Up` or `2-Up`), triage execution mode (`Staged Batch` or `Immediate Mode`), custom **Keep**, **Nah**, and **Flag** destination folders, and representative format priority.
+4. **Configure Destinations & Mode**: Open **Preferences** to customize default view mode (`1-Up` or `2-Up`), triage mode (`Staged Batch` or `Immediate Mode`), action mode (`Move` or `Copy`), custom **Keep**, **Nah**, and **Flag** destination folders, and representative format priority.
 5. **Review and Batch Commit**: Click **Review Batch** (`⌘↵` / `Ctrl+Enter`) to inspect staged decisions, total photo counts, and disk space to be reclaimed, then choose **Move** or **Copy** and click **Commit**.
 6. **Undo Anytime**: Made a mistake? Press `Cmd+Z` (`Ctrl+Z` on Windows/Linux) to reverse staged or immediate operations using the transactional **Undo Journal**.
 

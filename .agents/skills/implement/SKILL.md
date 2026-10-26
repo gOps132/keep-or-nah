@@ -1,6 +1,6 @@
 ---
 name: implement
-description: Implement work based on a GitHub ticket or spec for Keep or Nah. Drives test-first TDD at pre-agreed seams, enforces scripts/verify.sh, performs two-axis code review (Standards + Spec), and closes the GitHub issue.
+description: Implement work based on a GitHub ticket or spec for Keep or Nah. Drives test-first TDD at pre-agreed seams, enforces uv run pytest and type verification, performs two-axis code review (Standards + Spec), and closes the GitHub issue.
 ---
 
 # Implement (Test-Driven Ticket Execution)
@@ -32,19 +32,24 @@ TDD is the red → green loop. Tests verify behavior through public interfaces, 
 
 ### Agree on Seams Before Writing Code
 - A **seam** is the public boundary where behavior is observed without reaching into internals:
-  - Rust core algorithms (`crates/keep_or_nah_core/`): unit and parity tests via `cargo test --manifest-path crates/keep_or_nah_core/Cargo.toml`.
-  - Tauri session state, burst clustering, & IPC commands (`src-tauri/`): unit and integration tests via `cargo test --manifest-path src-tauri/Cargo.toml`.
-  - React/TypeScript frontend (`frontend/src/`): component & integration tests via `npm --prefix frontend test`.
+  - Rust core algorithms: test through `keep_or_nah_core` module in `tests/test_rust_core.py`.
+  - Photo session state & navigation: test through `PhotoSession` in `tests/test_photo_session_groups.py`.
+  - Preview & Caching: test through `PreviewPipeline` in `tests/test_preview_strategies.py`.
+  - View Filtering: test through `ViewFilter` in `tests/test_view_filter.py`.
 - Confirm the seam with the spec/user before writing tests.
 
 ### Rules of the Loop
 1. **Red Before Green**: Write a failing test first that specifies the expected observable behavior. Run the test and ensure it fails for the expected reason:
    ```bash
-   scripts/agent/test.sh
+   uv run pytest tests/test_<module>.py -k <test_name>
    ```
 2. **Minimal Green**: Write only enough code to pass the test. Do not anticipate future requirements or add speculative abstractions.
 3. **One Slice at a Time**: One seam, one test, one minimal implementation per cycle.
-4. **Anti-Patterns to Avoid**:
+4. **Rust Extensions**: If Rust code in `crates/keep_or_nah_core/` was modified, recompile into the active virtual environment before testing:
+   ```bash
+   uv run maturin develop
+   ```
+5. **Anti-Patterns to Avoid**:
    - *Never mock internal collaborators*: Avoid mocking private methods or internal state variables. Test against public API outcomes.
    - *Never write tautological tests*: Use independent, known-good test fixtures or assets.
    - *Never write all tests upfront*: Advance test-by-test.
@@ -52,15 +57,15 @@ TDD is the red → green loop. Tests verify behavior through public interfaces, 
 ### Verification Cadence
 - Run focused tests after every green edit:
   ```bash
-  scripts/agent/test.sh
+  uv run pytest tests/test_<module>.py
   ```
 - Run formatting / lint checks:
   ```bash
-  scripts/agent/lint.sh
+  uv run ruff check .
   ```
-- Run the **full verification pipeline** before code review:
+- Run the **entire project test suite** before code review:
   ```bash
-  scripts/verify.sh
+  uv run pytest
   ```
 
 ---

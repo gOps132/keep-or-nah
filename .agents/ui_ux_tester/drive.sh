@@ -35,6 +35,20 @@ checksum_dir() {
   find "$target_dir" -type f -exec shasum -a 256 {} + 2>/dev/null | sort
 }
 
+find_app_binary() {
+  local bin="$REPO_ROOT/src-tauri/target/release/keep-or-nah-app"
+  if [[ -x "$bin" ]]; then
+    printf '%s\n' "$bin"
+    return
+  fi
+  local debug_bin="$REPO_ROOT/src-tauri/target/debug/keep-or-nah-app"
+  if [[ -x "$debug_bin" ]]; then
+    printf '%s\n' "$debug_bin"
+    return
+  fi
+  printf '\n'
+}
+
 cmd="${1:-help}"
 shift || true
 
@@ -55,6 +69,16 @@ case "$cmd" in
       cp -R "$assigned_dir/." "$sandbox_photos/" 2>/dev/null || true
     fi
 
+    app_pid=""
+    app_bin="$(find_app_binary)"
+    if [[ -n "$app_bin" && "${KEEP_OR_NAH_HEADLESS:-0}" != "1" ]]; then
+      HOME="$sandbox_home" \
+      KEEP_OR_NAH_DEBUG=1 \
+      KEEP_OR_NAH_DEBUG_LOG="$render_log" \
+      "$app_bin" >/dev/null 2>&1 &
+      app_pid="$!"
+    fi
+
     cat > "$STATE_FILE" <<EOF
 SANDBOX_ROOT="$sandbox_root"
 SANDBOX_HOME="$sandbox_home"
@@ -62,12 +86,16 @@ SANDBOX_PHOTOS="$sandbox_photos"
 ASSIGNED_DIR="$assigned_dir"
 BEFORE_MANIFEST="$before_manifest"
 RENDER_LOG="$render_log"
+APP_PID="$app_pid"
 EOF
 
     printf 'Sandbox initialized at %s\n' "$sandbox_root"
     printf '  Sandboxed HOME:   %s\n' "$sandbox_home"
     printf '  Sandboxed photos: %s\n' "$sandbox_photos"
     printf '  Render timing log: %s\n' "$render_log"
+    if [[ -n "$app_pid" ]]; then
+      printf '  Launched app PID: %s (%s)\n' "$app_pid" "$app_bin"
+    fi
     ;;
 
   describe)
@@ -75,9 +103,15 @@ EOF
       # shellcheck disable=SC1090
       source "$STATE_FILE"
     fi
+    live_bounds="unavailable"
+    if command -v osascript >/dev/null 2>&1; then
+      live_bounds=$(osascript -e 'tell application "System Events" to get bounds of front window of (first process whose name contains "keep-or-nah")' 2>/dev/null || printf 'unavailable')
+    fi
     cat <<EOF
 {
   "window_title": "Keep or Nah",
+  "window_bounds": "$live_bounds",
+  "app_pid": "${APP_PID:-none}",
   "perceivable_surfaces": [
     "Titlebar: Keep or Nah, View Mode (1-Up / 2-Up Compare), Undo, Review Batch, Preferences, Open Folder",
     "Viewport: Photo Canvas, Format Pills (V), Zoom Controls (+ / - / Fit 0), EXIF Telemetry",
@@ -90,7 +124,55 @@ EOF
 EOF
     ;;
 
-  click|press|type|menu|wheel|drag|resize)
+  press)
+    if [[ -f "$STATE_FILE" ]]; then
+      # shellcheck disable=SC1090
+      source "$STATE_FILE"
+      if [[ -n "${RENDER_LOG:-}" ]]; then
+        ts=$(python3 -c 'import time; print(int(time.time() * 1000))' 2>/dev/null || date +%s000)
+        printf '{"timestamp_ms":%s,"event":"harness.press","category":"event","details":{"args":"%s"}}\n' \
+          "$ts" "$*" >> "$RENDER_LOG"
+      fi
+    fi
+    if command -v osascript >/dev/null 2>&1 && [[ -n "${1:-}" ]]; then
+      osascript -e "tell application \"System Events\" to keystroke \"$1\"" >/dev/null 2>&1 || true
+    fi
+    printf '[ui_ux_tester] executed press %s\n' "$*"
+    ;;
+
+  type)
+    if [[ -f "$STATE_FILE" ]]; then
+      # shellcheck disable=SC1090
+      source "$STATE_FILE"
+      if [[ -n "${RENDER_LOG:-}" ]]; then
+        ts=$(python3 -c 'import time; print(int(time.time() * 1000))' 2>/dev/null || date +%s000)
+        printf '{"timestamp_ms":%s,"event":"harness.type","category":"event","details":{"args":"%s"}}\n' \
+          "$ts" "$*" >> "$RENDER_LOG"
+      fi
+    fi
+    if command -v osascript >/dev/null 2>&1 && [[ -n "${1:-}" ]]; then
+      osascript -e "tell application \"System Events\" to keystroke \"$*\"" >/dev/null 2>&1 || true
+    fi
+    printf '[ui_ux_tester] executed type %s\n' "$*"
+    ;;
+
+  resize)
+    if [[ -f "$STATE_FILE" ]]; then
+      # shellcheck disable=SC1090
+      source "$STATE_FILE"
+      if [[ -n "${RENDER_LOG:-}" ]]; then
+        ts=$(python3 -c 'import time; print(int(time.time() * 1000))' 2>/dev/null || date +%s000)
+        printf '{"timestamp_ms":%s,"event":"harness.resize","category":"event","details":{"args":"%s"}}\n' \
+          "$ts" "$*" >> "$RENDER_LOG"
+      fi
+    fi
+    if command -v osascript >/dev/null 2>&1 && [[ $# -ge 2 ]]; then
+      osascript -e "tell application \"System Events\" to set size of front window of (first process whose name contains \"keep-or-nah\") to {$1, $2}" >/dev/null 2>&1 || true
+    fi
+    printf '[ui_ux_tester] executed resize %s\n' "$*"
+    ;;
+
+  click|menu|wheel|drag)
     if [[ -f "$STATE_FILE" ]]; then
       # shellcheck disable=SC1090
       source "$STATE_FILE"
@@ -120,6 +202,9 @@ EOF
     fi
     # shellcheck disable=SC1090
     source "$STATE_FILE"
+    if [[ "$cmd" == "stop" && -n "${APP_PID:-}" ]]; then
+      kill "$APP_PID" >/dev/null 2>&1 || true
+    fi
     after_manifest="$SANDBOX_ROOT/assigned-after.sha256"
     checksum_dir "$ASSIGNED_DIR" > "$after_manifest"
 

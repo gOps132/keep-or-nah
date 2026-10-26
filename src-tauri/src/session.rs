@@ -175,9 +175,10 @@ fn rollback_ops(ops: Vec<ExecutedOp>, session_dir: &Path) -> Result<(), String> 
 fn execute_group_file_ops(
     members: &[PathBuf],
     dest_folder: &Path,
-    is_move: bool,
+    action_mode: ActionMode,
 ) -> (Vec<ExecutedOp>, Option<String>) {
     let mut group_ops = Vec::new();
+    let is_move = action_mode.is_move();
 
     for member in members {
         let file_name = match member.file_name() {
@@ -377,8 +378,7 @@ impl SessionState {
             .cloned()
             .ok_or_else(|| format!("Photo group not found: {stem}"))?;
 
-        let (group_ops, err_opt) =
-            execute_group_file_ops(&members, &dest_folder, action_mode.is_move());
+        let (group_ops, err_opt) = execute_group_file_ops(&members, &dest_folder, action_mode);
         if let Some(err) = err_opt {
             let _ = rollback_ops(group_ops, session_path);
             return Err(err);
@@ -516,16 +516,6 @@ impl SessionState {
         nah_dir_override: Option<String>,
         action_mode: ActionMode,
     ) -> Result<CommitResultDto, String> {
-        self.commit_staged_batch_with_flag(keep_dir_override, nah_dir_override, None, action_mode)
-    }
-
-    pub fn commit_staged_batch_with_flag(
-        &mut self,
-        keep_dir_override: Option<String>,
-        nah_dir_override: Option<String>,
-        flag_dir_override: Option<String>,
-        action_mode: ActionMode,
-    ) -> Result<CommitResultDto, String> {
         let source_root = self
             .source_dir
             .as_ref()
@@ -540,27 +530,22 @@ impl SessionState {
             .or_else(|| self.nah_dir.clone())
             .map(PathBuf::from)
             .unwrap_or_else(|| session_path.join("trash"));
-        let flag_destination = clean_dir_opt(flag_dir_override)
-            .or_else(|| self.flag_dir.clone())
-            .map(PathBuf::from);
 
         let mut executed_ops: Vec<ExecutedOp> = Vec::new();
         let mut committed_stems = Vec::new();
         let mut errors = Vec::new();
 
-        let is_move = action_mode.is_move();
-
         for (stem, decision) in &self.decisions {
             let target_dir = match decision {
                 Decision::Keep => Some(&keep_destination),
                 Decision::Nah => Some(&nah_destination),
-                Decision::Flag => flag_destination.as_ref(),
+                Decision::Flag => None,
             };
 
             let dest_folder = match target_dir {
                 Some(d) => d,
                 None => {
-                    // Flag stays in source directory when no Flag folder is set
+                    // Flag stays in source directory in staged mode
                     committed_stems.push(stem.clone());
                     continue;
                 }
@@ -579,7 +564,7 @@ impl SessionState {
                 None => continue,
             };
 
-            let (group_ops, err_opt) = execute_group_file_ops(members, dest_folder, is_move);
+            let (group_ops, err_opt) = execute_group_file_ops(members, dest_folder, action_mode);
             executed_ops.extend(group_ops);
             if let Some(err) = err_opt {
                 errors.push(err);
@@ -895,6 +880,24 @@ mod tests {
         assert!(
             !flag_dest.join("F01.JPG").exists(),
             "Undo must remove F01 from Flag destination"
+        );
+
+        // 5. Execute immediate Flag (Copy) and verify source + destination both exist, then undo
+        let copy_res = session
+            .decide_immediate("F01".to_string(), Decision::Flag, ActionMode::Copy)
+            .unwrap();
+        assert_eq!(copy_res.successful_groups, 1);
+        assert!(file1.exists(), "F01 should remain in source on Copy");
+        assert!(
+            flag_dest.join("F01.JPG").exists(),
+            "F01 should be copied to Flag destination"
+        );
+        let undone_copy_stem = session.undo_last_decision();
+        assert_eq!(undone_copy_stem, Some("F01".to_string()));
+        assert!(file1.exists(), "Source F01 remains after undoing Copy");
+        assert!(
+            !flag_dest.join("F01.JPG").exists(),
+            "Copied F01 in Flag destination is cleaned up on undo"
         );
     }
 }

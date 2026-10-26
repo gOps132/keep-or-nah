@@ -204,6 +204,16 @@ export default function App() {
 
   const activeGroup = photoGroups[activeIndex] ?? null;
 
+  // Log navigation events when active photo group changes
+  useEffect(() => {
+    if (!activeGroup) return;
+    logDebugEvent("navigation", {
+      activeIndex,
+      stem: activeGroup.stem,
+      representative: activeGroup.representative,
+    });
+  }, [activeIndex, activeGroup]);
+
   // Stage or immediately execute a triage decision (Keep, Nah, Flag)
   const handleStageDecision = useCallback(
     async (decision: "keep" | "nah" | "flag") => {
@@ -211,17 +221,22 @@ export default function App() {
       setErrorMessage(null);
 
       if (appSettings.stagedTriage === false) {
+        const immediateMode = appSettings.actionMode || "move";
         try {
           await invoke<CommitResultDto>("decide_immediate", {
             stem: activeGroup.stem,
             decision,
-            actionMode: "move",
+            actionMode: immediateMode,
           });
-          setPhotoGroups((prev) => {
-            const next = prev.filter((g) => g.stem !== activeGroup.stem);
-            setActiveIndex((idx) => Math.min(Math.max(0, next.length - 1), idx));
-            return next;
-          });
+          if (immediateMode === "copy") {
+            setActiveIndex((prev) => Math.min(photoGroups.length - 1, prev + 1));
+          } else {
+            setPhotoGroups((prev) => {
+              const next = prev.filter((g) => g.stem !== activeGroup.stem);
+              setActiveIndex((idx) => Math.min(Math.max(0, next.length - 1), idx));
+              return next;
+            });
+          }
         } catch (err) {
           setErrorMessage(String(err));
           logDebugEvent("error", { source: "decide_immediate", error: String(err) });
@@ -242,7 +257,7 @@ export default function App() {
         console.error("Failed to stage decision:", err);
       }
     },
-    [activeGroup, photoGroups.length, appSettings.stagedTriage]
+    [activeGroup, photoGroups.length, appSettings.stagedTriage, appSettings.actionMode]
   );
 
   // Undo last decision
@@ -283,7 +298,6 @@ export default function App() {
       const result = await invoke<CommitResultDto>("commit_batch", {
         keepDir: appSettings.keepDestination || null,
         nahDir: appSettings.nahDestination || null,
-        flagDir: appSettings.flagDestination || null,
         actionMode,
       });
 
@@ -711,7 +725,14 @@ export default function App() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         settings={appSettings}
-        onUpdateSettings={setAppSettings}
+        onUpdateSettings={(next) => {
+          setAppSettings(next);
+          logDebugEvent("settings_change", {
+            defaultViewMode: next.defaultViewMode,
+            stagedTriage: next.stagedTriage,
+            actionMode: next.actionMode,
+          });
+        }}
         onPickDestination={() => invoke<string | null>("open_directory_dialog")}
       />
 

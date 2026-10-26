@@ -25,7 +25,7 @@ Every feature reachable from the UI must be exercised during a `@ui_ux_tester` s
 6. **Preferences (`SettingsModal`)**
    - Open Preferences via the gear button (`settings-open-btn`).
    - Test switching `Default View Mode on Launch` (`1-Up Single` vs `2-Up Comparison`).
-   - Test switching `Triage Execution Mode` (`Staged Batch` vs `Immediate Mode`).
+   - Test switching `Triage Mode` (`Staged Batch` vs `Immediate Mode`) and `Action Mode` (`Move from Source` vs `Copy`).
    - Test `Keep Folder`, `Nah Folder`, and `Flag Folder` destination pickers (`Choose` and `Clear`).
    - Verify pressing `F` in `Immediate Mode` without a Flag folder shows `"Choose a Flag folder before sorting."`, and succeeds once a Flag folder is chosen.
    - Test reordering `Representative Format Priority` up/down and clicking `Reset`.

@@ -6,6 +6,7 @@ export interface AppSettings {
   defaultViewMode: ViewMode;
   formatPriority: string[];
   stagedTriage?: boolean;
+  actionMode?: "move" | "copy";
   keepDestination?: string;
   nahDestination?: string;
   flagDestination?: string;
@@ -29,12 +30,21 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultViewMode: "1-up",
   formatPriority: DEFAULT_FORMAT_PRIORITY,
   stagedTriage: true,
+  actionMode: "move",
   keepDestination: "",
   nahDestination: "",
   flagDestination: "",
 };
 
 const SETTINGS_STORAGE_KEY = "keep_or_nah_user_settings";
+
+function destinationKey(
+  kind: "keep" | "nah" | "flag"
+): "keepDestination" | "nahDestination" | "flagDestination" {
+  if (kind === "keep") return "keepDestination";
+  if (kind === "nah") return "nahDestination";
+  return "flagDestination";
+}
 
 export function loadStoredSettings(): AppSettings {
   try {
@@ -50,6 +60,7 @@ export function loadStoredSettings(): AppSettings {
             : DEFAULT_FORMAT_PRIORITY,
         stagedTriage:
           typeof parsed.stagedTriage === "boolean" ? parsed.stagedTriage : true,
+        actionMode: parsed.actionMode === "copy" ? "copy" : "move",
         keepDestination:
           typeof parsed.keepDestination === "string" ? parsed.keepDestination : "",
         nahDestination:
@@ -141,30 +152,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     onUpdateSettings(next);
   };
 
+  const handleSelectActionMode = (actionMode: "move" | "copy") => {
+    const next = { ...settings, actionMode };
+    saveStoredSettings(next);
+    onUpdateSettings(next);
+  };
+
   const handleBrowseDestination = async (kind: "keep" | "nah" | "flag") => {
     if (!onPickDestination) return;
     const picked = await onPickDestination(kind);
     if (picked) {
-      const key =
-        kind === "keep"
-          ? "keepDestination"
-          : kind === "nah"
-          ? "nahDestination"
-          : "flagDestination";
-      const next = { ...settings, [key]: picked };
+      const next = { ...settings, [destinationKey(kind)]: picked };
       saveStoredSettings(next);
       onUpdateSettings(next);
     }
   };
 
   const handleClearDestination = (kind: "keep" | "nah" | "flag") => {
-    const key =
-      kind === "keep"
-        ? "keepDestination"
-        : kind === "nah"
-        ? "nahDestination"
-        : "flagDestination";
-    const next = { ...settings, [key]: "" };
+    const next = { ...settings, [destinationKey(kind)]: "" };
     saveStoredSettings(next);
     onUpdateSettings(next);
   };
@@ -244,10 +249,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
 
-          {/* Triage Execution Mode & Destination Pickers */}
+          {/* Triage Mode, Action Mode & Destination Pickers */}
           <div className="space-y-3">
             <label className="text-xs font-semibold text-zinc-300 block">
-              Triage Execution Mode
+              Triage Mode
             </label>
             <div className="grid grid-cols-2 gap-2.5">
               <button
@@ -276,6 +281,36 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               >
                 <div className="font-semibold text-xs text-zinc-200">Immediate Mode</div>
                 <div className="text-[11px] text-zinc-400">Move or copy on every decision</div>
+              </button>
+            </div>
+
+            <label className="text-xs font-semibold text-zinc-300 block pt-1">
+              Action Mode
+            </label>
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                data-testid="setting-action-move"
+                onClick={() => handleSelectActionMode("move")}
+                className={`p-2 rounded-xl border text-left transition cursor-pointer ${
+                  settings.actionMode !== "copy"
+                    ? "bg-accent/15 border-accent text-zinc-100 shadow-sm"
+                    : "bg-zinc-900/60 border-white/[0.06] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"
+                }`}
+              >
+                <div className="font-semibold text-xs text-zinc-200">Move</div>
+              </button>
+              <button
+                type="button"
+                data-testid="setting-action-copy"
+                onClick={() => handleSelectActionMode("copy")}
+                className={`p-2 rounded-xl border text-left transition cursor-pointer ${
+                  settings.actionMode === "copy"
+                    ? "bg-accent/15 border-accent text-zinc-100 shadow-sm"
+                    : "bg-zinc-900/60 border-white/[0.06] text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900"
+                }`}
+              >
+                <div className="font-semibold text-xs text-zinc-200">Copy</div>
               </button>
             </div>
 

@@ -259,7 +259,6 @@ pub mod commands {
     pub fn commit_batch(
         keep_dir: Option<String>,
         nah_dir: Option<String>,
-        flag_dir: Option<String>,
         action_mode: Option<String>,
         session_state: State<'_, Mutex<SessionState>>,
     ) -> Result<CommitResultDto, String> {
@@ -272,7 +271,7 @@ pub mod commands {
             .as_deref()
             .and_then(crate::session::ActionMode::from_str_opt)
             .unwrap_or(crate::session::ActionMode::Move);
-        match state.commit_staged_batch_with_flag(keep_dir, nah_dir, flag_dir, mode) {
+        match state.commit_staged_batch(keep_dir, nah_dir, mode) {
             Ok(res) => {
                 debug_log::log_action(
                     "batch_commit",
