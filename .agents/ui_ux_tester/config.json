@@ -1,0 +1,12 @@
+{
+  "agent_handle": "@ui_ux_tester",
+  "assigned_directory": "~/Pictures/screenshots",
+  "window_title": "Keep or Nah",
+  "default_window_size": {
+    "width": 1180,
+    "height": 820
+  },
+  "debug_timing": true,
+  "report_path": ".agents/ui_ux_tester/report.md",
+  "shots_dir": ".agents/ui_ux_tester/shots"
+}
