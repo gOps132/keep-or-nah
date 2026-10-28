@@ -80,7 +80,8 @@ fn read_direct_children(source_dir: &Path) -> Vec<Member> {
 
 /// Default raster formats that can be displayed directly in preview viewports.
 pub const DEFAULT_PREVIEWABLE_EXTENSIONS: &[&str] = &[
-    ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif",
+    ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif", ".heic", ".heif", ".hif",
+    ".avif", ".jxl", ".psd", ".exr", ".hdr", ".qoi", ".tga", ".ico",
 ];
 
 /// Returns the default list of previewable extensions.
