@@ -10,7 +10,7 @@ name = "keep_or_nah_core"
 crate-type = ["rlib"]
 
 [dependencies]
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff", "rayon"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff", "rayon", "hdr", "exr", "qoi", "tga", "ico"] }
 fast_image_resize = { version = "5", features = ["image"] }
 kamadak-exif = "0.6"
 filetime = "0.2"

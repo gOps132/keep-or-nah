@@ -22,6 +22,9 @@ pub trait HeavyAssetDecoder: Send + Sync {
     /// Returns true if this decoder can handle the given file extension (case-insensitive, without dot).
     fn can_handle(&self, ext: &str) -> bool;
 
+    /// Returns list of extensions handled by this decoder (without leading dot).
+    fn handled_extensions(&self) -> &[&'static str];
+
     /// Extracts or returns an instant fast preview (e.g. embedded JPEG or cached thumbnail).
     fn extract_fast_preview(&self, path: &Path, cache_dir: &Path) -> Result<PathBuf, String>;
 
@@ -42,6 +45,12 @@ impl HeavyAssetDecoder for RawDemosaicDecoder {
         crate::raw_extractor::is_raw_file(Path::new(&dummy))
     }
 
+    fn handled_extensions(&self) -> &[&'static str] {
+        &[
+            "arw", "cr2", "cr3", "nef", "nrw", "dng", "orf", "rw2", "pef", "raf", "srw",
+        ]
+    }
+
     fn extract_fast_preview(&self, path: &Path, cache_dir: &Path) -> Result<PathBuf, String> {
         crate::raw_extractor::extract_and_cache_preview(path, cache_dir)
     }
@@ -51,28 +60,36 @@ impl HeavyAssetDecoder for RawDemosaicDecoder {
     }
 }
 
-/// Template / stub showing how to register future formats (e.g. HEIC/HIF, TIFF, Video clips).
-pub struct HeicDecoderTemplate;
+/// Hardware-accelerated decoder for modern container and photo formats (HEIC, HEIF, HIF, AVIF, JXL, PSD).
+pub struct HeicDecoder;
 
-impl HeavyAssetDecoder for HeicDecoderTemplate {
+impl HeavyAssetDecoder for HeicDecoder {
     fn name(&self) -> &'static str {
-        "heic_template"
+        "heic"
     }
 
     fn can_handle(&self, ext: &str) -> bool {
-        matches!(ext.to_ascii_lowercase().as_str(), "heic" | "hif")
+        matches!(
+            ext.to_ascii_lowercase().as_str(),
+            "heic" | "heif" | "hif" | "avif" | "jxl" | "psd"
+        )
     }
 
-    fn extract_fast_preview(&self, path: &Path, _cache_dir: &Path) -> Result<PathBuf, String> {
-        // Template fallback: return original path until hardware HEVC thumbnail extractor is wired
-        Ok(path.to_path_buf())
+    fn handled_extensions(&self) -> &[&'static str] {
+        &["heic", "heif", "hif", "avif", "jxl", "psd"]
     }
 
-    fn resolve_full_render(&self, path: &Path, _cache_dir: &Path) -> Result<PathBuf, String> {
-        // Template fallback: return original path until hardware 10-bit HDR renderer is wired
-        Ok(path.to_path_buf())
+    fn extract_fast_preview(&self, path: &Path, cache_dir: &Path) -> Result<PathBuf, String> {
+        crate::raw_demosaic::render_raw_to_cache(path, cache_dir)
+    }
+
+    fn resolve_full_render(&self, path: &Path, cache_dir: &Path) -> Result<PathBuf, String> {
+        crate::raw_demosaic::render_raw_to_cache(path, cache_dir)
     }
 }
+
+/// Backwards compatibility alias for template references.
+pub type HeicDecoderTemplate = HeicDecoder;
 
 /// Central registry managing all registered heavy asset decoders.
 pub struct HeavyAssetRegistry {
@@ -83,7 +100,7 @@ impl Default for HeavyAssetRegistry {
     fn default() -> Self {
         let mut registry = Self::new();
         registry.register(Box::new(RawDemosaicDecoder));
-        registry.register(Box::new(HeicDecoderTemplate));
+        registry.register(Box::new(HeicDecoder));
         registry
     }
 }
@@ -97,6 +114,16 @@ impl HeavyAssetRegistry {
 
     pub fn register(&mut self, decoder: Box<dyn HeavyAssetDecoder>) {
         self.decoders.push(decoder);
+    }
+
+    pub fn supported_extensions(&self) -> Vec<String> {
+        let mut set = std::collections::BTreeSet::new();
+        for decoder in &self.decoders {
+            for ext in decoder.handled_extensions() {
+                set.insert(format!(".{}", ext.to_ascii_lowercase()));
+            }
+        }
+        set.into_iter().collect()
     }
 
     pub fn find_decoder(&self, path: &Path) -> Option<&dyn HeavyAssetDecoder> {
@@ -138,8 +165,27 @@ mod tests {
         assert!(registry.is_heavy_asset(Path::new("photo.ARW")));
         assert!(registry.is_heavy_asset(Path::new("photo.cr2")));
         assert!(registry.is_heavy_asset(Path::new("photo.heic")));
+        assert!(registry.is_heavy_asset(Path::new("photo.HEIF")));
+        assert!(registry.is_heavy_asset(Path::new("photo.hif")));
+        assert!(registry.is_heavy_asset(Path::new("photo.avif")));
+        assert!(registry.is_heavy_asset(Path::new("photo.jxl")));
+        assert!(registry.is_heavy_asset(Path::new("photo.psd")));
         assert!(!registry.is_heavy_asset(Path::new("photo.jpg")));
         assert!(!registry.is_heavy_asset(Path::new("photo.png")));
+    }
+
+    #[test]
+    fn test_supported_extensions_contains_all_registered() {
+        let registry = HeavyAssetRegistry::default();
+        let exts = registry.supported_extensions();
+        assert!(exts.contains(&".heic".to_string()));
+        assert!(exts.contains(&".heif".to_string()));
+        assert!(exts.contains(&".hif".to_string()));
+        assert!(exts.contains(&".avif".to_string()));
+        assert!(exts.contains(&".jxl".to_string()));
+        assert!(exts.contains(&".psd".to_string()));
+        assert!(exts.contains(&".arw".to_string()));
+        assert!(exts.contains(&".dng".to_string()));
     }
 
     #[test]
@@ -164,6 +210,9 @@ mod tests {
             }
             fn can_handle(&self, ext: &str) -> bool {
                 matches!(ext.to_ascii_lowercase().as_str(), "tif" | "tiff")
+            }
+            fn handled_extensions(&self) -> &[&'static str] {
+                &["tif", "tiff"]
             }
             fn extract_fast_preview(
                 &self,

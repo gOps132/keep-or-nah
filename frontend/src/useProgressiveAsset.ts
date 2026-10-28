@@ -14,8 +14,36 @@ export const HEAVY_EXTENSIONS = new Set([
   ".raf",
   ".srw",
   ".heic",
+  ".heif",
   ".hif",
+  ".avif",
+  ".jxl",
+  ".psd",
 ]);
+
+// Dynamically sync registered heavy extensions from Rust core
+if (typeof window !== "undefined") {
+  try {
+    const res = invoke<string[]>("get_supported_heavy_extensions");
+    if (res && typeof res.then === "function") {
+      res
+        .then((exts) => {
+          if (Array.isArray(exts)) {
+            exts.forEach((ext) => {
+              HEAVY_EXTENSIONS.add(
+                ext.toLowerCase().startsWith(".") ? ext.toLowerCase() : `.${ext.toLowerCase()}`
+              );
+            });
+          }
+        })
+        .catch(() => {
+          // Fallback to default set
+        });
+    }
+  } catch {
+    // Fallback to default set
+  }
+}
 
 export function isHeavyAssetFile(path: string): boolean {
   const dotIndex = path.lastIndexOf(".");

@@ -3,7 +3,10 @@ import { renderHook, act } from "@testing-library/react";
 import { useProgressiveAsset, isHeavyAssetFile } from "./useProgressiveAsset";
 
 // Mock Tauri invoke
-const mockInvoke = vi.fn();
+const { mockInvoke } = vi.hoisted(() => ({
+  mockInvoke: vi.fn().mockImplementation(() => Promise.resolve(null)),
+}));
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => mockInvoke(...args),
 }));
@@ -16,7 +19,11 @@ describe("isHeavyAssetFile", () => {
     expect(isHeavyAssetFile("/photos/DSC_0001.nef")).toBe(true);
     expect(isHeavyAssetFile("/photos/DSC_0001.dng")).toBe(true);
     expect(isHeavyAssetFile("/photos/DSC_0001.heic")).toBe(true);
+    expect(isHeavyAssetFile("/photos/DSC_0001.HEIF")).toBe(true);
     expect(isHeavyAssetFile("/photos/DSC_0001.hif")).toBe(true);
+    expect(isHeavyAssetFile("/photos/DSC_0001.avif")).toBe(true);
+    expect(isHeavyAssetFile("/photos/DSC_0001.jxl")).toBe(true);
+    expect(isHeavyAssetFile("/photos/DSC_0001.psd")).toBe(true);
 
     expect(isHeavyAssetFile("/photos/DSC_0001.jpg")).toBe(false);
     expect(isHeavyAssetFile("/photos/DSC_0001.jpeg")).toBe(false);

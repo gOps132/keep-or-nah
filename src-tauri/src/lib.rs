@@ -303,10 +303,12 @@ pub mod commands {
     ) -> Result<ThumbnailDto, String> {
         let start = Instant::now();
         let file_path = Path::new(path);
-        let preview_path = if keep_or_nah_core::raw_extractor::is_raw_file(file_path) {
-            let raw_cache = cache_dir.join("raw_previews");
-            keep_or_nah_core::raw_extractor::extract_and_cache_preview(file_path, &raw_cache)
-                .map_err(|e| format!("Failed to extract RAW preview: {e}"))?
+        let registry = keep_or_nah_core::heavy_asset::HeavyAssetRegistry::default();
+        let preview_path = if registry.is_heavy_asset(file_path) {
+            let heavy_cache = cache_dir.join("heavy_previews");
+            registry
+                .resolve_fast_preview(file_path, &heavy_cache)
+                .map_err(|e| format!("Failed to extract heavy asset preview: {e}"))?
         } else {
             file_path.to_path_buf()
         };
@@ -429,14 +431,14 @@ pub mod commands {
             return Err(err);
         }
 
-        let resolved = if keep_or_nah_core::raw_extractor::is_raw_file(file_path) {
+        let registry = keep_or_nah_core::heavy_asset::HeavyAssetRegistry::default();
+        let resolved = if registry.is_heavy_asset(file_path) {
             let cache_dir = app
                 .path()
                 .app_cache_dir()
                 .unwrap_or_else(|_| std::env::temp_dir().join("keep_or_nah_cache"))
-                .join("raw_previews");
-            let cached =
-                keep_or_nah_core::raw_extractor::extract_and_cache_preview(file_path, &cache_dir)?;
+                .join("heavy_previews");
+            let cached = registry.resolve_fast_preview(file_path, &cache_dir)?;
             cached.to_string_lossy().to_string()
         } else {
             path.clone()
@@ -510,6 +512,13 @@ pub mod commands {
     #[tauri::command]
     pub async fn resolve_heavy_render(app: AppHandle, path: String) -> Result<String, String> {
         resolve_full_raw_render(app, path).await
+    }
+
+    /// Returns the list of file extensions handled by HeavyAssetRegistry.
+    #[tauri::command]
+    pub fn get_supported_heavy_extensions() -> Vec<String> {
+        let registry = keep_or_nah_core::heavy_asset::HeavyAssetRegistry::default();
+        registry.supported_extensions()
     }
 
     /// Synchronous helper for resolving and caching full RAW demosaic.
@@ -705,6 +714,7 @@ pub fn run() {
             commands::resolve_photo_preview,
             commands::resolve_full_raw_render,
             commands::resolve_heavy_render,
+            commands::get_supported_heavy_extensions,
             commands::check_core_status,
             commands::get_debug_status,
             commands::record_debug_event
@@ -870,5 +880,19 @@ mod tests {
         let cached_again =
             super::commands::resolve_full_raw_render_sync(&raw_path, &cache_dir).unwrap();
         assert_eq!(cached_path, cached_again);
+    }
+
+    #[test]
+    fn test_get_supported_heavy_extensions_includes_all_formats() {
+        let exts = super::commands::get_supported_heavy_extensions();
+        assert!(exts.contains(&".heic".to_string()));
+        assert!(exts.contains(&".heif".to_string()));
+        assert!(exts.contains(&".hif".to_string()));
+        assert!(exts.contains(&".avif".to_string()));
+        assert!(exts.contains(&".jxl".to_string()));
+        assert!(exts.contains(&".psd".to_string()));
+        assert!(exts.contains(&".arw".to_string()));
+        assert!(exts.contains(&".cr2".to_string()));
+        assert!(exts.contains(&".dng".to_string()));
     }
 }

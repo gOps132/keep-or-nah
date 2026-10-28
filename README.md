@@ -199,6 +199,16 @@ Keep or Nah is designed for fluid, mouse-free triage:
 
 *Note: Keyboard shortcuts are inactive while a modal dialog is open.*
 
+### Supported Formats
+
+Keep or Nah supports a wide range of still photography, container, and professional raster formats:
+
+* **Standard Rasters**: `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`, `.gif`, `.tiff`, `.tif`, `.exr`, `.hdr`, `.qoi`, `.tga`, `.ico`
+* **Heavy & Modern Formats** (via 2-stage progressive decoder with fast embedded preview and background full render):
+  * Modern still & mobile containers: `.heic`, `.heif`, `.hif` (Apple/Canon/Sony 10-bit), `.avif`, `.jxl` (JPEG XL), `.psd`
+  * Camera RAW bodies: Sony (`.arw`), Canon (`.cr2`, `.cr3`), Nikon (`.nef`, `.nrw`), Adobe (`.dng`), Olympus (`.orf`), Panasonic (`.rw2`), Pentax (`.pef`), Fujifilm (`.raf`), Samsung (`.srw`)
+* **Live Photo & Video Sidecars**: Video clips (`.mov`, `.mp4`) sharing an exact stem with a still photo (e.g. `IMG_0001.HEIC` + `IMG_0001.MOV`) are grouped into the same **Photo Group**, preserving atomic triage routing while previewing the photo representative.
+
 ### Debug Render Timing Log
 
 To record every render boundary (`render.preview.fast`, `render.preview.full`, `render.thumbnail_decode`, `render.thumbnail_strip`, `render.split_comparison`, `render.loading_overlay`) with its `duration_ms` alongside user actions in thread-safe JSON Lines format:
